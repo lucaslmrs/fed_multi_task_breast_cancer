@@ -1,12 +1,14 @@
 # A multi-task framework for breast cancer segmentation and classification in ultrasound imaging
 
 
-Please consider cite the [following paper](https://www.sciencedirect.com/science/article/pii/S0169260724005339) 
-when you use or build upon the methods, Curated BUSI dataset, or findings presented in our research.
+Please consider cite the [following paper](https://www.sciencedirect.com/science/article/pii/S0169260724005339) and [Curated BUSI dataset](https://doi.org/10.5281/zenodo.19047974)
+when you use or build upon the methods or findings presented in our research.
 
-    Aumente-Maestro, C., Díez, J., & Remeseiro, B. (2024). A multi-task framework for breast cancer segmentation and 
+    Aumente-Maestro, C., Díez, J., & Remeseiro, B. (2025). A multi-task framework for breast cancer segmentation and 
     classification in ultrasound imaging. Computer Methods and Programs in Biomedicine, 108540.
 
+    Aumente Maestro, C., Díez, J., & Remeseiro, B. (2026). Curated BUSI dataset - Curated Breast Ultrasound Images (1.0) 
+    [Data set]. Zenodo. https://doi.org/10.5281/zenodo.19047974
 
 ## Overview
 This research work presents a novel multi-task framework designed to simultaneously address segmentation and 
