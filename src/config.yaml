@@ -32,8 +32,8 @@ training:
 
 data:
   semantic_segmentation: False
-  input_img: Datasets/Dataset_BUSI_with_GT_postprocessed_128_uniques
-  batch_size: 2
+  input_img: data/Curated_BUSI_128
+  batch_size: 32
   train_size: 0.8
   classes: [benign, malignant, normal]
   classes_weighted: null

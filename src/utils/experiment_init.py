@@ -273,7 +273,7 @@ def init_lr_scheduler(
 ) -> torch.optim.lr_scheduler:
 
     if scheduler == 'plateau':
-        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=factor, patience=patience, min_lr=min_lr, verbose=True)
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=factor, patience=patience, min_lr=min_lr)
     elif scheduler == "cosine":
         scheduler = CosineAnnealingLR(optimizer, T_max=t_max, eta_min=min_lr)
     else:
