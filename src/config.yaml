@@ -25,7 +25,7 @@ training:
   max_patience: 50
   CV: 4
   cuda_benchmark: False
-  alpha: 0.35
+  alpha: 0.85
   threshold_postprocessing: 0
   overlap_seg_based_on_class: True
   overlap_class_based_on_seg: True
@@ -51,3 +51,25 @@ data:
     horizontal_flip: .5
     vertical_flip: .5
     rotation: 1.0
+
+federated:  # FedPer: shared encoder is federated, heads stay personalized per client
+  n_clients_seg: 2
+  n_clients_cls: 2
+  rounds: 10
+  local_epochs: 2
+  dirichlet_alpha: 100.0   # high alpha ~ IID; lower it to simulate non-IID
+  val_size: 0.2            # carved from each client's train pool for early stopping
+  patience: 20
+  task_weights:            # extra weight per task when aggregating the shared encoder
+    seg: 4.0
+    cls: 1.0
+  oversampling:            # per-task override of data.oversampling
+    seg: False
+    cls: True
+  partition_file: data/federated/federated_mapping.csv
+  device: cuda             # auto | cpu | cuda
+  ray_num_cpus: 2          # caps the Ray cluster -> bounds how many clients run concurrently
+  client_resources:        # resources reserved per client (num_cpus high => fewer in parallel)
+    num_cpus: 2
+    num_gpus: 1.0          # >0 lets the client see the GPU. 1.0 => 1 client/GPU (sequential,
+                           # safe). For 2 concurrent GPU clients use 0.5 AND raise ray_num_cpus.

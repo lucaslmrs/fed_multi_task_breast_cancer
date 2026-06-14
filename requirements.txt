@@ -2,7 +2,6 @@ numpy==1.23.5
 pandas==1.5.0
 opencv-python==4.7.0.68
 monai==1.3.0
-tensorboard==2.10.0
 scikit-learn==1.3.0
 torch==2.7.0
 torchvision==0.22.0
@@ -10,3 +9,7 @@ PyYAML==6.0.2
 matplotlib==3.6.2
 seaborn==0.12.2
 openpyxl==3.0.9
+flwr[simulation]==1.30.0
+# NOTE: tensorboard was removed -- it was an unused (dead) import and its pinned
+# 2.10.0 needs protobuf<3.20, which conflicts with flwr's protobuf>=4 requirement.
+# numpy must stay <2 (pandas 1.5.0 / monai are not ABI-compatible with numpy 2.x).
