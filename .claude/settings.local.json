@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo \"=== data dir ===\"; ls -R data 2>/dev/null | head -40; echo \"=== mapping head ===\"; head -5 data/Curated_BUSI_128/mapping.csv 2>/dev/null; echo \"=== MEMORY.md exists? ===\"; ls -la \"/c/Users/rluca/.claude/projects/--wsl-localhost-ubuntu-home-lucas-fed-multi-task-breast-cancer/memory/\" 2>/dev/null || echo \"checking via win path\")"
+    ]
+  }
+}
