@@ -21,6 +21,12 @@ python -m src.training_classification_prod
 # Federated (FedPer) training — see "Federated training" section below
 python -m src.dataset.federated_partition   # build the master partition CSV (run first)
 python -m src.training_federated            # run the federated simulation
+
+# Comparison experiment (Federated vs Local-only vs Centralized) — see section below
+python -m src.training_federated            # federated  (federated.standalone: False)
+python -m src.training_federated            # local-only (set federated.standalone: True first)
+python -m src.training_centralized          # centralized MTL (from the same master CSV)
+python -m src.experiments.analyze --results <3 *_test_results.csv> --preds <3 *_cls_predictions.csv> --out runs/comparison
 ```
 
 All hyperparameters are controlled by `src/config.yaml`. The run creates a timestamped output directory under `runs/`.
@@ -137,3 +143,31 @@ Server-side early stopping is logged but not enforced; each client keeps its own
   tensorboard was removed (it was a dead import). **numpy must stay `<2`** (pandas/monai ABI).
 - Running clients in parallel can exhaust system RAM (and GPU memory); keep `ray_num_cpus` /
   `client_resources` conservative. The defaults run one client at a time.
+
+## Comparison experiment (Federated vs Local-only vs Centralized)
+
+Compares three setups on the SAME frozen partition (`src/federated/unified_eval.py` is the single
+shared evaluator, so the numbers are directly comparable):
+
+| Setup | Role | How to run |
+|---|---|---|
+| **Local-only** per client | controlled baseline (floor) | `training_federated.py` with `federated.standalone: True` (clients ignore the federated encoder) |
+| **Federated (FedPer)** | the proposed method | `training_federated.py` with `federated.standalone: False` |
+| **Centralized MTL** | upper bound | `training_centralized.py` (trains one MTL model from the master CSV's fold, same per-client test slices) |
+
+Each setup writes its own `{setup}_test_results.csv` (+ `{setup}_cls_predictions.csv`) under its run dir.
+
+**Fairness controls (baked in):** all setups read the SAME `federated.partition_file` and ERROR if it
+is missing (generate it ONCE with `federated_partition`, then freeze it). Prediction-refining is OFF
+(`unified_eval` never applies it) and `normal` is absent from seg test slices, so seg Dice is comparable.
+The centralized model is trained from the master CSV's fold (unique images, `split != test`) to keep
+folds identical and leak-free, and evaluated on the same per-client test slices.
+
+**Metrics:** seg → Dice, IoU, Sensitivity, Specificity, Precision; cls → Accuracy, macro-F1,
+balanced accuracy, per-class precision/recall, OvR-macro AUC (NaN per slice when a class is absent).
+
+**Analysis:** `src/experiments/analyze.py` reads the three results CSVs (and prediction CSVs) and writes
+`summary_per_task_setup.csv` (mean±std per task×setup), `federated_vs_local_wilcoxon.csv` (paired
+Wilcoxon + mean/median deltas), `per_client_deltas.csv` (federated − local per client, primary metric),
+and `pooled_auc.csv` (AUC pooled across clients per setup×fold). No extra seeds; CV folds are the
+variance source.

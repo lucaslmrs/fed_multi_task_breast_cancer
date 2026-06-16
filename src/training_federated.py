@@ -15,7 +15,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import torch
 import yaml
@@ -24,12 +23,10 @@ from flwr.server import ServerConfig
 from flwr.simulation import start_simulation
 
 from src.dataset.federated_dataloader import build_client_loader, list_clients
-from src.dataset.federated_partition import build_federated_partition
-from src.federated import local_trainer
+from src.federated import unified_eval
 from src.federated.client import build_client_fn
 from src.federated.server import FedPerStrategy
-from src.utils.experiment_init import (device_setup, init_criterion_classification,
-                                       init_criterion_segmentation, init_multitask_model)
+from src.utils.experiment_init import device_setup, init_multitask_model
 from src.utils.miscellany import init_log, seed_everything
 
 
@@ -55,8 +52,9 @@ def _build_model(config, device):
     ).to(device)
 
 
-def _test_client(config, device, partition_file, run_dir, fold, client_id, task):
-    """Evaluate one client's best snapshot on its held-out test split."""
+def _test_client(config, device, partition_file, run_dir, fold, client_id, task, setup):
+    """Evaluate one client's best snapshot on its held-out test split via the shared unified_eval.
+    Returns (metrics_row, cls_predictions_df_or_None)."""
     model = _build_model(config, device)
     best_path = Path(run_dir) / f"fold_{fold}" / f"client_{client_id}" / "best.pt"
     if best_path.exists():
@@ -65,17 +63,15 @@ def _test_client(config, device, partition_file, run_dir, fold, client_id, task)
         logging.warning(f"No best.pt for {client_id} (fold {fold}); using initial weights")
 
     num_classes = len(config["data"]["classes"])
-    seg_criterion = init_criterion_segmentation(config["loss"]["function"])
-    cls_criterion = init_criterion_classification(
-        n_classes=num_classes, classes_weighted=config["data"]["classes_weighted"],
-        classification_criterion=config["loss"]["classification_criterion"])
     test_loader = build_client_loader(partition_file, fold, client_id, "test",
                                       batch_size=1, augmentations=config["data"]["augmentation"])
-    res = local_trainer.evaluate_local(model, test_loader, task, device, num_classes,
-                                       seg_criterion, cls_criterion, config["loss"]["inversely_weighted"])
-    return {"fold": fold, "client_id": client_id, "task": task,
-            "test_loss": res["loss"], "test_metric": res["metric"],
-            "metric_name": res["metric_name"], "f1": res.get("f1", np.nan), "n_test": res["n"]}
+    metrics, preds = unified_eval.evaluate(model, test_loader, task, num_classes, device)
+    row = {"setup": setup, "fold": fold, "client_id": client_id, "task": task, **metrics}
+    if preds is not None:
+        preds.insert(0, "client_id", client_id)
+        preds.insert(0, "fold", fold)
+        preds.insert(0, "setup", setup)
+    return row, preds
 
 
 def run(config_path="./src/config.yaml"):
@@ -90,7 +86,9 @@ def run(config_path="./src/config.yaml"):
     dev_str = fed.get("device", "auto")
     device = device_setup() if dev_str == "auto" else dev_str
 
-    run_path = f"runs/{timestamp}_FEDPER_{config['model']['architecture']}_" \
+    standalone = fed.get("standalone", False)
+    setup = "standalone" if standalone else "federated"
+    run_path = f"runs/{timestamp}_{setup.upper()}_{config['model']['architecture']}_" \
                f"{fed['n_clients_seg']}seg_{fed['n_clients_cls']}cls"
     Path(run_path).mkdir(parents=True, exist_ok=True)
     init_log(log_name=f"./{run_path}/execution.log")
@@ -98,22 +96,21 @@ def run(config_path="./src/config.yaml"):
     with open(f"{run_path}/config.yaml", "w") as f:
         yaml.safe_dump(config, f)
 
-    # build / load the master partition CSV
+    # The master partition CSV must be generated ONCE and frozen so every setup shares identical
+    # splits. Fail loudly instead of silently regenerating (which would invalidate comparisons).
     partition_file = fed["partition_file"]
     if not Path(partition_file).exists():
-        build_federated_partition(
-            mapping_path=f"{data_cfg['input_img']}/mapping.csv", output_path=partition_file,
-            n_folds=train_cfg["CV"], seed=train_cfg["seed"], n_clients_seg=fed["n_clients_seg"],
-            n_clients_cls=fed["n_clients_cls"], dirichlet_alpha=fed["dirichlet_alpha"],
-            val_size=fed["val_size"])
+        raise FileNotFoundError(
+            f"Partition file '{partition_file}' not found. Generate it once with "
+            f"`python -m src.dataset.federated_partition` so all setups share identical splits.")
 
     roster = [(r.client_id, r.task) for r in list_clients(partition_file).itertuples()]
     num_clients = len(roster)
     client_resources = fed.get("client_resources", {"num_cpus": 1, "num_gpus": 0.0})
 
-    test_rows = []
+    test_rows, pred_frames = [], []
     for fold in range(train_cfg["CV"]):
-        logging.info(f"\n\n*************  FOLD {fold}  *************\n")
+        logging.info(f"\n\n*************  FOLD {fold}  ({setup})  *************\n")
         Path(f"{run_path}/fold_{fold}").mkdir(parents=True, exist_ok=True)
 
         init_params = ndarrays_to_parameters(
@@ -126,7 +123,7 @@ def run(config_path="./src/config.yaml"):
             min_evaluate_clients=num_clients, min_available_clients=num_clients)
 
         start_simulation(
-            client_fn=build_client_fn(config, device, partition_file, run_path, roster, fold),
+            client_fn=build_client_fn(config, device, partition_file, run_path, roster, fold, standalone),
             num_clients=num_clients, config=ServerConfig(num_rounds=fed["rounds"]),
             strategy=strategy, client_resources=client_resources,
             ray_init_args={"include_dashboard": False, "ignore_reinit_error": True,
@@ -135,20 +132,28 @@ def run(config_path="./src/config.yaml"):
         logging.info(f"[fold {fold}] best round = {strategy.best_round} "
                      f"(mean val loss {strategy.best_mean_val:.4f}); running test phase")
         for client_id, task in roster:
-            test_rows.append(_test_client(config, device, partition_file, run_path, fold, client_id, task))
+            row, preds = _test_client(config, device, partition_file, run_path, fold, client_id, task, setup)
+            test_rows.append(row)
+            if preds is not None:
+                pred_frames.append(preds)
 
-    _save_results(pd.DataFrame(test_rows), run_path)
-    logging.info(f"Total federated time: {time.perf_counter() - init_time:.2f}s")
+    _save_results(pd.DataFrame(test_rows), pred_frames, run_path, setup)
+    logging.info(f"Total {setup} time: {time.perf_counter() - init_time:.2f}s")
 
 
-def _save_results(df, run_path):
-    df.to_csv(f"{run_path}/federated_test_results.csv", index=False)
-    summary = (df.groupby("task")
-                 .agg(test_metric_mean=("test_metric", "mean"), test_metric_std=("test_metric", "std"),
-                      f1_mean=("f1", "mean"), n_clients=("client_id", "count"))
-                 .reset_index())
-    summary.to_csv(f"{run_path}/federated_summary.csv", index=False)
-    logging.info(f"\nFederated test summary (per task, across clients x folds):\n{summary}")
+def _save_results(df, pred_frames, run_path, setup):
+    """One results CSV (+ cls predictions) per setup. Cross-setup aggregation lives in
+    src/experiments/analyze.py; here we only log a quick per-task glance."""
+    results_csv = f"{run_path}/{setup}_test_results.csv"
+    df.to_csv(results_csv, index=False)
+    if pred_frames:
+        pd.concat(pred_frames, ignore_index=True).to_csv(f"{run_path}/{setup}_cls_predictions.csv", index=False)
+
+    glance_col = {"seg": "dice", "cls": "acc"}
+    for task in df["task"].unique():
+        sub, col = df[df["task"] == task], glance_col.get(task, "dice")
+        logging.info(f"[{setup}] task={task}: {col} {sub[col].mean():.4f} ± {sub[col].std():.4f} (n={len(sub)})")
+    logging.info(f"Saved {results_csv}")
 
 
 if __name__ == "__main__":

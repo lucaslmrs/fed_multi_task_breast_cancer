@@ -55,11 +55,11 @@ data:
 federated:  # FedPer: shared encoder is federated, heads stay personalized per client
   n_clients_seg: 2
   n_clients_cls: 2
-  rounds: 10
+  rounds: 50
   local_epochs: 2
   dirichlet_alpha: 100.0   # high alpha ~ IID; lower it to simulate non-IID
   val_size: 0.2            # carved from each client's train pool for early stopping
-  patience: 20
+  patience: 10             # não faz nada atualmente. O best.pt que deve ser utilizado
   task_weights:            # extra weight per task when aggregating the shared encoder
     seg: 4.0
     cls: 1.0
@@ -67,6 +67,7 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
     seg: False
     cls: True
   partition_file: data/federated/federated_mapping.csv
+  standalone: False        # True => local-only baseline (clients ignore the federated encoder)
   device: cuda             # auto | cpu | cuda
   ray_num_cpus: 2          # caps the Ray cluster -> bounds how many clients run concurrently
   client_resources:        # resources reserved per client (num_cpus high => fewer in parallel)

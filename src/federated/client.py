@@ -38,10 +38,11 @@ def resolve_device(requested):
 
 
 class FederatedClient(NumPyClient):
-    def __init__(self, client_id, task, fold, config, device, partition_file, run_dir):
+    def __init__(self, client_id, task, fold, config, device, partition_file, run_dir, standalone=False):
         self.client_id = client_id
         self.task = task
         self.fold = fold
+        self.standalone = standalone  # True => local-only baseline: ignore the federated encoder
         self.device = resolve_device(device)
         self.config = config
         self.num_classes = len(config["data"]["classes"])
@@ -57,7 +58,7 @@ class FederatedClient(NumPyClient):
             width=config["model"]["width"],
             deep_supervision=config["model"]["deep_supervision"],
             save_folder=None,
-        ).to(device)
+        ).to(self.device)
         self.optimizer = init_optimizer(self.model, config["optimizer"]["opt"], config["optimizer"]["lr"])
         self.seg_criterion = init_criterion_segmentation(config["loss"]["function"])
         self.cls_criterion = init_criterion_classification(
@@ -80,28 +81,35 @@ class FederatedClient(NumPyClient):
         self.state_path = self.state_dir / "state.pt"
         self.best_path = self.state_dir / "best.pt"
 
-    # ---- personalized state persistence -------------------------------------------------
-    def _load_personalized(self):
+    # ---- local state persistence (personalized head; full model in standalone) ----------
+    def _load_state(self):
         best_val = float("inf")
         if self.state_path.exists():
             st = torch.load(self.state_path, map_location=self.device)
-            set_personalized_state(self.model, st["personalized"])
+            if self.standalone:
+                self.model.load_state_dict(st["model"])  # encoder is kept locally too
+            else:
+                set_personalized_state(self.model, st["personalized"])
             self.optimizer.load_state_dict(st["optimizer"])
             best_val = st["best_val"]
         return best_val
 
-    def _save_personalized(self, best_val):
-        torch.save({"personalized": get_personalized_state(self.model),
-                    "optimizer": self.optimizer.state_dict(),
-                    "best_val": best_val}, self.state_path)
+    def _save_state(self, best_val):
+        payload = {"optimizer": self.optimizer.state_dict(), "best_val": best_val}
+        if self.standalone:
+            payload["model"] = self.model.state_dict()
+        else:
+            payload["personalized"] = get_personalized_state(self.model)
+        torch.save(payload, self.state_path)
 
     # ---- Flower API ---------------------------------------------------------------------
     def get_parameters(self, config):
         return get_shared_state(self.model)
 
     def fit(self, parameters, config):
-        set_shared_state(self.model, parameters)
-        best_val = self._load_personalized()
+        if not self.standalone:
+            set_shared_state(self.model, parameters)  # receive the federated encoder
+        best_val = self._load_state()
 
         local_trainer.train_local(
             self.model, self.train_loader, self.optimizer, self.task, self.device,
@@ -115,14 +123,15 @@ class FederatedClient(NumPyClient):
             best_val = val["loss"]
             torch.save({"model_state": self.model.state_dict(), "val_loss": best_val}, self.best_path)
 
-        self._save_personalized(best_val)
+        self._save_state(best_val)
         metrics = {"task": self.task, "client_id": self.client_id,
                    "val_loss": float(val["loss"]), "val_metric": float(val["metric"])}
         return get_shared_state(self.model), self.n_train, metrics
 
     def evaluate(self, parameters, config):
-        set_shared_state(self.model, parameters)
-        self._load_personalized()
+        if not self.standalone:
+            set_shared_state(self.model, parameters)
+        self._load_state()
         val = local_trainer.evaluate_local(
             self.model, self.val_loader, self.task, self.device, self.num_classes,
             self.seg_criterion, self.cls_criterion, self.inversely_weighted)
@@ -135,11 +144,11 @@ def _default_transforms():
     return torch.nn.Sequential(RandomHorizontalFlip(p=0.5), RandomVerticalFlip(p=0.5), RandomRotation(degrees=360))
 
 
-def build_client_fn(config, device, partition_file, run_dir, roster, fold):
+def build_client_fn(config, device, partition_file, run_dir, roster, fold, standalone=False):
     """Return a Flower ``client_fn(context)`` mapping the partition id to a roster entry."""
     def client_fn(context: Context):
         cid = int(context.node_config.get("partition-id", context.node_id))
         client_id, task = roster[cid]
-        client = FederatedClient(client_id, task, fold, config, device, partition_file, run_dir)
+        client = FederatedClient(client_id, task, fold, config, device, partition_file, run_dir, standalone)
         return client.to_client()
     return client_fn
