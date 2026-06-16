@@ -8,12 +8,11 @@ frozen partition, and computes:
   - per_client_deltas.csv : federated - local per (fold, client) for the primary metric
   - pooled_auc.csv : OvR macro AUC pooled across clients (per setup x fold, and overall)
 
-Usage:
-    python -m src.experiments.analyze \
-        --results runs/<fed>/federated_test_results.csv runs/<loc>/standalone_test_results.csv \
-                  runs/<cen>/centralized_test_results.csv \
-        --preds   runs/<fed>/federated_cls_predictions.csv ... \
-        --out runs/comparison
+Usage: edit the FED / STD / CEN run-directory constants below and run
+
+    python -m src.experiments.analyze
+
+or override them on the CLI with --results / --preds / --out.
 """
 
 import argparse
@@ -24,6 +23,24 @@ import numpy as np
 import pandas as pd
 from scipy.stats import wilcoxon
 from sklearn.metrics import roc_auc_score
+
+# --- Edit these to point at each setup's run directory before running (CLI flags override them) ---
+FED = "runs/<FED>"  # federated run dir
+STD = "runs/<STD>"  # standalone (local-only) run dir
+CEN = "runs/<CEN>"  # centralized run dir
+
+RESULTS = [
+    f"{FED}/federated_test_results.csv",
+    f"{STD}/standalone_test_results.csv",
+    f"{CEN}/centralized_test_results.csv",
+]
+PREDS = [
+    f"{FED}/federated_cls_predictions.csv",
+    f"{STD}/standalone_cls_predictions.csv",
+    f"{CEN}/centralized_cls_predictions.csv",
+]
+OUT = "runs/comparison"
+# --------------------------------------------------------------------------------------------------
 
 SEG_METRICS = ["dice", "iou", "sensitivity", "specificity", "precision"]
 CLS_METRICS = ["acc", "macro_f1", "balanced_acc", "auc",
@@ -130,9 +147,9 @@ def run(results, preds, out):
 def main():
     logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     ap = argparse.ArgumentParser()
-    ap.add_argument("--results", nargs="+", required=True, help="per-setup *_test_results.csv files")
-    ap.add_argument("--preds", nargs="*", default=[], help="per-setup *_cls_predictions.csv files (for pooled AUC)")
-    ap.add_argument("--out", default="runs/comparison", help="output directory for the analysis tables")
+    ap.add_argument("--results", nargs="+", default=RESULTS, help="per-setup *_test_results.csv files")
+    ap.add_argument("--preds", nargs="*", default=PREDS, help="per-setup *_cls_predictions.csv files (for pooled AUC)")
+    ap.add_argument("--out", default=OUT, help="output directory for the analysis tables")
     args = ap.parse_args()
     run(args.results, args.preds, args.out)
 
