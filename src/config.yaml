@@ -67,7 +67,7 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
     seg: False
     cls: True
   partition_file: data/federated/federated_mapping.csv
-  standalone: False        # True => local-only baseline (clients ignore the federated encoder)
+  standalone: True        # True => local-only baseline (clients ignore the federated encoder)
   device: cuda             # auto | cpu | cuda
   ray_num_cpus: 2          # caps the Ray cluster -> bounds how many clients run concurrently
   client_resources:        # resources reserved per client (num_cpus high => fewer in parallel)

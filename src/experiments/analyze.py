@@ -25,9 +25,9 @@ from scipy.stats import wilcoxon
 from sklearn.metrics import roc_auc_score
 
 # --- Edit these to point at each setup's run directory before running (CLI flags override them) ---
-FED = "runs/<FED>"  # federated run dir
-STD = "runs/<STD>"  # standalone (local-only) run dir
-CEN = "runs/<CEN>"  # centralized run dir
+FED = "runs/20260615_223304_FEDERATED_MTnnUNet_2seg_2cls"  # federated run dir
+STD = "runs/20260615_230237_STANDALONE_MTnnUNet_2seg_2cls"  # standalone (local-only) run dir
+CEN = "runs/20260615_233158_CENTRALIZED_MTnnUNet"  # centralized run dir
 
 RESULTS = [
     f"{FED}/federated_test_results.csv",
