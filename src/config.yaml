@@ -74,3 +74,10 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
     num_cpus: 2
     num_gpus: 1.0          # >0 lets the client see the GPU. 1.0 => 1 client/GPU (sequential,
                            # safe). For 2 concurrent GPU clients use 0.5 AND raise ray_num_cpus.
+
+# python -m src.dataset.federated_partition                     # Gera csv mestre caso haja mudanças de configurações
+# python -m src.training_federated                              # federated (standalone: False)
+# -> editar config: federated.standalone: True, e rodar de novo:
+# python -m src.training_federated                              # standalone (local-only)
+# python -m src.training_centralized                            # centralized MTL
+# python -m src.experiments.analyze
