@@ -1,20 +1,46 @@
-from __future__ import print_function, division
+from __future__ import division, print_function
 
 import random
+from pathlib import Path
+from typing import Optional, Sequence
 
 import cv2
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
-from torchvision.transforms.functional import rotate, hflip, vflip
+from torchvision.transforms.functional import hflip, rotate, vflip
 
-from src.utils.images import min_max_scaler
 from src.utils.custom_transforms import apply_SOBEL_filter
+from src.utils.images import min_max_scaler
+
+
+DEFAULT_CLASSES = ("benign", "malignant", "normal")
+# The old semantic-segmentation branch used a different numeric label order.  It is retained only
+# when callers omit ``classes``; all new/multi-dataset callers derive labels from config order.
+LEGACY_SEMANTIC_CLASSES = ("normal", "benign", "malignant")
+
+
+def _missing(value) -> bool:
+    """Return whether a scalar mapping value represents missing supervision/path metadata."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
 
 
 class BUSI(Dataset):
-    """BUSI (Breast UltraSound Image) dataset."""
+    """Channel-aware image dataset used by both BUSI and ISIC.
+
+    The historical class name is kept for API compatibility.  Images and masks are loaded lazily
+    in :meth:`__getitem__`; constructing an ISIC client therefore keeps only its mapping metadata
+    in memory.  Missing task-specific supervision is represented by safe tensors: label ``-1`` for
+    segmentation-only rows and a one-channel zero mask for classification-only rows.
+    """
 
     def __init__(
             self,
@@ -22,182 +48,178 @@ class BUSI(Dataset):
             transforms=None,
             augmentations=None,
             normalization=None,
-            semantic_segmentation=False
+            semantic_segmentation: bool = False,
+            channels: int = 1,
+            classes: Optional[Sequence[str]] = None,
+            dataset: Optional[str] = None,
     ):
-        super(BUSI, self).__init__()
+        super().__init__()
 
-        if augmentations is None:
-            augmentations = {}
+        if channels not in (1, 3):
+            raise ValueError(f"channels must be 1 (grayscale) or 3 (RGB), got {channels!r}")
 
-        self.mapping_file = mapping_file
+        configured_classes = classes
+        if configured_classes is None:
+            configured_classes = LEGACY_SEMANTIC_CLASSES if semantic_segmentation else DEFAULT_CLASSES
+        configured_classes = list(configured_classes)
+        if not configured_classes:
+            raise ValueError("classes must contain at least one class name")
+        if len(configured_classes) != len(set(configured_classes)):
+            raise ValueError(f"classes contains duplicate names: {configured_classes}")
+
+        augmentations = augmentations or {}
+        active_augmentations = [name for name, enabled in augmentations.items() if bool(enabled)]
+        if channels == 3 and active_augmentations:
+            raise ValueError(
+                "Legacy CLAHE/SOBEL/brightness/contrast augmentations append grayscale feature "
+                f"channels and are not supported for RGB input; disable {active_augmentations}"
+            )
+
+        # Keep the public attributes used by older notebooks, but store metadata only (no decoded
+        # images/masks).  ``records`` normalises pandas scalar access and makes lazy reads cheap.
+        self.mapping_file = mapping_file.copy().reset_index(drop=True)
+        self.data = self.mapping_file.to_dict(orient="records")
         self.transforms = transforms
         self.semantic_segmentation = semantic_segmentation
+        self.channels = channels
+        self.classes = configured_classes
+        self.class_to_index = {name: index for index, name in enumerate(self.classes)}
+        self.dataset = dataset or ""
         self.transforms_applied = {}
-        self.augmentations = True if sum([v for k, v in augmentations.items()]) else False
-        if augmentations:
-            self.CLAHE = augmentations.get("CLAHE", False)
-            self.SOBEL = augmentations.get("SOBEL", False)
-            self.brightness_brighter = augmentations.get("brightness_brighter", False)
-            self.brightness_darker = augmentations.get("brightness_darker", False)
-            self.contrast_high = augmentations.get("contrast_high", False)
-            self.contrast_low = augmentations.get("contrast_low", False)
-
+        self.augmentations = bool(active_augmentations)
+        self.CLAHE = bool(augmentations.get("CLAHE", False))
+        self.SOBEL = bool(augmentations.get("SOBEL", False))
+        self.brightness_brighter = bool(augmentations.get("brightness_brighter", False))
+        self.brightness_darker = bool(augmentations.get("brightness_darker", False))
+        self.contrast_high = bool(augmentations.get("contrast_high", False))
+        self.contrast_low = bool(augmentations.get("contrast_low", False))
         self.normalization = normalization
-
-        self.data = []
-        for index, row in self.mapping_file.iterrows():
-            # loading image and mask
-            image = cv2.imread(row['img_path'], 0)
-            if semantic_segmentation:
-                mask = cv2.imread(row['mask_path'], 1).transpose((2, 0, 1))
-            else:
-                mask = cv2.imread(row['mask_path'], 0)
-                mask[mask == 255] = 1
-
-            # loading other features
-            patient_id = row['id']
-            class_ = row['class']
-            dim1 = row['dim1']
-            dim2 = row['dim2']
-            tumor_pixels = row['tumor_pixels']
-            if self.semantic_segmentation:
-                if class_ == 'benign':
-                    label = torch.ones(1)
-                elif class_ == 'normal':
-                    label = torch.zeros(1)
-                elif class_ == 'malignant':
-                    label = 2 * torch.ones(1)
-                else:
-                    raise Exception(f"\n\t-> Unknown class: {row['class']}")
-            else:
-                if class_ == 'malignant':
-                    label = torch.ones(1)
-                elif class_ == 'benign':
-                    label = torch.zeros(1)
-                elif class_ == 'normal':
-                    label = 2 * torch.ones(1)
-                else:
-                    raise Exception(f"\n\t-> Unknown class: {row['class']}")
-
-            # appending information in a list
-            self.data.append({
-                'patient_id': patient_id,
-                'label': label,
-                'class_': class_,
-                'image': image,
-                'mask': mask,
-                'dim1': dim1,
-                'dim2': dim2,
-                'tumor_pixels': tumor_pixels
-            })
 
     def __len__(self):
         return len(self.data)
 
+    def _load_image(self, row) -> tuple[np.ndarray, torch.Tensor]:
+        path = row.get("img_path")
+        if _missing(path):
+            raise ValueError("Mapping row has no img_path")
+
+        flag = cv2.IMREAD_GRAYSCALE if self.channels == 1 else cv2.IMREAD_COLOR
+        decoded = cv2.imread(str(Path(path)), flag)
+        if decoded is None:
+            raise FileNotFoundError(f"Image '{path}' referenced by the mapping could not be read")
+
+        if self.channels == 1:
+            image = torch.as_tensor(decoded, dtype=torch.float32).unsqueeze(0)
+        else:
+            # OpenCV decodes colour images as BGR; models and visualisation expect RGB.
+            decoded = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+            image = torch.as_tensor(np.ascontiguousarray(decoded.transpose(2, 0, 1)), dtype=torch.float32)
+        return decoded, image
+
+    def _load_mask(self, row, height: int, width: int) -> torch.Tensor:
+        path = row.get("mask_path")
+        if _missing(path):
+            return torch.zeros((1, height, width), dtype=torch.float32)
+
+        flag = cv2.IMREAD_COLOR if self.semantic_segmentation else cv2.IMREAD_GRAYSCALE
+        decoded = cv2.imread(str(Path(path)), flag)
+        if decoded is None:
+            raise FileNotFoundError(f"Mask '{path}' referenced by the mapping could not be read")
+
+        if self.semantic_segmentation:
+            return torch.as_tensor(np.ascontiguousarray(decoded.transpose(2, 0, 1)), dtype=torch.float32)
+
+        decoded = decoded.copy()
+        decoded[decoded == 255] = 1
+        return torch.as_tensor(decoded, dtype=torch.float32).unsqueeze(0)
+
+    def _label(self, row) -> tuple[torch.Tensor, str]:
+        class_name = row.get("class")
+        if _missing(class_name):
+            return torch.full((1,), -1.0, dtype=torch.float32), ""
+        if class_name not in self.class_to_index:
+            raise ValueError(
+                f"Unknown class {class_name!r}; configured class order is {self.classes}"
+            )
+        return torch.tensor([self.class_to_index[class_name]], dtype=torch.float32), str(class_name)
+
+    def _legacy_augmented_channels(self, decoded_image: np.ndarray) -> list[torch.Tensor]:
+        """Build the historical engineered grayscale channels (valid only for 1-channel input)."""
+        augmented = []
+        if self.CLAHE:
+            clahe = cv2.createCLAHE(clipLimit=5, tileGridSize=(4, 4))
+            augmented.append(torch.as_tensor(clahe.apply(decoded_image), dtype=torch.float32).unsqueeze(0))
+        if self.SOBEL:
+            augmented.append(torch.as_tensor(apply_SOBEL_filter(decoded_image), dtype=torch.float32).unsqueeze(0))
+        if self.brightness_brighter:
+            matrix = np.ones(decoded_image.shape, dtype="uint8") * 80
+            augmented.append(torch.as_tensor(cv2.add(decoded_image, matrix), dtype=torch.float32).unsqueeze(0))
+        if self.brightness_darker:
+            matrix = np.ones(decoded_image.shape, dtype="uint8") * 80
+            augmented.append(torch.as_tensor(cv2.subtract(decoded_image, matrix), dtype=torch.float32).unsqueeze(0))
+        if self.contrast_low:
+            matrix = np.ones(decoded_image.shape) * .02
+            low = np.uint8(cv2.multiply(np.float64(decoded_image), matrix))
+            augmented.append(torch.as_tensor(low, dtype=torch.float32).unsqueeze(0))
+        if self.contrast_high:
+            matrix = np.ones(decoded_image.shape) * 1.5
+            high = np.uint8(np.clip(cv2.multiply(np.float64(decoded_image), matrix), 0, 255))
+            augmented.append(torch.as_tensor(high, dtype=torch.float32).unsqueeze(0))
+        return augmented
+
     def __getitem__(self, idx):
-
         patient_info = self.data[idx]
-
-        # adding channel component is necessary
-        image = torch.unsqueeze(torch.as_tensor(patient_info['image'], dtype=torch.float32), 0)
-        mask = torch.as_tensor(patient_info['mask'], dtype=torch.float32)
-        if not self.semantic_segmentation:
-            mask = torch.unsqueeze(mask, 0)
+        decoded_image, image = self._load_image(patient_info)
+        mask = self._load_mask(patient_info, image.shape[-2], image.shape[-1])
+        label, class_name = self._label(patient_info)
 
         if self.normalization is not None:
             image = min_max_scaler(image)
 
-        # Augmentations
-        aumengs = []
+        augmented = []
         if self.augmentations and not self.semantic_segmentation:
+            augmented = self._legacy_augmented_channels(decoded_image)
 
-            if self.CLAHE:
-                clahe = cv2.createCLAHE(clipLimit=5, tileGridSize=(4, 4))
-                aumengs.append(torch.unsqueeze(torch.as_tensor(clahe.apply(patient_info['image']),
-                                                               dtype=torch.float32), 0))
-
-            if self.SOBEL:
-                aumengs.append(torch.unsqueeze(torch.as_tensor(apply_SOBEL_filter(patient_info['image']),
-                                                               dtype=torch.float32), 0))
-
-            if self.brightness_brighter:  # brightness
-                brightness_matrix = np.ones(patient_info['image'].shape, dtype='uint8') * 80
-                img_brighter = cv2.add(patient_info['image'], brightness_matrix)
-                aumengs.append(torch.unsqueeze(torch.as_tensor(img_brighter, dtype=torch.float32), 0))
-            if self.brightness_darker:  # brightness
-                brightness_matrix = np.ones(patient_info['image'].shape, dtype='uint8') * 80
-                img_darker = cv2.subtract(patient_info['image'], brightness_matrix)
-                aumengs.append(torch.unsqueeze(torch.as_tensor(img_darker, dtype=torch.float32), 0))
-
-            if self.contrast_low:  # contrast
-                matrix1 = np.ones(patient_info['image'].shape) * .02
-                img_low_contrast = np.uint8(cv2.multiply(np.float64(patient_info['image']), matrix1))
-                aumengs.append(torch.unsqueeze(torch.as_tensor(img_low_contrast, dtype=torch.float32), 0))
-            if self.contrast_high:  # contrast
-                matrix2 = np.ones(patient_info['image'].shape) * 1.5
-                img_high_contrast = np.uint8(np.clip(cv2.multiply(np.float64(patient_info['image']), matrix2), 0, 255))
-                aumengs.append(torch.unsqueeze(torch.as_tensor(img_high_contrast, dtype=torch.float32), 0))
-
-        # apply transformations without augmentations
-        if self.transforms is not None and not self.augmentations:
-            joined = self.transforms(torch.cat([mask, image], dim=0))
-            # joined, self.transforms_applied = apply_transformations(torch.cat([mask, image], dim=0), self.transforms)
-            if not self.semantic_segmentation:
-                mask = torch.unsqueeze(joined[0, :, :], 0)
-                image = torch.unsqueeze(joined[1, :, :], 0)
-            else:
-                mask = joined[0:-1, :, :]
-                image = torch.unsqueeze(joined[-1, :, :], 0)
-
-        # apply transformations with augmentations
-        if self.transforms is not None and self.augmentations and not self.semantic_segmentation:
-            joined = torch.cat([mask, image] + aumengs, dim=0)
+        # Concatenating supervision and every input channel makes torchvision's random geometric
+        # transform sample once and apply the identical geometry to mask, RGB and engineered
+        # channels.  Split by the actual channel counts rather than assuming a grayscale image.
+        if self.transforms is not None:
+            mask_channels = mask.shape[0]
+            joined = torch.cat([mask, image] + augmented, dim=0)
             joined = self.transforms(joined)
-            # joined, self.transforms_applied = apply_transformations(joined, self.transforms)
-            mask = torch.unsqueeze(joined[0, :, :], 0)
-            image = joined[1:, :, :]
-
-        # applying augmentation but not transformations
-        if self.transforms is None and self.augmentations and not self.semantic_segmentation:
-            image = torch.cat([image] + aumengs, dim=0)
-
-        # if self.normalization is not None:
-        #     # image = torch.cat([image, aug1], dim=0)
-        #     image = min_max_scaler(image)
+            mask = joined[:mask_channels]
+            image = joined[mask_channels:]
+        elif augmented:
+            image = torch.cat([image] + augmented, dim=0)
 
         return {
-            'patient_id': patient_info['patient_id'],
-            'label': patient_info['label'],
-            'class': patient_info['class_'],
-            'image': image,
-            'mask': mask,
-            'dim1': patient_info['dim1'],
-            'dim2': patient_info['dim2'],
-            'tumor_pixels': patient_info['tumor_pixels'],
-            # 'transforms_applied': self.transforms_applied
+            "patient_id": patient_info.get("id", -1),
+            "label": label,
+            "class": class_name,
+            "image": image,
+            "mask": mask,
+            "dim1": patient_info.get("dim1", image.shape[-2]),
+            "dim2": patient_info.get("dim2", image.shape[-1]),
+            "tumor_pixels": patient_info.get("tumor_pixels", float("nan")),
+            "dataset": patient_info.get("dataset", self.dataset) or self.dataset,
         }
 
 
 def testing_apply_transformations(image, transforms_sequential):
+    """Legacy helper retained for notebooks/tests that inspect sampled transforms."""
+    transforms_applied = {"horizontal_flip": False, "vertical_flip": False, "rotation": 0}
 
-    # This will store the transformations applied
-    transforms_applied = {'horizontal_flip': False, 'vertical_flip': False, 'rotation': 0}
-
-    # Random horizontal flips
-    if random.random() < transforms_sequential.get('horizontal_flip') != .0:
-        transforms_applied['horizontal_flip'] = True
+    if random.random() < transforms_sequential.get("horizontal_flip") != .0:
+        transforms_applied["horizontal_flip"] = True
         image = hflip(image)
 
-    # Random vertical flips
-    if random.random() < transforms_sequential.get('vertical_flip') != .0:
-        transforms_applied['vertical_flip'] = True
+    if random.random() < transforms_sequential.get("vertical_flip") != .0:
+        transforms_applied["vertical_flip"] = True
         image = vflip(image)
 
-    # Random rotations between 0-360 degrees
-    if random.random() < transforms_sequential.get('rotation'):
-        # angle = random.randint(0, 360)
+    if random.random() < transforms_sequential.get("rotation"):
         angle = int(np.random.choice(range(0, 360)))
-        transforms_applied['rotation'] = angle
+        transforms_applied["rotation"] = angle
         image = rotate(image, angle)
 
     return image, transforms_applied

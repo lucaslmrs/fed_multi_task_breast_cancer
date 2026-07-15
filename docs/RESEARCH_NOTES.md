@@ -15,8 +15,9 @@ experimental protocol and fairness controls, and (4) the results of the two comp
    only the **encoder** is federated (FedAvg), while each client keeps a **personalized head/decoder**
    that is never aggregated. The final artifact is **one shared encoder + N personalized heads**
    (a generalist feature extractor + task/site-specific heads), motivated by a future expansion to
-   **multiple, heterogeneous datasets per client**. That expansion is now designed (Curated BUSI +
-   ISIC 2018, cross-modality) in `docs/MULTI_DATASET_FEDERATION_PLAN.md` — approved, not yet built.
+   **multiple, heterogeneous datasets per client**. That expansion is now implemented (Curated BUSI
+   + ISIC 2018, cross-modality) as a shared `encoder2..bottleneck` trunk with personalized modality
+   stems; see `docs/MULTI_DATASET_FEDERATION_PLAN.md`.
 3. Quantify, under strictly controlled conditions, whether federation helps each participant by
    comparing three setups: **Local-only (floor)**, **Federated (FedPer, proposed)**, and
    **Centralized MTL (upper bound)**.
@@ -34,12 +35,12 @@ supervision (4 seg outputs), classification head fusing `encoder5`, `upsample(bo
 | Federated partition | `src/dataset/federated_partition.py` | image-level `StratifiedKFold` → per-task **Dirichlet(α)** partition → single **master CSV** (`fold, client_id, task, split`). `normal` dropped from seg clients; per-client val carved for early stopping. Deterministic/frozen. |
 | Model split | `src/federated/model_split.py` | shared = `encoder1..5` + `bottleneck` (federated); personalized = decoders, upsamples, outputs, classifier (local). |
 | Local trainer | `src/federated/local_trainer.py` | per-task local train/eval (seg → Dice, cls → Focal). |
-| Federated client | `src/federated/client.py` | Flower `NumPyClient`; persists personalized state + optimizer + `best.pt` to disk per client; resolves device per worker; **`standalone` toggle** (ignore the global encoder → local-only baseline through the same code path). |
+| Federated client | `src/federated/client.py` | Flower `NumPyClient`; persists personalized state + optimizer per client; paired deterministic worker seeds; **`standalone` toggle** (local-only baseline through the same code path). Final federated scoring combines the common last-round trunk with each latest personalized state. |
 | Federated server | `src/federated/server.py` | `FedAvg` subclass aggregating **only the encoder**, weighted by `num_examples × task_weight[task]`; logs mean val loss / best round. |
 | Federated orchestrator | `src/training_federated.py` | per-fold Flower simulation + per-client test via `unified_eval`. |
 | Centralized baseline | `src/training_centralized.py` | one MTL model trained from the **master CSV's** fold (unique images, `split != test`) — same folds, leak-free — evaluated on the same per-client test slices. |
 | Unified evaluation | `src/federated/unified_eval.py` | single shared evaluator used by **all** setups (comparable numbers); no prediction-refining; dumps cls per-image probabilities for pooled AUC. |
-| Analysis | `src/experiments/analyze.py` | summary, paired Wilcoxon, per-client deltas, pooled AUC, and a self-contained **HTML report** (boxplots per metric×setup, per-client delta bars, AUC bars). |
+| Analysis | `src/experiments/analyze.py` | summary, per-client deltas, exploratory paired Wilcoxon diagnostics, pooled AUC, and a self-contained **HTML report** (boxplots per metric×setup, per-client delta bars, AUC bars). |
 
 Framework: **Flower** (`flwr[simulation]==1.30`) + **FedAvg**, single-machine simulation.
 Key config (`federated:` in `config.yaml`): `n_clients_seg/cls`, `rounds`, `local_epochs`,
@@ -61,8 +62,11 @@ Key config (`federated:` in `config.yaml`): `n_clients_seg/cls`, `rounds`, `loca
 - **Local-only = federated pipeline with aggregation disabled** (`standalone: True`): identical
   partition, model, and training budget (`rounds × local_epochs` local epochs), differing only in
   whether the encoder is shared. This is the controlled "does federation help?" baseline.
-- **Variance source:** CV folds × clients (no extra seeds). Paired **Wilcoxon signed-rank** compares
-  federated vs local-only across (fold, client) pairs (n = 8 for 2+2, n = 16 for 4+4).
+- **Observed variation:** CV folds × clients (no extra seeds in these historical runs). Paired
+  **Wilcoxon signed-rank** was computed across (fold, client) pairs (n = 8 for 2+2, n = 16 for 4+4),
+  but these pairs are not independent because clients are synthetic partitions and CV training
+  folds overlap. The p-values below are retrospective exploratory diagnostics, not confirmatory
+  evidence of statistical significance.
 - **Metrics:** seg → Dice, IoU, Sensitivity, Specificity, Precision; cls → Accuracy, macro-F1,
   balanced accuracy, per-class precision/recall, OvR-macro **AUC** (per-slice, NaN when a class is
   absent, and **pooled** across clients per fold).
@@ -107,7 +111,7 @@ Key config (`federated:` in `config.yaml`): `n_clients_seg/cls`, `rounds`, `loca
 | IoU | 0.490 ± 0.025 | 0.498 ± 0.040 | −0.008 | 0.64 |
 | Sens / Spec / Prec | ~0.79 / 0.962 / 0.631 | ~0.80 / 0.961 / 0.626 | ≈ 0 | > 0.6 |
 
-Also significant: cls precision (malignant, class 1) +0.194, p = 0.039 ✓.
+Also observed: cls precision (malignant, class 1) +0.194, exploratory p = 0.039.
 
 ### 4.3 Experiment B — 4 seg + 4 cls clients (fed/local n = 16)
 
@@ -128,18 +132,19 @@ Also significant: cls precision (malignant, class 1) +0.194, p = 0.039 ✓.
 | Dice | 0.530 ± 0.045 | 0.521 ± 0.042 | +0.010 | 0.27 |
 | IoU | 0.401 ± 0.041 | 0.395 ± 0.038 | +0.007 | 0.46 |
 
-Also significant: cls recall (benign, class 0) +0.166, p = 0.0056 ✓.
+Also observed: cls recall (benign, class 0) +0.166, exploratory p = 0.0056.
 
 ---
 
 ## 5. Key findings (for the paper)
 
-1. **Federation helps classification, robustly for AUC.** Federated > Local-only on every cls metric
-   in both experiments, and **AUC is significant in both** (p = 0.008 at 2+2, p = 0.039 at 4+4).
+1. **Federation descriptively helps classification, including AUC.** Federated > Local-only on
+   every cls metric in both experiments; exploratory AUC p-values were 0.008 at 2+2 and 0.039 at
+   4+4, but the non-independent design does not support a confirmatory significance claim.
    Interpretation: the cls head is small and the encoder is the bottleneck, so sharing the encoder
    exposes each cls client to more diverse anatomy than its own shard.
-2. **Federation is neutral for segmentation.** No seg metric is significant in either experiment
-   (all p > 0.27); deltas are within ±0.01. Interpretation: the **personalized decoder dominates**
+2. **Federation is descriptively neutral for segmentation.** Deltas are within ±0.01 and all
+   exploratory p-values exceed 0.27. Interpretation: the **personalized decoder dominates**
    segmentation quality, so encoder sharing neither helps nor hurts — consistent with the FedPer
    premise that decoders are best kept local.
 3. **Centralized is a clear upper bound** on every metric (cls Acc 0.742, seg Dice 0.712), and the
@@ -152,10 +157,10 @@ Also significant: cls recall (benign, class 0) +0.166, p = 0.0056 ✓.
 5. **The minority `normal` class is the hardest** (low, high-variance class-2 precision/recall across
    all setups), and **federation improves its detection** (e.g., recall_class_2 0.31 → 0.47 at 2+2).
 
-**One-line story:** *A shared encoder with personalized heads (FedPer) recovers most of the
-classification gap to a centralized model — significantly improving AUC over training in isolation —
-while leaving segmentation essentially unchanged, because segmentation quality is governed by the
-personalized decoder.*
+**One-line descriptive story:** *A shared encoder with personalized heads (FedPer) recovers part of
+the classification gap to a centralized model, including higher observed AUC than training in
+isolation, while leaving segmentation essentially unchanged.* Confirmatory wording requires a new
+multi-seed or sample-level OOF analysis.
 
 ---
 
@@ -168,11 +173,12 @@ personalized decoder.*
 - The **centralized run is shared across both experiments** (see §3 box). Re-running a centralized
   model whose test slices exactly match the 2+2 partition would remove any residual doubt, though the
   aggregate is already over identical images.
-- Statistical power is modest (n = 8 / 16 pairs); trends consistent across both experiments lend
-  credibility, but **non-AUC cls gains are suggestive, not significant** (0.05 < p < 0.10 several
-  times) — consider more folds/seeds or more clients for tighter intervals.
-- `federated.patience` is currently **inert** (no server-side early termination); each client keeps
-  its own `best.pt`. Worth stating explicitly in the methods.
+- The larger problem is the inferential unit, not only power: the n = 8 / 16 client×fold pairs are
+  pseudoreplicated. Re-run independent seeds or use paired OOF sample-level inference before any
+  significance claim.
+- `federated.patience` is currently **inert** (no server-side early termination). The current
+  multi-dataset pipeline evaluates the common final global trunk + latest personalized state; the
+  historical numbers above predate that correction and must not be mixed with the new study.
 
 ## 7. Possible next experiments
 

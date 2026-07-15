@@ -1,154 +1,292 @@
-"""
-Flower client for the FedPer multi-task setup.
+"""Flower client for task- and dataset-personalized FedPer training."""
 
-Each client owns one task. Only the shared encoder travels to/from the server; the personalized
-head/decoder and the optimizer state are persisted to disk per client (Flower simulation clients
-are ephemeral, so we cannot keep them in memory between rounds). The client also keeps a ``best.pt``
-snapshot (full model) of the round with the lowest validation loss -- this is what the final test
-phase loads, giving us early-stopping semantics without terminating the Flower loop.
-"""
-
+import hashlib
 import logging
 from pathlib import Path
 
 import torch
+import yaml
 from flwr.client import NumPyClient
 from flwr.common import Context
 
-from src.dataset.federated_dataloader import build_client_loader
+from src.dataset.federated_dataloader import build_client_loader, resolve_class_weights
 from src.federated import local_trainer
-from src.federated.model_split import (get_personalized_state, get_shared_state,
-                                       set_personalized_state, set_shared_state)
-from src.utils.experiment_init import (init_criterion_classification, init_criterion_segmentation,
-                                       init_multitask_model, init_optimizer)
+from src.federated.config import dataset_config
+from src.federated.model_split import (
+    get_personalized_state,
+    get_shared_state,
+    set_personalized_state,
+    set_shared_state,
+)
+from src.utils.experiment_init import (
+    init_criterion_classification,
+    init_criterion_segmentation,
+    init_multitask_model,
+    init_optimizer,
+)
+from src.utils.miscellany import seed_everything
+
+
+def stable_client_seed(base_seed, fold, client_id, phase="initialization", server_round=0):
+    """Derive a process-independent seed shared by federated and local-only runs.
+
+    Python's built-in ``hash`` is deliberately randomized between processes, so use a stable
+    digest.  The setup name is intentionally absent: paired federated/local-only clients must
+    start identically and sample the same shuffles/geometric transforms in each round.
+    """
+    payload = f"{int(base_seed)}|{int(fold)}|{client_id}|{phase}|{int(server_round)}"
+    digest = hashlib.sha256(payload.encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big")
 
 
 def resolve_device(requested):
-    """Resolve the device INSIDE the worker. Ray hides the GPU from an actor that was given
-    ``num_gpus=0`` (CUDA_VISIBLE_DEVICES=""), so a fixed 'cuda' from the orchestrator would
-    crash here. We re-check availability in this process and fall back to CPU with a warning."""
+    """Resolve the device inside the Ray worker, where GPU visibility can differ."""
     if requested == "cpu":
         return "cpu"
     if torch.cuda.is_available():
         return "cuda"
     if requested == "cuda":
-        logging.warning("device='cuda' requested but no GPU is visible to this worker "
-                        "(set federated.client_resources.num_gpus > 0); falling back to CPU")
+        logging.warning(
+            "device='cuda' requested but no GPU is visible to this worker; falling back to CPU"
+        )
     return "cpu"
 
 
 class FederatedClient(NumPyClient):
-    def __init__(self, client_id, task, fold, config, device, partition_file, run_dir, standalone=False):
+    def __init__(self, client_id, dataset, task, fold, config, device, partition_file, run_dir,
+                 standalone=False):
         self.client_id = client_id
+        self.dataset = dataset
         self.task = task
         self.fold = fold
-        self.standalone = standalone  # True => local-only baseline: ignore the federated encoder
+        self.standalone = standalone
         self.device = resolve_device(device)
         self.config = config
-        self.num_classes = len(config["data"]["classes"])
+        self.data_cfg = dataset_config(config, dataset)
+        self.num_classes = len(self.data_cfg["classes"])
+        self.share_stem = config["federated"].get("share_stem", True)
         self.inversely_weighted = config["loss"]["inversely_weighted"]
         self.local_epochs = config["federated"]["local_epochs"]
+        self.base_seed = int(config["training"]["seed"])
+        self.cuda_benchmark = bool(config["training"].get("cuda_benchmark", False))
+        # Ray workers are separate processes.  Seed before constructing the model so local stems
+        # and heads are exactly paired between the federated and local-only arms.
+        self.initial_seed = stable_client_seed(self.base_seed, fold, client_id)
+        seed_everything(self.initial_seed, cuda_benchmark=self.cuda_benchmark)
 
-        n_aug = sum(v for v in config["data"]["augmentation"].values())
+        augmentations = self.data_cfg.get("augmentation", {})
+        n_aug = sum(bool(value) for value in augmentations.values())
         self.model = init_multitask_model(
             architecture=config["model"]["architecture"],
-            sequences=config["model"]["sequences"] + n_aug,
+            sequences=self.data_cfg["channels"] + n_aug,
             regions=1,
             n_classes=self.num_classes,
             width=config["model"]["width"],
             deep_supervision=config["model"]["deep_supervision"],
             save_folder=None,
         ).to(self.device)
-        self.optimizer = init_optimizer(self.model, config["optimizer"]["opt"], config["optimizer"]["lr"])
+        self.optimizer = init_optimizer(
+            self.model, config["optimizer"]["opt"], config["optimizer"]["lr"]
+        )
         self.seg_criterion = init_criterion_segmentation(config["loss"]["function"])
+
+        weighting_mode = self.data_cfg.get("class_weighting", "none")
+        self.class_weights = resolve_class_weights(
+            partition_file=partition_file,
+            fold=fold,
+            client_id=client_id,
+            dataset=dataset,
+            classes=self.data_cfg["classes"],
+            mode=weighting_mode,
+        ) if task == "cls" else None
         self.cls_criterion = init_criterion_classification(
             n_classes=self.num_classes,
-            classes_weighted=config["data"]["classes_weighted"],
+            classes_weighted=self.data_cfg.get("classes_weighted"),
+            class_weights=self.class_weights,
             classification_criterion=config["loss"]["classification_criterion"],
+            device=self.device,
         )
 
-        oversampling = config["federated"]["oversampling"][task]
-        transforms = _default_transforms()
-        common = dict(partition_file=partition_file, fold=fold, client_id=client_id,
-                      batch_size=config["data"]["batch_size"], augmentations=config["data"]["augmentation"])
-        self.train_loader = build_client_loader(split="train", transforms=transforms,
-                                                oversampling=oversampling, **common)
-        self.val_loader = build_client_loader(split="val", **common)
+        oversampling_cfg = self.data_cfg.get("oversampling")
+        if not isinstance(oversampling_cfg, dict):
+            # In the legacy data block this key is a single bool; federated per-task overrides
+            # remain authoritative when present.
+            oversampling_cfg = config["federated"].get(
+                "oversampling", {"seg": bool(oversampling_cfg), "cls": bool(oversampling_cfg)}
+            )
+        oversampling = bool(oversampling_cfg.get(task, False))
+        common = dict(
+            partition_file=partition_file,
+            fold=fold,
+            client_id=client_id,
+            dataset=dataset,
+            channels=self.data_cfg["channels"],
+            classes=self.data_cfg["classes"],
+            batch_size=self.data_cfg["batch_size"],
+            max_samples=config["federated"].get("max_samples_per_split"),
+        )
+        self.train_loader = build_client_loader(
+            split="train",
+            transforms=_default_transforms(self.data_cfg.get("transforms", {})),
+            augmentations=augmentations,
+            oversampling=oversampling,
+            **common,
+        )
+        self.val_loader = build_client_loader(
+            split="val", augmentations=None, oversampling=False, **common
+        )
         self.n_train = len(self.train_loader.dataset)
 
         self.state_dir = Path(run_dir) / f"fold_{fold}" / f"client_{client_id}"
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.state_dir / "state.pt"
         self.best_path = self.state_dir / "best.pt"
+        self._write_metadata(weighting_mode)
 
-    # ---- local state persistence (personalized head; full model in standalone) ----------
+    def _write_metadata(self, weighting_mode):
+        weights = self.class_weights
+        if hasattr(weights, "detach"):
+            weights = weights.detach().cpu().tolist()
+        elif hasattr(weights, "tolist"):
+            weights = weights.tolist()
+        metadata = {
+            "client_id": self.client_id,
+            "dataset": self.dataset,
+            "task": self.task,
+            "class_names": list(self.data_cfg["classes"]),
+            "class_weighting": weighting_mode,
+            "class_weights": weights,
+            "channels": self.data_cfg["channels"],
+            "share_stem": self.share_stem,
+            "initial_seed": self.initial_seed,
+            "round_seed_policy": "sha256(training.seed, fold, client_id, phase, round)",
+            "final_checkpoint_policy": (
+                "last_round_local_full_model"
+                if self.standalone
+                else "last_round_global_shared_plus_latest_personalized"
+            ),
+            "best_checkpoint_scope": "local_post_fit_diagnostic_not_final",
+        }
+        with (self.state_dir / "metadata.yaml").open("w", encoding="utf-8") as stream:
+            yaml.safe_dump(metadata, stream, sort_keys=False)
+
+    # ---- local state persistence ----------------------------------------------------------
     def _load_state(self):
         best_val = float("inf")
         if self.state_path.exists():
-            st = torch.load(self.state_path, map_location=self.device)
+            state = torch.load(self.state_path, map_location=self.device)
             if self.standalone:
-                self.model.load_state_dict(st["model"])  # encoder is kept locally too
+                self.model.load_state_dict(state["model"])
             else:
-                set_personalized_state(self.model, st["personalized"])
-            self.optimizer.load_state_dict(st["optimizer"])
-            best_val = st["best_val"]
+                set_personalized_state(
+                    self.model, state["personalized"], share_stem=self.share_stem
+                )
+            self.optimizer.load_state_dict(state["optimizer"])
+            best_val = state["best_val"]
         return best_val
 
-    def _save_state(self, best_val):
-        payload = {"optimizer": self.optimizer.state_dict(), "best_val": best_val}
+    def _save_state(self, best_val, server_round):
+        payload = {
+            "optimizer": self.optimizer.state_dict(),
+            "best_val": best_val,
+            "round": int(server_round),
+        }
         if self.standalone:
             payload["model"] = self.model.state_dict()
         else:
-            payload["personalized"] = get_personalized_state(self.model)
+            payload["personalized"] = get_personalized_state(
+                self.model, share_stem=self.share_stem
+            )
         torch.save(payload, self.state_path)
 
-    # ---- Flower API ---------------------------------------------------------------------
+    # ---- Flower API -----------------------------------------------------------------------
     def get_parameters(self, config):
-        return get_shared_state(self.model)
+        return get_shared_state(self.model, share_stem=self.share_stem)
 
     def fit(self, parameters, config):
-        if not self.standalone:
-            set_shared_state(self.model, parameters)  # receive the federated encoder
+        server_round = int(config.get("server_round", 0))
+        seed_everything(
+            stable_client_seed(
+                self.base_seed, self.fold, self.client_id, phase="fit", server_round=server_round
+            ),
+            cuda_benchmark=self.cuda_benchmark,
+        )
+
+        has_local_state = self.state_path.exists()
         best_val = self._load_state()
+        # Both arms receive the exact same initial shared trunk.  On later rounds the standalone
+        # arm resumes its own full model, whereas federated clients accept the new global trunk.
+        if not self.standalone or not has_local_state:
+            set_shared_state(self.model, parameters, share_stem=self.share_stem)
 
         local_trainer.train_local(
             self.model, self.train_loader, self.optimizer, self.task, self.device,
             self.local_epochs, self.num_classes, self.seg_criterion, self.cls_criterion,
-            self.inversely_weighted)
+            self.inversely_weighted,
+        )
         val = local_trainer.evaluate_local(
             self.model, self.val_loader, self.task, self.device, self.num_classes,
-            self.seg_criterion, self.cls_criterion, self.inversely_weighted)
+            self.seg_criterion, self.cls_criterion, self.inversely_weighted,
+        )
 
         if val["loss"] < best_val:
             best_val = val["loss"]
-            torch.save({"model_state": self.model.state_dict(), "val_loss": best_val}, self.best_path)
+            torch.save(
+                {
+                    "model_state": self.model.state_dict(),
+                    "val_loss": best_val,
+                    "round": server_round,
+                    "scope": "local_post_fit_diagnostic_not_final",
+                },
+                self.best_path,
+            )
 
-        self._save_state(best_val)
-        metrics = {"task": self.task, "client_id": self.client_id,
-                   "val_loss": float(val["loss"]), "val_metric": float(val["metric"])}
-        return get_shared_state(self.model), self.n_train, metrics
+        self._save_state(best_val, server_round)
+        metrics = {
+            "dataset": self.dataset,
+            "task": self.task,
+            "client_id": self.client_id,
+            "val_loss": float(val["loss"]),
+            "val_metric": float(val["metric"]),
+        }
+        return get_shared_state(self.model, self.share_stem), self.n_train, metrics
 
     def evaluate(self, parameters, config):
-        if not self.standalone:
-            set_shared_state(self.model, parameters)
         self._load_state()
+        if not self.standalone:
+            set_shared_state(self.model, parameters, share_stem=self.share_stem)
         val = local_trainer.evaluate_local(
             self.model, self.val_loader, self.task, self.device, self.num_classes,
-            self.seg_criterion, self.cls_criterion, self.inversely_weighted)
-        metrics = {"task": self.task, "client_id": self.client_id, "val_metric": float(val["metric"])}
+            self.seg_criterion, self.cls_criterion, self.inversely_weighted,
+        )
+        metrics = {
+            "dataset": self.dataset,
+            "task": self.task,
+            "client_id": self.client_id,
+            "val_metric": float(val["metric"]),
+        }
         return float(val["loss"]), val["n"], metrics
 
 
-def _default_transforms():
-    from torchvision.transforms import RandomHorizontalFlip, RandomVerticalFlip, RandomRotation
-    return torch.nn.Sequential(RandomHorizontalFlip(p=0.5), RandomVerticalFlip(p=0.5), RandomRotation(degrees=360))
+def _default_transforms(settings=None):
+    from torchvision.transforms import RandomHorizontalFlip, RandomRotation, RandomVerticalFlip
+
+    settings = settings or {}
+    return torch.nn.Sequential(
+        RandomHorizontalFlip(p=float(settings.get("horizontal_flip", 0.5))),
+        RandomVerticalFlip(p=float(settings.get("vertical_flip", 0.5))),
+        RandomRotation(degrees=360),
+    )
 
 
 def build_client_fn(config, device, partition_file, run_dir, roster, fold, standalone=False):
-    """Return a Flower ``client_fn(context)`` mapping the partition id to a roster entry."""
+    """Return a Flower ``client_fn`` mapping partition id to (client, dataset, task)."""
     def client_fn(context: Context):
         cid = int(context.node_config.get("partition-id", context.node_id))
-        client_id, task = roster[cid]
-        client = FederatedClient(client_id, task, fold, config, device, partition_file, run_dir, standalone)
+        client_id, dataset, task = roster[cid]
+        client = FederatedClient(
+            client_id, dataset, task, fold, config, device, partition_file, run_dir, standalone
+        )
         return client.to_client()
+
     return client_fn

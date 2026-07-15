@@ -59,17 +59,56 @@ data:
     vertical_flip: .5
     rotation: 1.0
 
+# Registry consumed by the multi-dataset federated pipeline.  The legacy ``data`` block above
+# remains the source of truth for preprocessing, EDA and single-dataset training.
+datasets:
+  Curated_BUSI:
+    variant: processed_128
+    channels: 1
+    classes: [benign, malignant, normal]
+    seg_exclude_classes: [normal]
+    fold_strategy: stratified       # one image-level fold shared by seg and cls
+    class_weighting: none
+    oversampling:
+      seg: False
+      cls: True
+  ISIC_2018:
+    variant: processed_128
+    channels: 3
+    classes: [AKIEC, BCC, BKL, DF, MEL, NV, VASC]
+    seg_exclude_classes: []
+    fold_strategy: per_task         # KFold for seg; grouped/stratified folds for cls
+    cls_source_split: train         # only this official split has complete lesion_id metadata
+    class_weighting: balanced_fold
+    oversampling:
+      seg: False
+      cls: False
+
 federated:  # FedPer: shared encoder is federated, heads stay personalized per client
+  datasets: [Curated_BUSI, ISIC_2018]
+  share_stem: False           # heterogeneous 1ch/3ch stems stay personalized
+  n_clients:
+    Curated_BUSI: {seg: 2, cls: 2}
+    ISIC_2018: {seg: 2, cls: 2}
+  partition_file: data/federated_multi/federated_mapping.csv
   n_clients_seg: 2
   n_clients_cls: 2
   rounds: 50
   local_epochs: 2
   dirichlet_alpha: 100.0   # high alpha ~ IID; lower it to simulate non-IID
   val_size: 0.2            # carved from each client's train pool for early stopping
-  patience: 10             # não faz nada atualmente. O best.pt que deve ser utilizado
-  task_weights:            # extra weight per task when aggregating the shared encoder
+  patience: 10             # reservado; avaliação final usa a última rodada em ambos os braços
+  task_weights:            # legacy alias used by the single-dataset pipeline
     seg: 4.0
     cls: 1.0
+  aggregation:
+    mode: hierarchical     # normalize within dataset, then combine datasets by configured weight
+    task_weights:
+      seg: 4.0
+      cls: 1.0
+    dataset_weights:
+      Curated_BUSI: 1.0
+      ISIC_2018: 1.0
   oversampling:            # per-task override of data.oversampling
     seg: False
     cls: True

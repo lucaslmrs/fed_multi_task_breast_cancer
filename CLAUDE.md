@@ -22,8 +22,10 @@ python -m src.training_segmentation_prod
 python -m src.training_classification_prod
 
 # Federated (FedPer) training — see "Federated training" section below
-python -m src.dataset.federated_partition   # build the master partition CSV (run first)
+python -m src.dataset.federated_partition   # build data/federated_multi/federated_mapping.csv
+python -m src.dataset.federated_partition --legacy  # only to reproduce frozen single-dataset BUSI
 python -m src.training_federated            # run the federated simulation
+python -m scripts.smoke_federated --setup both  # paired 2-round CPU end-to-end validation
 
 # Comparison experiment (Federated vs Local-only vs Centralized) — see section below
 python -m src.training_federated            # federated  (federated.standalone: False)
@@ -156,37 +158,56 @@ cls); the same image may be used by clients of different tasks, but train/test s
 
 ### Pipeline
 
-1. `src/dataset/federated_partition.py` — splits the curated dataset at the image level with
+The default federated configuration is multi-dataset: Curated BUSI (1-channel ultrasound) and
+ISIC 2018 (3-channel dermoscopy). `encoder1` is a personalized modality stem; the shared trunk is
+`encoder2..5 + bottleneck`. Set `share_stem: True` only for compatible single-dataset experiments.
+
+1. `src/dataset/federated_partition.py` — builds a separate multi-dataset master. BUSI uses the
+   historical image-level stratified folds. ISIC segmentation uses KFold; ISIC classification uses
+   grouped stratified folds, group-preserving client allocation, and group-preserving train/val, so
+   a `lesion_id` never crosses a client or split. The `--legacy` CLI retains exact BUSI reproduction.
+   The original single-dataset design splits the curated dataset at the image level with
    `StratifiedKFold`, then partitions each fold's train pool across the clients of each task using a
    **Dirichlet(α)** distribution (high α ≈ IID). Writes a single **master CSV**
    (`data/<dataset>/federated/federated_mapping.csv`) with columns `fold, client_id, task, split`. The
    classes in `data.seg_exclude_classes` are dropped from segmentation clients; a validation slice is
    carved per client for early stopping.
-2. `src/dataset/federated_dataloader.py` — filters the master CSV into the existing `BUSI` dataset
-   (per-task oversampling), no change to the dataset itself.
-3. `src/federated/model_split.py` — splits MTnnUNet into the **shared** block (`encoder1..5` +
-   `bottleneck`, federated) vs the **personalized** block (decoders, upsamples, outputs, classifier — local).
+2. `src/dataset/federated_dataloader.py` — filters the master CSV into the lazy, channel-aware
+   `BUSI` compatibility dataset, applies per-task oversampling, and resolves fold/local class weights.
+3. `src/federated/model_split.py` — splits MTnnUNet into the shared trunk (`encoder2..5` +
+   `bottleneck`) vs personalized stem/decoders/outputs/classifier. Legacy `share_stem=True` also
+   federates `encoder1`.
 4. `src/federated/local_trainer.py` — per-task local train/eval (seg → Dice only, cls → Focal only).
-5. `src/federated/client.py` — Flower `NumPyClient`; persists the personalized state + optimizer and a
-   `best.pt` snapshot (lowest own val loss) **to disk per client** (simulation clients are ephemeral).
+5. `src/federated/client.py` — Flower `NumPyClient`; persists the latest personalized state +
+   optimizer **to disk per client** (simulation clients are ephemeral). Stable worker seeds pair
+   model initialization, shuffling, and transforms between federated and local-only runs. A
+   `best.pt` local post-fit snapshot remains diagnostic and is not the final federated artifact.
    Resolves its device per worker (falls back to CPU if the worker has no GPU).
-6. `src/federated/server.py` — `FedAvg` subclass aggregating **only the encoder**, weighted by
-   `num_examples × task_weight[task]`; logs mean val loss and best round.
-7. `src/training_federated.py` — per-fold orchestrator: runs `flwr` simulation, then evaluates each
-   client's `best.pt` on its own held-out test split. Saves `federated_test_results.csv` (per
-   client × fold) and `federated_summary.csv` (per task) under `runs/{ts}_FEDPER_*/`.
+6. `src/federated/server.py` — `hierarchical` mode normalizes
+   `num_examples × task_weight[task]` within each dataset and then applies `dataset_weights`;
+   `flat` mode is the sample-weighted ablation. Logs effective dataset/task participation.
+7. `src/training_federated.py` — per-fold orchestrator: validates shared shapes before Flower, runs
+   the simulation, persists `global_shared.pt`, and evaluates every federated client with the same
+   final global trunk plus its latest personalized state. Local-only evaluates each latest full
+   local model at the identical round budget. Saves `{setup}_test_results.csv` and
+   `{setup}_cls_predictions.csv` under the timestamped run directory.
 
-The final artifact is **one shared encoder + N personalized heads** (not a single global model).
-Server-side early stopping is logged but not enforced; each client keeps its own best snapshot.
+The final artifact is **one shared trunk + N personalized stems/heads** (not a single global model).
+Server-side early stopping is diagnostic only; final comparison uses the same configured last-round
+budget in both arms.
 
 ### Key federated config (`federated:` section)
 
 | Key | Effect |
 |---|---|
-| `n_clients_seg` / `n_clients_cls` | Number of clients per task |
+| `datasets` / `n_clients.<dataset>` | Active datasets and clients per dataset/task |
+| `share_stem` | Federate the input stem; must be false for mixed 1ch/3ch runs |
+| `aggregation.mode` | `hierarchical` (main) or `flat` (FedAvg-style ablation) |
+| `aggregation.dataset_weights` | Dataset-level mixture weights; 1:1 gives exact 50/50 participation |
+| `datasets.<name>.class_weighting` | `none`, `balanced_fold` (main), or `balanced_local` |
 | `rounds` / `local_epochs` | Federated rounds × local epochs per round |
 | `dirichlet_alpha` | Train partition skew (high = IID, low = non-IID) |
-| `task_weights.{seg,cls}` | Extra per-task weight when aggregating the shared encoder |
+| `aggregation.task_weights.{seg,cls}` | Per-task weight inside each dataset aggregate |
 | `oversampling.{seg,cls}` | Per-task override of `data.oversampling` |
 | `device` | `auto` / `cpu` / `cuda` (resolved per worker) |
 | `client_resources.num_gpus` | `>0` lets a client use the GPU; `1.0` = 1 client/GPU (sequential) |
@@ -199,31 +220,35 @@ Server-side early stopping is logged but not enforced; each client keeps its own
 - Running clients in parallel can exhaust system RAM (and GPU memory); keep `ray_num_cpus` /
   `client_resources` conservative. The defaults run one client at a time.
 
-## Comparison experiment (Federated vs Local-only vs Centralized)
+## Comparison experiment
 
-Compares three setups on the SAME frozen partition (`src/federated/unified_eval.py` is the single
-shared evaluator, so the numbers are directly comparable):
+The original BUSI-only study compares three setups. The multi-dataset study intentionally compares
+only Federated vs Local-only on the same master; centralized MTL is out of scope because no ISIC row
+contains both mask and diagnosis. `unified_eval.py` remains the shared scorer.
 
 | Setup | Role | How to run |
 |---|---|---|
 | **Local-only** per client | controlled baseline (floor) | `training_federated.py` with `federated.standalone: True` (clients ignore the federated encoder) |
 | **Federated (FedPer)** | the proposed method | `training_federated.py` with `federated.standalone: False` |
-| **Centralized MTL** | upper bound | `training_centralized.py` (trains one MTL model from the master CSV's fold, same per-client test slices) |
+| **Centralized MTL** | BUSI-only upper bound | Not valid for the multi-dataset ISIC experiment |
 
 Each setup writes its own `{setup}_test_results.csv` (+ `{setup}_cls_predictions.csv`) under its run dir.
 
-**Fairness controls (baked in):** all setups resolve the partition through the same
-`paths.require_partition_file()` and ERROR if it is missing (generate it ONCE with
-`federated_partition`, then freeze it). Prediction-refining is OFF
-(`unified_eval` never applies it) and `normal` is absent from seg test slices, so seg Dice is comparable.
-The centralized model is trained from the master CSV's fold (unique images, `split != test`) to keep
-folds identical and leak-free, and evaluated on the same per-client test slices.
+**Fairness controls (baked in):** federated and local-only resolve the same configured master and
+error if it is missing (generate it once with `federated_partition`, then freeze it). They receive
+the same initial shared trunk and deterministic per-client/fold/round seeds; therefore local stems,
+heads, batch shuffles, and geometric transforms are paired across arms.
+Prediction-refining is OFF
+(`unified_eval` never applies it) and `normal` is absent from BUSI seg test slices. In the legacy
+BUSI-only experiment, the centralized model is trained/evaluated on the same frozen folds; this
+centralized path is not used for the multi-dataset study.
 
 **Metrics:** seg → Dice, IoU, Sensitivity, Specificity, Precision; cls → Accuracy, macro-F1,
-balanced accuracy, per-class precision/recall, OvR-macro AUC (NaN per slice when a class is absent).
+balanced accuracy, dynamic per-class precision/recall, OvR-macro AUC. All outputs and analysis are
+isolated by `dataset`; 3-class BUSI probabilities are never mixed with 7-class ISIC probabilities.
 
-**Analysis:** `src/experiments/analyze.py` reads the three results CSVs (and prediction CSVs) and writes
-`summary_per_task_setup.csv` (mean±std per task×setup), `federated_vs_local_wilcoxon.csv` (paired
-Wilcoxon + mean/median deltas), `per_client_deltas.csv` (federated − local per client, primary metric),
-and `pooled_auc.csv` (AUC pooled across clients per setup×fold). No extra seeds; CV folds are the
-variance source.
+**Analysis:** `src/experiments/analyze.py` accepts two or three result/prediction sets and writes
+dataset-isolated summaries, per-client deltas, pooled AUC, exploratory paired Wilcoxon diagnostics,
+and `report.html`. Client × CV-fold pairs are not independent inferential replicates, so their
+p-values must not support confirmatory significance claims; use independent seeds or paired OOF
+sample-level inference for that purpose.
