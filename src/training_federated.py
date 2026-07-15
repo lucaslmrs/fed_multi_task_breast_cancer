@@ -22,6 +22,7 @@ from flwr.common import ndarrays_to_parameters
 from flwr.server import ServerConfig
 from flwr.simulation import start_simulation
 
+from src.dataset import paths
 from src.dataset.federated_dataloader import build_client_loader, list_clients
 from src.federated import unified_eval
 from src.federated.client import build_client_fn
@@ -98,11 +99,7 @@ def run(config_path="./src/config.yaml"):
 
     # The master partition CSV must be generated ONCE and frozen so every setup shares identical
     # splits. Fail loudly instead of silently regenerating (which would invalidate comparisons).
-    partition_file = fed["partition_file"]
-    if not Path(partition_file).exists():
-        raise FileNotFoundError(
-            f"Partition file '{partition_file}' not found. Generate it once with "
-            f"`python -m src.dataset.federated_partition` so all setups share identical splits.")
+    partition_file = paths.require_partition_file(data_cfg)
 
     roster = [(r.client_id, r.task) for r in list_clients(partition_file).itertuples()]
     num_clients = len(roster)

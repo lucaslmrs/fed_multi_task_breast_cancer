@@ -6,6 +6,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from torch.utils.data import DataLoader
 
+from src.dataset import paths
 from src.dataset.BUSI_dataset import BUSI
 
 warnings.filterwarnings("ignore")
@@ -353,7 +354,7 @@ def load_datasets(config_training, config_data, transforms, mode='CV'):
                                                                       classes=config_data['classes'],
                                                                       oversampling=config_data['oversampling'],
                                                                       use_duplicated_to_train=config_data['use_duplicated_to_train'],
-                                                                      path_images=config_data['input_img'])
+                                                                      path_images=paths.processed_dir(config_data))
         return train_loaders, val_loaders, test_loaders
     if mode == 'CV_PROD':
         train_loaders, test_loaders = BUSI_dataloader_CV_prod(seed=config_training['seed'],
@@ -366,7 +367,7 @@ def load_datasets(config_training, config_data, transforms, mode='CV'):
                                                               normalization=None,
                                                               classes=config_data['classes'],
                                                               oversampling=config_data['oversampling'],
-                                                              path_images=config_data['input_img'])
+                                                              path_images=paths.processed_dir(config_data))
         return train_loaders, test_loaders
     if mode == 'UCLM':
         dataloader = UCLM_dataloader(batch_size=1,

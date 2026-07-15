@@ -10,7 +10,8 @@ Design (approved):
     2. Each client owns exactly ONE task (``seg`` or ``cls``). The same image may therefore
        be used by a seg client AND a cls client (different tasks), but never crosses the
        train/test boundary within a fold.
-    3. ``normal`` cases are removed from the seg task (empty masks add nothing) and kept for cls.
+    3. Classes listed in ``data.seg_exclude_classes`` (``normal`` for BUSI) are removed from the
+       seg task -- their masks are empty and add nothing -- and kept for cls.
     4. TRAIN images are spread across the clients of a task with a label-distribution
        Dirichlet(alpha) partition (high alpha ~ IID). A validation slice is then carved from
        each client's train pool for server-side early stopping.
@@ -27,6 +28,8 @@ import numpy as np
 import pandas as pd
 import yaml
 from sklearn.model_selection import StratifiedKFold, train_test_split
+
+from src.dataset import paths
 
 CLASS_COL = "class"
 
@@ -100,7 +103,9 @@ def build_federated_partition(
     n_clients_cls: int,
     dirichlet_alpha: float,
     val_size: float = 0.2,
+    seg_exclude_classes: list = None,
 ) -> pd.DataFrame:
+    seg_exclude_classes = seg_exclude_classes or []
     if n_folds < 2:
         raise ValueError(f"This partitioning needs CV >= 2 folds, got {n_folds}. "
                          f"Set 'training.CV' to 2 or more in config.yaml.")
@@ -122,9 +127,9 @@ def build_federated_partition(
         for task, n_clients in tasks:
             train_task = train_pool.copy()
             test_task = test_pool.copy()
-            if task == "seg":  # normal cases have empty masks -> not useful for segmentation
-                train_task = train_task[train_task[CLASS_COL] != "normal"]
-                test_task = test_task[test_task[CLASS_COL] != "normal"]
+            if task == "seg":  # these classes have empty masks -> not useful for segmentation
+                train_task = train_task[~train_task[CLASS_COL].isin(seg_exclude_classes)]
+                test_task = test_task[~test_task[CLASS_COL].isin(seg_exclude_classes)]
 
             client_train = dirichlet_partition(train_task.reset_index(drop=True),
                                                n_clients, dirichlet_alpha, fold_seed)
@@ -166,12 +171,13 @@ if __name__ == "__main__":
     data_cfg, train_cfg, fed_cfg = config["data"], config["training"], config["federated"]
 
     build_federated_partition(
-        mapping_path=f"{data_cfg['input_img']}/mapping.csv",
-        output_path=fed_cfg["partition_file"],
+        mapping_path=paths.require_mapping_file(data_cfg),
+        output_path=paths.partition_file(data_cfg),
         n_folds=train_cfg["CV"],
         seed=train_cfg["seed"],
         n_clients_seg=fed_cfg["n_clients_seg"],
         n_clients_cls=fed_cfg["n_clients_cls"],
         dirichlet_alpha=fed_cfg["dirichlet_alpha"],
         val_size=fed_cfg["val_size"],
+        seg_exclude_classes=data_cfg.get("seg_exclude_classes", []),
     )

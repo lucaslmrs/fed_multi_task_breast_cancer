@@ -17,7 +17,7 @@ You are a data preprocessing specialist for the `multi_task_breast_cancer` repos
 
 ## Constraints
 
-- DO NOT run `python -m src.dataset.Curated_BUSI_preprocessing` directly without first checking that `data/Dataset_BUSI_with_GT/` exists and is populated.
+- DO NOT run `python -m src.dataset.Curated_BUSI_preprocessing` directly without first checking that the selected dataset's `raw/` folder (e.g. `data/Curated_BUSI/raw/`) exists and is populated.
 - DO NOT modify `src/dataset/Curated_BUSI_preprocessing.py` unless the user explicitly requests it.
 - DO NOT skip validation steps — always check paths and imports before executing cells.
 - ONLY create notebooks in the `scripts/` directory.
@@ -28,17 +28,17 @@ You are a data preprocessing specialist for the `multi_task_breast_cancer` repos
 
 - Read `README.md` to extract the full execution pipeline.
 - Read `src/dataset/Curated_BUSI_preprocessing.py` to identify:
-  - Configurable constants (`ROOT_DATA`, `INPUT_FOLDER`, `CURATED`, `RESIZE_DIMENSIONS`, etc.)
-  - Expected input structure (`data/Dataset_BUSI_with_GT/{benign,malignant,normal}/`)
-  - Expected outputs (`data/Curated_BUSI_128/images/`, `data/Curated_BUSI_128/masks/`, `mapping.csv`)
+  - Script constants (`CURATED`, `RESIZE_DIMENSIONS`, `CONFIG_FILE`) — paths and classes come from `src/config.yaml` and are resolved by `src/dataset/paths.py`
+  - Expected input structure (`data/<dataset>/raw/{benign,malignant,normal}/`)
+  - Expected outputs (`data/<dataset>/<variant>/images/`, `.../masks/`, `mapping.csv`)
   - Potential failure points (missing directories, missing PNG files, bad CSV format)
 
 ### 2. Validate Environment
 
 Check in order:
-1. Python packages: `numpy`, `pandas`, `cv2`, `pathlib` — run `pip list` or `uv pip list`.
-2. Data directory: `data/Dataset_BUSI_with_GT/` must exist and contain class subfolders with `.png` files.
-3. Curated mapping: if `CURATED=True`, `data/mapping_curated_BUSI.csv` must exist and have columns `class` and `id`.
+1. Python packages: `numpy`, `pandas`, `cv2`, `yaml`, `pathlib` — run `pip list` or `uv pip list`.
+2. Data directory: `data/<dataset>/raw/` must exist and contain class subfolders with `.png` files, where `<dataset>` is `data.dataset` in `src/config.yaml`.
+3. Curation list: if `CURATED=True`, `data/<dataset>/curation_list.csv` must exist and have columns `class` and `id` (semicolon-separated).
 4. Write permissions on `data/` (output directories will be created by the script).
 
 ### 3. Create Notebook

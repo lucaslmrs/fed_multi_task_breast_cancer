@@ -5,8 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Preprocess BUSI dataset (set CURATED=True in script for curated version)
-python -m src.dataset.Curated_BUSI_preprocessing
+# Preprocess a dataset -> data/<dataset>/<variant>/. Each script refuses to run unless
+# `data.dataset` in config.yaml names the dataset it handles (it would otherwise overwrite
+# another dataset's variant), so set that first.
+python -m src.dataset.Curated_BUSI_preprocessing   # data.dataset: Curated_BUSI
+python -m src.dataset.ISIC_2018_preprocessing      # data.dataset: ISIC_2018
 
 # Train (CV must be ≥ 2 in config.yaml)
 python -m src.training_multitask      # segmentation + classification
@@ -35,11 +38,61 @@ All hyperparameters are controlled by `src/config.yaml`. The run creates a times
 
 The project is a multi-task learning framework for simultaneous breast tumor **segmentation** and **classification** in 2D ultrasound images (128×128, grayscale).
 
+### Dataset layout (multi-dataset)
+
+Each dataset owns one folder under `data/` and follows the SAME internal convention, so no code
+hardcodes a dataset path — switching datasets is a one-line change to `data.dataset` in config.yaml:
+
+```
+data/<dataset>/
+  raw/           # original download, extracted (only the preprocessing script reads it)
+  archives/      # original .zip archives
+  <variant>/     # preprocessed images/, masks/, mapping.csv   <- what training reads
+  federated/     # federated_mapping.csv, the frozen master partition
+```
+
+Currently present: `data/Curated_BUSI/` and `data/ISIC_2018/`, both with a `processed_128` variant.
+The variant's resolution comes from `data.image_size`; the preprocessing refuses to write a
+different size into an existing variant.
+
+**All dataset paths are derived in `src/dataset/paths.py` from `data.root`/`data.dataset`/`data.variant`.**
+Never rebuild these paths by hand — call `paths.processed_dir()`, `paths.mapping_file()`,
+`paths.partition_file()`. Deriving rather than storing them is what guarantees every setup
+(federated / standalone / centralized) reads the same partition, which the comparison relies on.
+
 ### Data pipeline
 
-- Raw BUSI dataset (`data/Dataset_BUSI_with_GT/`) is preprocessed by `src/dataset/Curated_BUSI_preprocessing.py`: images are resized to 128×128, multiple masks are merged, and a `mapping.csv` index is generated.
-- The curated dataset (`data/Curated_BUSI_128/`) contains 450 images (222 benign, 164 malignant, 64 normal) after duplicate removal via SSIM.
+Each dataset has its OWN preprocessing script (the raw layouts have nothing in common); whatever is
+genuinely shared lives in `src/dataset/preprocessing_utils.py` (mask statistics, the mapping metadata
+columns, resize helpers, the guards). All of them emit the same contract: `<variant>/{images,masks,mapping.csv}`.
+
+- **Curated BUSI** — `src/dataset/Curated_BUSI_preprocessing.py`. Raw at `data/Curated_BUSI/raw/`; images resized to `data.image_size`, multiple masks merged, `mapping.csv` generated. `CURATED` filters through `data/Curated_BUSI/curation_list.csv`, leaving 450 images (222 benign, 164 malignant, 64 normal) after SSIM duplicate removal. It resizes with `INTER_NEAREST` — **do not "fix" this to INTER_AREA**: it would change the curated images and invalidate the frozen federated partition and every result derived from it.
+- **ISIC 2018** — `src/dataset/ISIC_2018_preprocessing.py`. Ingests BOTH challenge tasks into one mapping: Task 1 (3,694 images with masks) and Task 3/HAM10000 (11,720 images with labels). Images written RGB with `INTER_AREA`, masks nearest-neighbour + re-binarized. See `data/ISIC_2018/PAPER_NOTES.md` for the measured facts.
 - `BUSI_dataloader.py` reads `mapping.csv`, performs stratified K-fold splitting, then applies deterministic oversampling on the training fold to balance classes before constructing `DataLoader`s.
+
+#### `mapping.csv` schema
+
+Base columns (every dataset): `img_path, mask_path, class, id, dim1, dim2, tumor_pixels, y_max,
+y_min, x_max, x_min, y_size, x_size`.
+
+ISIC 2018 adds three, because its two tasks are **disjoint image sets** (verified: zero ID overlap —
+no image has both a mask and a label, so BUSI's assumption that every row has both does not hold):
+
+| Column | Meaning |
+|---|---|
+| `task` | `seg` (has `mask_path`, `class` empty) or `cls` (has `class`, `mask_path` empty) |
+| `official_split` | `train`/`val`/`test` — which official release the row came from |
+| `lesion_id` | groups images of the same physical lesion. **Split on this, not on `id`** — 44.9% of Task 3 images share a lesion. Only published for Task 3 *training*; empty elsewhere. |
+
+Mask-derived columns are `NaN` (not `0`) on rows without a mask: `0` legitimately means "empty mask"
+for BUSI's `normal` class, so `NaN` is the only honest "not applicable".
+
+**Consequence for ISIC:** it suits FedPer (each client owns one task, so disjoint pools are natural)
+but **cannot feed `training_centralized.py`**, which needs image+mask+label on the same row.
+
+Paths inside `mapping.csv` / `federated_mapping.csv` are relative to the repo root, so **moving a
+dataset folder invalidates both CSVs** — regenerate them (deterministic given the same config, so
+the partition is reproduced exactly) rather than editing them by hand.
 
 ### Model zoo
 
@@ -88,8 +141,9 @@ runs/{timestamp}_{arch}_{width}_alpha_{α}_batch_{B}_{classes}/
 | `model.architecture` | Which model class to instantiate |
 | `training.CV` | Number of folds (must be ≥ 2) |
 | `training.alpha` | Weight on seg loss (0=cls only, 1=seg only) |
-| `data.input_img` | Path to preprocessed dataset folder containing `mapping.csv` |
+| `data.root` / `data.dataset` / `data.variant` | Select the dataset folder + preprocessed variant (see "Dataset layout") |
 | `data.classes` | Which classes to include; determines binary vs. multiclass mode |
+| `data.seg_exclude_classes` | Classes dropped from the segmentation task (empty masks); `[normal]` for BUSI |
 | `data.oversampling` | Enables deterministic oversampling in train folds |
 | `loss.inversely_weighted` | Weight deep supervision outputs by `1/(n+1)` |
 
@@ -105,8 +159,9 @@ cls); the same image may be used by clients of different tasks, but train/test s
 1. `src/dataset/federated_partition.py` — splits the curated dataset at the image level with
    `StratifiedKFold`, then partitions each fold's train pool across the clients of each task using a
    **Dirichlet(α)** distribution (high α ≈ IID). Writes a single **master CSV**
-   (`data/federated/federated_mapping.csv`) with columns `fold, client_id, task, split`. The `normal`
-   class is dropped from segmentation clients; a validation slice is carved per client for early stopping.
+   (`data/<dataset>/federated/federated_mapping.csv`) with columns `fold, client_id, task, split`. The
+   classes in `data.seg_exclude_classes` are dropped from segmentation clients; a validation slice is
+   carved per client for early stopping.
 2. `src/dataset/federated_dataloader.py` — filters the master CSV into the existing `BUSI` dataset
    (per-task oversampling), no change to the dataset itself.
 3. `src/federated/model_split.py` — splits MTnnUNet into the **shared** block (`encoder1..5` +
@@ -157,8 +212,9 @@ shared evaluator, so the numbers are directly comparable):
 
 Each setup writes its own `{setup}_test_results.csv` (+ `{setup}_cls_predictions.csv`) under its run dir.
 
-**Fairness controls (baked in):** all setups read the SAME `federated.partition_file` and ERROR if it
-is missing (generate it ONCE with `federated_partition`, then freeze it). Prediction-refining is OFF
+**Fairness controls (baked in):** all setups resolve the partition through the same
+`paths.require_partition_file()` and ERROR if it is missing (generate it ONCE with
+`federated_partition`, then freeze it). Prediction-refining is OFF
 (`unified_eval` never applies it) and `normal` is absent from seg test slices, so seg Dice is comparable.
 The centralized model is trained from the master CSV's fold (unique images, `split != test`) to keep
 folds identical and leak-free, and evaluated on the same per-client test slices.

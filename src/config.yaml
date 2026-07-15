@@ -32,10 +32,17 @@ training:
 
 data:
   semantic_segmentation: False
-  input_img: data/Curated_BUSI_128
+  # Dataset layout: {root}/{dataset}/{variant} holds images/, masks/ and mapping.csv,
+  # and {root}/{dataset}/federated/ holds the master partition.
+  # Switching datasets is a one-line change here; see src/dataset/paths.py.
+  root: data
+  dataset: Curated_BUSI    # folder under data/ (e.g. Curated_BUSI, ISIC_2018)
+  variant: processed_128   # preprocessed variant read by training
+  image_size: 128          # side of the square the preprocessing resizes to; defines the variant
   batch_size: 32
   train_size: 0.8
   classes: [benign, malignant, normal]
+  seg_exclude_classes: [normal]  # no useful mask -> dropped from the segmentation task
   classes_weighted: null
   use_duplicated_to_train: False
   remove_outliers: False
@@ -66,8 +73,7 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
   oversampling:            # per-task override of data.oversampling
     seg: False
     cls: True
-  partition_file: data/federated/federated_mapping.csv
-  standalone: True        # True => local-only baseline (clients ignore the federated encoder)
+  standalone: False        # True => local-only baseline (clients ignore the federated encoder)
   device: cuda             # auto | cpu | cuda
   ray_num_cpus: 2          # caps the Ray cluster -> bounds how many clients run concurrently
   client_resources:        # resources reserved per client (num_cpus high => fewer in parallel)

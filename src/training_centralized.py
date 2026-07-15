@@ -22,6 +22,7 @@ import yaml
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
+from src.dataset import paths
 from src.dataset.BUSI_dataset import BUSI
 from src.dataset.BUSI_dataloader import deterministic_oversampling
 from src.dataset.federated_dataloader import build_client_loader, list_clients
@@ -132,11 +133,7 @@ def run(config_path="./src/config.yaml"):
     with open(f"{run_path}/config.yaml", "w") as f:
         yaml.safe_dump(config, f)
 
-    partition_file = fed["partition_file"]
-    if not Path(partition_file).exists():
-        raise FileNotFoundError(
-            f"Partition file '{partition_file}' not found. Generate it once with "
-            f"`python -m src.dataset.federated_partition` so all setups share identical splits.")
+    partition_file = paths.require_partition_file(data_cfg)
 
     roster = [(r.client_id, r.task) for r in list_clients(partition_file).itertuples()]
     n_classes = len(data_cfg["classes"])
