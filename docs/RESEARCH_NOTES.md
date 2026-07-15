@@ -15,7 +15,8 @@ experimental protocol and fairness controls, and (4) the results of the two comp
    only the **encoder** is federated (FedAvg), while each client keeps a **personalized head/decoder**
    that is never aggregated. The final artifact is **one shared encoder + N personalized heads**
    (a generalist feature extractor + task/site-specific heads), motivated by a future expansion to
-   **multiple, heterogeneous datasets per client**.
+   **multiple, heterogeneous datasets per client**. That expansion is now designed (Curated BUSI +
+   ISIC 2018, cross-modality) in `docs/MULTI_DATASET_FEDERATION_PLAN.md` — approved, not yet built.
 3. Quantify, under strictly controlled conditions, whether federation helps each participant by
    comparing three setups: **Local-only (floor)**, **Federated (FedPer, proposed)**, and
    **Centralized MTL (upper bound)**.
