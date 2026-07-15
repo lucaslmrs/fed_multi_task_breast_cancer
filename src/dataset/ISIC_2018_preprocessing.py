@@ -12,14 +12,19 @@ WHY THIS IS NOT SHAPED LIKE THE BUSI SCRIPT
 ISIC 2018's two tasks are DISJOINT image sets -- verified, not assumed (see
 data/ISIC_2018/PAPER_NOTES.md):
 
-    Task 1 (masks, no labels) : ISIC_0000000 .. ISIC_0016072   (3694 images)
-    Task 3 (labels, no masks) : ISIC_0024306 .. ISIC_0034320   (11720 images)
+    Task 1 (masks, no labels) : 3694 images  (train+val+test), ids in 0 .. 36347
+    Task 3 (labels, no masks) : 11720 images (train+val+test), ids in 24306 .. 36064
     intersection: 0
 
 So no image carries both supervisions, and the BUSI assumption that every mapping row has a mask
 AND a class does not hold. Instead every row is tagged `task` = seg | cls, and `mask_path`/`class`
-are left empty where the release provides nothing. Numeric ids stay globally unique because the two
-ranges do not overlap.
+are left empty where the release provides nothing.
+
+Do not reason about this from the min..max above: Task 1's val/test draw from high ids, so seg
+actually occupies TWO blocks (0..24191 and 36066..36347) with cls sitting in the gap between them
+(24306..36064). Still no overlap, but seg's min..max spans cls's range, which invites the wrong
+conclusion. Global id uniqueness is a fact about the sets, so `main()` asserts it rather than
+assuming it from the intervals.
 
 Run with:  python -m src.dataset.ISIC_2018_preprocessing
 """

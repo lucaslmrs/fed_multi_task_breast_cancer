@@ -230,6 +230,15 @@ Intersection: 0        Task1 not in Task3: 2,594        Task3 not in Task1: 10,0
 multi-task model — one image → (mask, label) — cannot be trained on ISIC 2018 out of the box. The
 paper does not acknowledge this, and never explains how it obtained both supervisions.
 
+**[VERIFIED] Scope note on those ranges.** The two blocks above are the *training* splits — the
+slice the paper used. Ingest val/test too (3,694 seg / 11,720 cls, which is what
+`ISIC_2018_preprocessing.py` does) and the picture is no longer two blocks but three: seg occupies
+**0..24191 AND 36066..36347**, with cls sitting in the gap between them at **24306..36064**. Still
+zero intersection, still clean gaps (24191→24306 and 36064→36066) — but seg's naive min..max
+(0..36347) now *spans* cls's range, so quoting min..max invites the wrong conclusion. State the
+disjointness as a fact about the sets. `ISIC_2018_preprocessing.py` asserts it (id uniqueness over
+all 15,414 rows) rather than relying on the intervals.
+
 **[INFERRED]** Plausible explanations, none confirmed by the text: (a) they trained the two heads on
 different subsets and reported per-task numbers separately; (b) they used pseudo-labels or
 pseudo-masks; (c) segmentation was evaluated on Task 1 while Table 2's class table describes only the
