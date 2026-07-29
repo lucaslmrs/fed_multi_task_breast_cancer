@@ -17,6 +17,7 @@ loss:
   function:  DICE
   inversely_weighted: True
   classification_criterion: Focal
+  focal_gamma: 2.0
 
 training:
   debug: False
@@ -25,17 +26,24 @@ training:
   max_patience: 50
   CV: 4
   cuda_benchmark: False
-  alpha: 0.35
+  alpha: 0.85
   threshold_postprocessing: 0
   overlap_seg_based_on_class: True
   overlap_class_based_on_seg: True
 
 data:
   semantic_segmentation: False
-  input_img: data/Curated_BUSI_128
+  # Dataset layout: {root}/{dataset}/{variant} holds images/, masks/ and mapping.csv,
+  # and {root}/{dataset}/federated/ holds the master partition.
+  # Switching datasets is a one-line change here; see src/dataset/paths.py.
+  root: data
+  dataset: Curated_BUSI    # folder under data/ (e.g. Curated_BUSI, ISIC_2018)
+  variant: processed_128   # preprocessed variant read by training
+  image_size: 128          # side of the square the preprocessing resizes to; defines the variant
   batch_size: 32
   train_size: 0.8
   classes: [benign, malignant, normal]
+  seg_exclude_classes: [normal]  # no useful mask -> dropped from the segmentation task
   classes_weighted: null
   use_duplicated_to_train: False
   remove_outliers: False
@@ -51,3 +59,79 @@ data:
     horizontal_flip: .5
     vertical_flip: .5
     rotation: 1.0
+
+# Registry consumed by the multi-dataset federated pipeline.  The legacy ``data`` block above
+# remains the source of truth for preprocessing, EDA and single-dataset training.
+datasets:
+  Curated_BUSI:
+    variant: processed_128
+    channels: 1
+    classes: [benign, malignant, normal]
+    seg_exclude_classes: [normal]
+    fold_strategy: stratified       # one image-level fold shared by seg and cls
+    class_weighting: none
+    classification_criterion: CE
+    oversampling:
+      seg: False
+      cls: True
+  ISIC_2018:
+    variant: processed_128
+    channels: 3
+    classes: [AKIEC, BCC, BKL, DF, MEL, NV, VASC]
+    seg_exclude_classes: []
+    fold_strategy: per_task         # KFold for seg; grouped/stratified folds for cls
+    cls_source_split: train         # only this official split has complete lesion_id metadata
+    class_weighting: balanced_fold
+    classification_criterion: CE
+    focal_gamma: 2.0
+    oversampling:
+      seg: False
+      cls: False
+
+federated:  # FedPer: shared encoder is federated, heads stay personalized per client
+  datasets: [Curated_BUSI, ISIC_2018]
+  share_stem: False           # heterogeneous 1ch/3ch stems stay personalized
+  n_clients:
+    Curated_BUSI: {seg: 2, cls: 2}
+    ISIC_2018: {seg: 2, cls: 2}
+  partition_file: data/federated_multi/federated_mapping.csv
+  n_clients_seg: 2
+  n_clients_cls: 2
+  rounds: 50
+  local_epochs: 2
+  local_training:
+    mode: steps             # steps | epochs; steps controls equal local optimizer work
+    steps_per_round: 10     # public default; rotating sampler avoids a permanent subset
+    local_epochs: 2         # used only when mode=epochs
+  dirichlet_alpha: 100.0   # high alpha ~ IID; lower it to simulate non-IID
+  val_size: 0.2            # carved from each client's train pool for early stopping
+  patience: 10             # reservado; avaliação final usa a última rodada em ambos os braços
+  task_weights:            # legacy alias used by the single-dataset pipeline
+    seg: 4.0
+    cls: 1.0
+  aggregation:
+    mode: hierarchical     # normalize within dataset, then combine datasets by configured weight
+    client_weighting: uniform  # uniform | num_examples; counts remain logged for auditing
+    task_weights:
+      seg: 4.0
+      cls: 1.0
+    dataset_weights:
+      Curated_BUSI: 1.0
+      ISIC_2018: 1.0
+  oversampling:            # per-task override of data.oversampling
+    seg: False
+    cls: True
+  standalone: False        # True => local-only baseline (clients ignore the federated encoder)
+  device: cuda             # auto | cpu | cuda
+  ray_num_cpus: 16          # caps the Ray cluster -> bounds how many clients run concurrently
+  client_resources:        # resources reserved per client (num_cpus high => fewer in parallel)
+    num_cpus: 2
+    num_gpus: 1.0          # >0 lets the client see the GPU. 1.0 => 1 client/GPU (sequential,
+                           # safe). For 2 concurrent GPU clients use 0.5 AND raise ray_num_cpus.
+
+# python -m src.dataset.federated_partition                     # Gera csv mestre caso haja mudanças de configurações
+# python -m src.training_federated                              # federated (standalone: False)
+# -> editar config: federated.standalone: True, e rodar de novo:
+# python -m src.training_federated                              # standalone (local-only)
+# python -m src.training_centralized                            # centralized MTL
+# python -m src.experiments.analyze

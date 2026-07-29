@@ -7,7 +7,6 @@ import pandas as pd
 import cv2
 import torch
 import torch.nn as nn
-from torch.utils.tensorboard import SummaryWriter
 from src.utils.metrics import calculate_metrics
 from src.utils.metrics import calculate_metrics_multiclass_segmentation
 from src.utils.images import count_pixels

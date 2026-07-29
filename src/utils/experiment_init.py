@@ -235,31 +235,60 @@ def init_criterion_segmentation(loss_function: str = "dice") -> torch.nn.Module:
 def init_criterion_classification(
         n_classes: int = 2,
         classes_weighted=None,
-        classification_criterion="CE"
+        classification_criterion="CE",
+        class_weights=None,
+        device=None,
+        focal_gamma: float = 2.0,
 ) -> torch.nn.Module:
+    """Initialise a classification loss on the caller-selected device.
+
+    ``classes_weighted`` is the legacy interface: it accepts class frequencies and converts them
+    to normalised inverse-frequency weights.  ``class_weights`` is the multi-dataset interface and
+    accepts already-computed weights (for example ``N / (K * n_c)`` from the training partition)
+    without renormalising them.  Passing ``device`` avoids assuming CUDA is available or selected.
+    """
     if n_classes == 2:
         loss_function_criterion = torch.nn.BCEWithLogitsLoss()
     else:
-        if classes_weighted:
-            class_frequencies = torch.tensor(classes_weighted)
+        if class_weights is not None and classes_weighted is not None:
+            raise ValueError("Pass either class_weights (direct) or classes_weighted (legacy frequencies), not both")
 
-            # Calculate class weights
-            class_weights = 1.0 / class_frequencies
+        resolved_weights = None
+        if class_weights is not None:
+            resolved_weights = torch.as_tensor(class_weights, dtype=torch.float)
+        elif classes_weighted is not None:
+            class_frequencies = torch.as_tensor(classes_weighted, dtype=torch.float)
+            if torch.any(class_frequencies <= 0):
+                raise ValueError("Legacy classes_weighted frequencies must all be greater than zero")
+            inverse = 1.0 / class_frequencies
+            resolved_weights = inverse / inverse.sum()
 
-            # Create a tensor for the Normalize weights
-            weight_tensor = torch.tensor(class_weights / class_weights.sum(), dtype=torch.float)
-
-            # Define the loss function with class weights
+        if resolved_weights is not None:
+            if resolved_weights.ndim != 1 or resolved_weights.numel() != n_classes:
+                raise ValueError(
+                    f"Expected {n_classes} class weights, got shape {tuple(resolved_weights.shape)}"
+                )
+            if not torch.isfinite(resolved_weights).all() or torch.any(resolved_weights < 0):
+                raise ValueError("class weights must be finite and non-negative")
+            weight_tensor = resolved_weights.to(device=device) if device is not None else resolved_weights
             if classification_criterion == "Focal":
-                loss_function_criterion = FocalLossFunction(alpha=1, gamma=2, reduction='mean', weight=weight_tensor.to("cuda"))
+                loss_function_criterion = FocalLossFunction(
+                    alpha=1, gamma=float(focal_gamma), reduction='mean', weight=weight_tensor
+                )
             else:
-                loss_function_criterion = torch.nn.CrossEntropyLoss(reduction='mean', weight=weight_tensor.to("cuda"))
+                loss_function_criterion = torch.nn.CrossEntropyLoss(
+                    reduction='mean', weight=weight_tensor
+                )
         else:
             if classification_criterion == "Focal":
-                loss_function_criterion = FocalLossFunction(alpha=1, gamma=2, reduction='mean')
+                loss_function_criterion = FocalLossFunction(
+                    alpha=1, gamma=float(focal_gamma), reduction='mean'
+                )
             else:
                 loss_function_criterion = torch.nn.CrossEntropyLoss(reduction='mean')
 
+    if device is not None:
+        loss_function_criterion = loss_function_criterion.to(device)
     return loss_function_criterion
 
 
@@ -298,7 +327,8 @@ def load_segmentation_experiment_artefacts(config_model, config_opt, config_loss
     return model, optimizer, criterion, scheduler
 
 
-def load_multitask_experiment_artefacts(config_data, config_model, config_opt, config_loss, n_augments, run_path):
+def load_multitask_experiment_artefacts(
+        config_data, config_model, config_opt, config_loss, n_augments, run_path, device=None):
 
     model = init_multitask_model(architecture=config_model['architecture'],
                                  sequences=config_model['sequences'] + n_augments,
@@ -309,8 +339,10 @@ def load_multitask_experiment_artefacts(config_data, config_model, config_opt, c
     optimizer = init_optimizer(model=model, optimizer=config_opt['opt'], learning_rate=config_opt['lr'])
     segmentation_criterion = init_criterion_segmentation(loss_function=config_loss['function'])
     classification_criterion = init_criterion_classification(n_classes=len(config_data['classes']),
-                                                             classes_weighted=config_data["classes_weighted"],
-                                                             classification_criterion=config_loss['classification_criterion'])
+                                                             classes_weighted=config_data.get("classes_weighted"),
+                                                             class_weights=config_data.get("class_weights"),
+                                                             classification_criterion=config_loss['classification_criterion'],
+                                                             device=device)
     scheduler = init_lr_scheduler(optimizer=optimizer, scheduler=config_opt['scheduler'],
                                   t_max=int(config_opt['t_max']), patience=int(config_opt['patience']),
                                   min_lr=float(config_opt['min_lr']), factor=float(config_opt['decrease_factor']))
@@ -318,7 +350,8 @@ def load_multitask_experiment_artefacts(config_data, config_model, config_opt, c
     return model, optimizer, segmentation_criterion, classification_criterion, scheduler
 
 
-def load_classification_experiment_artefacts(config_data, config_model, config_opt, config_loss, n_augments, run_path):
+def load_classification_experiment_artefacts(
+        config_data, config_model, config_opt, config_loss, n_augments, run_path, device=None):
 
     model = init_classification_model(architecture=config_model['architecture'],
                                       sequences=config_model['sequences'] + n_augments,
@@ -327,8 +360,10 @@ def load_classification_experiment_artefacts(config_data, config_model, config_o
                                       save_folder=Path(f'{run_path}/'))
     optimizer = init_optimizer(model=model, optimizer=config_opt['opt'], learning_rate=config_opt['lr'])
     classification_criterion = init_criterion_classification(n_classes=len(config_data['classes']),
-                                                             classes_weighted=config_data["classes_weighted"],
-                                                             classification_criterion=config_loss['classification_criterion'])
+                                                             classes_weighted=config_data.get("classes_weighted"),
+                                                             class_weights=config_data.get("class_weights"),
+                                                             classification_criterion=config_loss['classification_criterion'],
+                                                             device=device)
     scheduler = init_lr_scheduler(optimizer=optimizer, scheduler=config_opt['scheduler'],
                                   t_max=int(config_opt['t_max']), patience=int(config_opt['patience']),
                                   min_lr=float(config_opt['min_lr']), factor=float(config_opt['decrease_factor']))

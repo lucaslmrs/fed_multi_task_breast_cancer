@@ -127,6 +127,17 @@ pip install -r requirements.txt
 
 Download the BUSI Breast Ultrasound Images dataset. Since BUSI is originally organized into benign, malignant, and normal images, preprocessing is required.
 
+Each dataset lives in its own folder under `data/`, following a common layout. Place the extracted
+BUSI download in `raw/`:
+
+```
+data/Curated_BUSI/
+  raw/{benign,malignant,normal}/   # the extracted BUSI download
+  curation_list.csv                # ids kept by the curated version (shipped in this repo)
+  processed_128/                   # created by the preprocessing step below
+  federated/                       # created by src.dataset.federated_partition
+```
+
 Preprocessing is necessary to handle multiple segmentation masks and clean the dataset.
 We provide a curated version called Curated BUSI. You can enable it by setting CURATED = True in src/dataset/Curated_BUSI_preprocessing.py.
 
@@ -134,7 +145,9 @@ We provide a curated version called Curated BUSI. You can enable it by setting C
 python -m src.dataset.Curated_BUSI_preprocessing
 ```
 
-Edit src/config.yaml to set the correct dataset paths and select the training task (e.g., multi-task learning).
+The preprocessing reads which dataset/variant to write from `data.dataset` / `data.variant` in
+src/config.yaml. Edit src/config.yaml to select the dataset and the training task (e.g., multi-task
+learning).
 
 ```bash
 #Run the training
