@@ -14,13 +14,27 @@ from flwr.server.strategy import FedAvg
 
 
 class FedPerStrategy(FedAvg):
-    def __init__(self, task_weights, dataset_weights=None, aggregation_mode="flat", *args, **kwargs):
+    def __init__(
+        self,
+        task_weights,
+        dataset_weights=None,
+        aggregation_mode="flat",
+        client_weighting="num_examples",
+        *args,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.task_weights = task_weights
         self.dataset_weights = dataset_weights or {}
         if aggregation_mode not in {"flat", "hierarchical"}:
             raise ValueError("aggregation_mode must be 'flat' or 'hierarchical'")
+        if client_weighting not in {"uniform", "num_examples"}:
+            raise ValueError("client_weighting must be 'uniform' or 'num_examples'")
         self.aggregation_mode = aggregation_mode
+        self.client_weighting = client_weighting
+        # JSON-serializable diagnostics persisted by the training orchestrator. Keeping this
+        # separate from Flower's scalar History allows auditing every client's effective weight.
+        self.aggregation_history = []
         # Kept as diagnostics for legacy callers. Final evaluation deliberately uses the common
         # last-round global trunk, not the per-client local ``best.pt`` snapshots.
         self.best_mean_val = float("inf")
@@ -42,17 +56,15 @@ class FedPerStrategy(FedAvg):
         for _, fit_res in results:
             task = fit_res.metrics.get("task", "seg")
             dataset = fit_res.metrics.get("dataset", "default")
-            base_weight = fit_res.num_examples * self.task_weights.get(task, 1.0)
-            if base_weight <= 0:
-                raise ValueError(
-                    f"Non-positive aggregation weight for dataset={dataset}, task={task}: "
-                    f"{base_weight}"
-                )
+            base_weight = self._base_weight(fit_res.num_examples, task, dataset)
             updates.append({
                 "dataset": dataset,
                 "task": task,
+                "client_id": str(fit_res.metrics.get("client_id", "?")),
+                "num_examples": int(fit_res.num_examples),
                 "base_weight": float(base_weight),
                 "arrays": parameters_to_ndarrays(fit_res.parameters),
+                "metrics": dict(fit_res.metrics),
             })
 
         _validate_update_shapes(updates)
@@ -61,30 +73,56 @@ class FedPerStrategy(FedAvg):
         else:
             aggregated, final_weights = self._aggregate_flat(updates)
 
-        participation = {}
-        for update, weight in zip(updates, final_weights):
-            key = f"{update['dataset']}/{update['task']}"
-            participation[key] = participation.get(key, 0.0) + float(weight)
-        summary = {key: round(value, 4) for key, value in sorted(participation.items())}
+        telemetry = self._record_aggregation(server_round, "fit", updates, final_weights)
+        summary = telemetry["group_participation"]
         logging.info(
-            f"[round {server_round}] {self.aggregation_mode} aggregation from "
+            f"[round {server_round}] {self.aggregation_mode}/{self.client_weighting} "
+            f"aggregation from "
             f"{len(results)} clients | effective participation={summary}"
         )
         self.latest_parameters = ndarrays_to_parameters(aggregated)
         self.latest_round = server_round
-        return self.latest_parameters, {}
+        return self.latest_parameters, self._participation_metrics(telemetry)
+
+    def _base_weight(self, num_examples, task, dataset):
+        if int(num_examples) <= 0:
+            raise ValueError(
+                f"Client from dataset={dataset}, task={task} reported non-positive "
+                f"num_examples={num_examples}"
+            )
+        client_factor = float(num_examples) if self.client_weighting == "num_examples" else 1.0
+        base_weight = client_factor * float(self.task_weights.get(task, 1.0))
+        if base_weight <= 0:
+            raise ValueError(
+                f"Non-positive aggregation weight for dataset={dataset}, task={task}: "
+                f"{base_weight}"
+            )
+        return base_weight
 
     def _aggregate_flat(self, updates):
-        # Flat is the global sample-weighted ablation. Dataset weights belong exclusively to the
-        # hierarchical mixing stage; with task weights set to one this is ordinary FedAvg.
-        raw = np.asarray([update["base_weight"] for update in updates], dtype=np.float64)
-        if np.any(raw <= 0) or raw.sum() <= 0:
-            raise ValueError("All configured flat aggregation weights must be positive")
-        weights = raw / raw.sum()
+        # Dataset weights belong exclusively to the hierarchical mixing stage. With task weights
+        # set to one and num_examples weighting this is ordinary FedAvg.
+        weights = self._flat_weights(updates)
         return _weighted_arrays([update["arrays"] for update in updates], weights), weights
 
     def _aggregate_hierarchical(self, updates):
-        datasets = list(dict.fromkeys(update["dataset"] for update in updates))
+        weights = self._hierarchical_weights(updates)
+        return _weighted_arrays([update["arrays"] for update in updates], weights), weights
+
+    def _normalized_weights(self, records):
+        if self.aggregation_mode == "hierarchical":
+            return self._hierarchical_weights(records)
+        return self._flat_weights(records)
+
+    @staticmethod
+    def _flat_weights(records):
+        raw = np.asarray([record["base_weight"] for record in records], dtype=np.float64)
+        if np.any(raw <= 0) or raw.sum() <= 0:
+            raise ValueError("All configured flat aggregation weights must be positive")
+        return raw / raw.sum()
+
+    def _hierarchical_weights(self, records):
+        datasets = list(dict.fromkeys(record["dataset"] for record in records))
         missing = set(self.dataset_weights) - set(datasets)
         if missing:
             raise ValueError(
@@ -97,18 +135,13 @@ class FedPerStrategy(FedAvg):
             raise ValueError("All participating hierarchical dataset weights must be positive")
         dataset_mix = configured / configured.sum()
 
-        dataset_arrays = []
-        final_weights = np.zeros(len(updates), dtype=np.float64)
+        final_weights = np.zeros(len(records), dtype=np.float64)
         for dataset, dataset_weight in zip(datasets, dataset_mix):
-            indices = [i for i, update in enumerate(updates) if update["dataset"] == dataset]
-            raw = np.asarray([updates[i]["base_weight"] for i in indices], dtype=np.float64)
+            indices = [i for i, record in enumerate(records) if record["dataset"] == dataset]
+            raw = np.asarray([records[i]["base_weight"] for i in indices], dtype=np.float64)
             within_dataset = raw / raw.sum()
-            dataset_arrays.append(
-                _weighted_arrays([updates[i]["arrays"] for i in indices], within_dataset)
-            )
             final_weights[indices] = dataset_weight * within_dataset
-
-        return _weighted_arrays(dataset_arrays, dataset_mix), final_weights
+        return final_weights
 
     def aggregate_evaluate(self, server_round, results, failures):
         if failures and not self.accept_failures:
@@ -120,17 +153,35 @@ class FedPerStrategy(FedAvg):
         if not results:
             return None, {}
 
-        n_total = sum(result.num_examples for _, result in results)
-        mean_val = sum(result.num_examples * result.loss for _, result in results) / n_total
+        evaluations = []
+        for _, result in results:
+            task = result.metrics.get("task", "seg")
+            dataset = result.metrics.get("dataset", "default")
+            evaluations.append({
+                "dataset": dataset,
+                "task": task,
+                "client_id": str(result.metrics.get("client_id", "?")),
+                "num_examples": int(result.num_examples),
+                "base_weight": self._base_weight(result.num_examples, task, dataset),
+                "loss": float(result.loss),
+                "metrics": dict(result.metrics),
+            })
+
+        final_weights = self._normalized_weights(evaluations)
+        mean_val = float(np.dot(final_weights, [item["loss"] for item in evaluations]))
+        telemetry = self._record_aggregation(server_round, "evaluate", evaluations, final_weights)
 
         per_group = {}
-        for _, result in results:
-            key = f"{result.metrics.get('dataset', 'default')}/{result.metrics.get('task', '?')}"
+        for index, item in enumerate(evaluations):
+            key = f"{item['dataset']}/{item['task']}"
             per_group.setdefault(key, []).append(
-                result.metrics.get("val_metric", float("nan"))
+                (
+                    float(item["metrics"].get("val_metric", float("nan"))),
+                    float(final_weights[index]),
+                )
             )
         group_summary = {
-            key: round(float(np.nanmean(values)), 4) for key, values in per_group.items()
+            key: round(_weighted_nanmean(values), 4) for key, values in per_group.items()
         }
 
         improved = mean_val < self.best_mean_val
@@ -139,14 +190,85 @@ class FedPerStrategy(FedAvg):
             self.best_round = server_round
 
         logging.info(
-            f"[round {server_round}] diagnostic mean val loss {mean_val:.4f} "
+            f"[round {server_round}] {self.aggregation_mode}/{self.client_weighting} "
+            f"diagnostic mean val loss {mean_val:.4f} "
+            f"| effective participation={telemetry['group_participation']} "
             f"| per-dataset/task metric {group_summary}"
         )
         return mean_val, {
             "mean_val_loss": mean_val,
             "diagnostic_best_round": self.best_round,
+            **self._participation_metrics(telemetry),
             **group_summary,
         }
+
+    def _record_aggregation(self, server_round, stage, records, weights):
+        group_participation = {}
+        dataset_participation = {}
+        clients = []
+        optional_metrics = (
+            "raw_num_examples",
+            "effective_num_examples",
+            "optimizer_steps",
+            "examples_processed",
+        )
+        for record, weight in zip(records, weights):
+            dataset = str(record["dataset"])
+            task = str(record["task"])
+            group = f"{dataset}/{task}"
+            group_participation[group] = group_participation.get(group, 0.0) + float(weight)
+            dataset_participation[dataset] = dataset_participation.get(dataset, 0.0) + float(weight)
+            client = {
+                "client_id": str(record.get("client_id", "?")),
+                "dataset": dataset,
+                "task": task,
+                "reported_num_examples": int(record["num_examples"]),
+                "base_weight": float(record["base_weight"]),
+                "final_weight": float(weight),
+            }
+            metrics = record.get("metrics", {})
+            for key in optional_metrics:
+                if key in metrics:
+                    client[key] = float(metrics[key])
+            clients.append(client)
+
+        telemetry = {
+            "round": int(server_round),
+            "stage": stage,
+            "aggregation_mode": self.aggregation_mode,
+            "client_weighting": self.client_weighting,
+            "client_count": len(records),
+            "dataset_participation": dict(sorted(dataset_participation.items())),
+            "group_participation": dict(sorted(group_participation.items())),
+            "clients": clients,
+        }
+        self.aggregation_history.append(telemetry)
+        return telemetry
+
+    @staticmethod
+    def _participation_metrics(telemetry):
+        metrics = {
+            "aggregation_clients": int(telemetry["client_count"]),
+        }
+        metrics.update({
+            f"participation/dataset/{key}": float(value)
+            for key, value in telemetry["dataset_participation"].items()
+        })
+        metrics.update({
+            f"participation/group/{key}": float(value)
+            for key, value in telemetry["group_participation"].items()
+        })
+        return metrics
+
+
+def _weighted_nanmean(values_and_weights):
+    values = np.asarray([value for value, _ in values_and_weights], dtype=np.float64)
+    weights = np.asarray([weight for _, weight in values_and_weights], dtype=np.float64)
+    finite = np.isfinite(values)
+    if not finite.any():
+        return float("nan")
+    weights = weights[finite]
+    return float(np.dot(values[finite], weights) / weights.sum())
 
 
 def _validate_update_shapes(updates):

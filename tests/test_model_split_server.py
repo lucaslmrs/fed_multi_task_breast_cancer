@@ -1,9 +1,10 @@
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import torch
 
-from src.federated.config import validate_federated_config
+from src.federated.config import aggregation_config, local_training_config, validate_federated_config
 from src.federated.client import stable_client_seed
 from src.federated.model_split import get_shared_state, set_shared_state, shared_keys
 from src.federated.server import FedPerStrategy
@@ -113,6 +114,51 @@ class AggregationTests(unittest.TestCase):
         expected = (0 * 1 + 8 * 3 + 100 * 100) / 104
         self.assertAlmostEqual(float(arrays[0][0]), expected, places=5)
         self.assertGreater(float(client_weights[2]), 0.9)
+
+    def test_uniform_weighting_ignores_cardinality_but_keeps_task_weights(self):
+        strategy = FedPerStrategy(
+            task_weights={"seg": 4, "cls": 1},
+            dataset_weights={"BUSI": 1, "ISIC": 1},
+            aggregation_mode="hierarchical",
+            client_weighting="uniform",
+        )
+        records = [
+            {"dataset": "BUSI", "task": "seg", "base_weight": strategy._base_weight(1, "seg", "BUSI")},
+            {"dataset": "BUSI", "task": "cls", "base_weight": strategy._base_weight(1000, "cls", "BUSI")},
+            {"dataset": "ISIC", "task": "seg", "base_weight": strategy._base_weight(10000, "seg", "ISIC")},
+            {"dataset": "ISIC", "task": "cls", "base_weight": strategy._base_weight(2, "cls", "ISIC")},
+        ]
+        weights = strategy._hierarchical_weights(records)
+        np.testing.assert_allclose(weights, [0.4, 0.1, 0.4, 0.1])
+        self.assertAlmostEqual(float(weights[:2].sum()), 0.5)
+        self.assertAlmostEqual(float(weights[2:].sum()), 0.5)
+
+    def test_validation_uses_the_same_hierarchical_uniform_policy(self):
+        strategy = FedPerStrategy(
+            task_weights={"cls": 1}, dataset_weights={"BUSI": 1, "ISIC": 1},
+            aggregation_mode="hierarchical", client_weighting="uniform",
+        )
+        results = [
+            (None, SimpleNamespace(
+                num_examples=1, loss=0.0,
+                metrics={"dataset": "BUSI", "task": "cls", "client_id": "b", "val_metric": 1.0},
+            )),
+            (None, SimpleNamespace(
+                num_examples=10000, loss=2.0,
+                metrics={"dataset": "ISIC", "task": "cls", "client_id": "i", "val_metric": 0.0},
+            )),
+        ]
+        loss, metrics = strategy.aggregate_evaluate(1, results, [])
+        self.assertAlmostEqual(loss, 1.0)
+        self.assertAlmostEqual(metrics["participation/dataset/BUSI"], 0.5)
+        self.assertAlmostEqual(metrics["participation/dataset/ISIC"], 0.5)
+
+    def test_new_config_defaults_preserve_legacy_behavior(self):
+        config = {"federated": {"local_epochs": 2}}
+        self.assertEqual(aggregation_config(config)["client_weighting"], "num_examples")
+        self.assertEqual(local_training_config(config), {
+            "mode": "epochs", "steps_per_round": 10, "local_epochs": 2,
+        })
 
 
 if __name__ == "__main__":

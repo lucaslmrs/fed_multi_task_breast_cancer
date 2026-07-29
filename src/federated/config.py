@@ -1,5 +1,6 @@
 """Configuration helpers shared by the multi-dataset federated pipeline."""
 
+import math
 from pathlib import Path
 
 from src.dataset import paths
@@ -34,6 +35,9 @@ def dataset_config(config: dict, dataset: str) -> dict:
     base.setdefault("transforms", config["data"].get("transforms", {}))
     base.setdefault("batch_size", config["data"].get("batch_size", 32))
     base.setdefault("oversampling", config["federated"].get("oversampling", {}))
+    loss_cfg = config.get("loss", {})
+    base.setdefault("classification_criterion", loss_cfg.get("classification_criterion", "CE"))
+    base.setdefault("focal_gamma", loss_cfg.get("focal_gamma", 2.0))
     return base
 
 
@@ -41,9 +45,19 @@ def aggregation_config(config: dict) -> dict:
     fed = config["federated"]
     aggregation = dict(fed.get("aggregation", {}))
     aggregation.setdefault("mode", "flat")
+    aggregation.setdefault("client_weighting", "num_examples")
     aggregation.setdefault("task_weights", fed.get("task_weights", {"seg": 1.0, "cls": 1.0}))
     aggregation.setdefault("dataset_weights", fed.get("dataset_weights", {}))
     return aggregation
+
+
+def local_training_config(config: dict) -> dict:
+    fed = config["federated"]
+    local_training = dict(fed.get("local_training", {}))
+    local_training.setdefault("mode", "epochs")
+    local_training.setdefault("steps_per_round", 10)
+    local_training.setdefault("local_epochs", fed.get("local_epochs", 1))
+    return local_training
 
 
 def partition_file(config: dict) -> Path:
@@ -75,6 +89,11 @@ def validate_federated_config(config: dict) -> None:
             raise ValueError(
                 f"datasets.{name}.class_weighting must be none, balanced_fold, or balanced_local"
             )
+        if cfg["classification_criterion"] not in {"CE", "Focal"}:
+            raise ValueError(f"datasets.{name}.classification_criterion must be CE or Focal")
+        focal_gamma = float(cfg["focal_gamma"])
+        if not math.isfinite(focal_gamma) or focal_gamma <= 0:
+            raise ValueError(f"datasets.{name}.focal_gamma must be finite and positive")
         if cfg["channels"] == 3 and any(bool(v) for v in cfg.get("augmentation", {}).values()):
             raise ValueError(
                 f"Legacy channel-stacking augmentations must be disabled for RGB dataset '{name}'"
@@ -87,9 +106,19 @@ def validate_federated_config(config: dict) -> None:
             "share_stem=true is incompatible with active datasets that have different channels"
         )
 
+    local_training = local_training_config(config)
+    if local_training["mode"] not in {"epochs", "steps"}:
+        raise ValueError("federated.local_training.mode must be epochs or steps")
+    for field in ("steps_per_round", "local_epochs"):
+        value = local_training[field]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"federated.local_training.{field} must be a positive integer")
+
     aggregation = aggregation_config(config)
     if aggregation["mode"] not in {"flat", "hierarchical"}:
         raise ValueError("federated.aggregation.mode must be flat or hierarchical")
+    if aggregation["client_weighting"] not in {"uniform", "num_examples"}:
+        raise ValueError("federated.aggregation.client_weighting must be uniform or num_examples")
     for field in ("task_weights", "dataset_weights"):
         invalid = {key: value for key, value in aggregation[field].items() if float(value) <= 0}
         if invalid:

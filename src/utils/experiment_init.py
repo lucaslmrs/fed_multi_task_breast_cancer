@@ -238,6 +238,7 @@ def init_criterion_classification(
         classification_criterion="CE",
         class_weights=None,
         device=None,
+        focal_gamma: float = 2.0,
 ) -> torch.nn.Module:
     """Initialise a classification loss on the caller-selected device.
 
@@ -272,7 +273,7 @@ def init_criterion_classification(
             weight_tensor = resolved_weights.to(device=device) if device is not None else resolved_weights
             if classification_criterion == "Focal":
                 loss_function_criterion = FocalLossFunction(
-                    alpha=1, gamma=2, reduction='mean', weight=weight_tensor
+                    alpha=1, gamma=float(focal_gamma), reduction='mean', weight=weight_tensor
                 )
             else:
                 loss_function_criterion = torch.nn.CrossEntropyLoss(
@@ -280,7 +281,9 @@ def init_criterion_classification(
                 )
         else:
             if classification_criterion == "Focal":
-                loss_function_criterion = FocalLossFunction(alpha=1, gamma=2, reduction='mean')
+                loss_function_criterion = FocalLossFunction(
+                    alpha=1, gamma=float(focal_gamma), reduction='mean'
+                )
             else:
                 loss_function_criterion = torch.nn.CrossEntropyLoss(reduction='mean')
 

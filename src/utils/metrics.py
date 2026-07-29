@@ -177,12 +177,8 @@ def sentitivity(tp: float, fn: float) -> float:
     The sentitivity is intuitively the ability of the classifier to find all tumor voxels.
     """
 
-    if tp == 0:
-        sensitivity = np.nan
-    else:
-        sensitivity = tp / (tp + fn)
-
-    return sensitivity
+    denominator = tp + fn
+    return np.nan if denominator == 0 else tp / denominator
 
 
 def specificity(tn: float, fp: float) -> float:
@@ -190,29 +186,23 @@ def specificity(tn: float, fp: float) -> float:
     The specificity is intuitively the ability of the classifier to find all non-tumor voxels.
     """
 
-    spec = tn / (tn + fp)
-
-    return spec
+    denominator = tn + fp
+    return np.nan if denominator == 0 else tn / denominator
 
 
 def precision(tp: float, fp: float) -> float:
-
-    if tp == 0:
-        prec = np.nan
-    else:
-        prec = tp / (tp + fp)
-
-    return prec
+    denominator = tp + fp
+    return np.nan if denominator == 0 else tp / denominator
 
 
 def accuracy(tp: float, tn: float, fp: float, fn: float) -> float:
-
-    return (tp + tn) / (tp + tn + fp + fn)
+    denominator = tp + tn + fp + fn
+    return np.nan if denominator == 0 else (tp + tn) / denominator
 
 
 def f1_score(tp: float, fp: float, fn: float) -> float:
-
-    return (2 * tp) / (2 * tp + fp + fn)
+    denominator = 2 * tp + fp + fn
+    return np.nan if denominator == 0 else (2 * tp) / denominator
 
 
 def dice_score(tp: float, fp: float, fn: float, gt: np.ndarray, seg: np.ndarray) -> float:

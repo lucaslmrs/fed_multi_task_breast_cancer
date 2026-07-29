@@ -43,11 +43,28 @@ def _avg_logits(logits):
 
 
 def train_local(model, loader, optimizer, task, device, local_epochs, num_classes,
-                seg_criterion=None, cls_criterion=None, inversely_weighted=True):
-    """Run ``local_epochs`` of local SGD on the client's task. Returns mean train loss."""
+                seg_criterion=None, cls_criterion=None, inversely_weighted=True,
+                training_mode="epochs", steps_per_round=10):
+    """Run local SGD and return loss plus exact optimization/exposure telemetry.
+
+    ``epochs`` preserves the legacy nested epoch/loader loop. In ``steps`` mode the loader must
+    yield exactly the configured number of full batches for the currently selected round.
+    """
+    training_mode = str(training_mode).lower()
+    if training_mode not in {"epochs", "steps"}:
+        raise ValueError("training_mode must be 'epochs' or 'steps'")
+    if isinstance(local_epochs, bool) or not isinstance(local_epochs, int) or local_epochs < 1:
+        raise ValueError(f"local_epochs must be a positive integer, got {local_epochs!r}")
+    if (
+        isinstance(steps_per_round, bool)
+        or not isinstance(steps_per_round, int)
+        or steps_per_round < 1
+    ):
+        raise ValueError(f"steps_per_round must be a positive integer, got {steps_per_round!r}")
     model.train()
-    running, n_batches = 0.0, 0
-    for _ in range(local_epochs):
+    running, n_batches, examples_processed = 0.0, 0, 0
+    passes = local_epochs if training_mode == "epochs" else 1
+    for _ in range(passes):
         for data in loader:
             inputs = data["image"].to(device)
             optimizer.zero_grad(set_to_none=True)
@@ -61,7 +78,17 @@ def train_local(model, loader, optimizer, task, device, local_epochs, num_classe
             optimizer.step()
             running += loss.item()
             n_batches += 1
-    return running / max(n_batches, 1)
+            examples_processed += int(inputs.shape[0])
+
+    if training_mode == "steps" and n_batches != steps_per_round:
+        raise RuntimeError(
+            f"steps mode expected {steps_per_round} batches, but loader yielded {n_batches}"
+        )
+    return {
+        "loss": running / max(n_batches, 1),
+        "optimizer_steps": n_batches,
+        "examples_processed": examples_processed,
+    }
 
 
 @torch.inference_mode()

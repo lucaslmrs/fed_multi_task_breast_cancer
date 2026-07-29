@@ -17,6 +17,7 @@ loss:
   function:  DICE
   inversely_weighted: True
   classification_criterion: Focal
+  focal_gamma: 2.0
 
 training:
   debug: False
@@ -69,6 +70,7 @@ datasets:
     seg_exclude_classes: [normal]
     fold_strategy: stratified       # one image-level fold shared by seg and cls
     class_weighting: none
+    classification_criterion: CE
     oversampling:
       seg: False
       cls: True
@@ -80,6 +82,8 @@ datasets:
     fold_strategy: per_task         # KFold for seg; grouped/stratified folds for cls
     cls_source_split: train         # only this official split has complete lesion_id metadata
     class_weighting: balanced_fold
+    classification_criterion: CE
+    focal_gamma: 2.0
     oversampling:
       seg: False
       cls: False
@@ -95,6 +99,10 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
   n_clients_cls: 2
   rounds: 50
   local_epochs: 2
+  local_training:
+    mode: steps             # steps | epochs; steps controls equal local optimizer work
+    steps_per_round: 10     # public default; rotating sampler avoids a permanent subset
+    local_epochs: 2         # used only when mode=epochs
   dirichlet_alpha: 100.0   # high alpha ~ IID; lower it to simulate non-IID
   val_size: 0.2            # carved from each client's train pool for early stopping
   patience: 10             # reservado; avaliação final usa a última rodada em ambos os braços
@@ -103,6 +111,7 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
     cls: 1.0
   aggregation:
     mode: hierarchical     # normalize within dataset, then combine datasets by configured weight
+    client_weighting: uniform  # uniform | num_examples; counts remain logged for auditing
     task_weights:
       seg: 4.0
       cls: 1.0
@@ -114,7 +123,7 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
     cls: True
   standalone: False        # True => local-only baseline (clients ignore the federated encoder)
   device: cuda             # auto | cpu | cuda
-  ray_num_cpus: 2          # caps the Ray cluster -> bounds how many clients run concurrently
+  ray_num_cpus: 16          # caps the Ray cluster -> bounds how many clients run concurrently
   client_resources:        # resources reserved per client (num_cpus high => fewer in parallel)
     num_cpus: 2
     num_gpus: 1.0          # >0 lets the client see the GPU. 1.0 => 1 client/GPU (sequential,

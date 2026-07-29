@@ -7,7 +7,7 @@ import pandas as pd
 import torch
 
 from src.dataset.federated_dataloader import build_client_loader, resolve_class_weights
-from src.experiments.analyze import pooled_auc, summary_table
+from src.experiments.analyze import method_comparisons, pooled_auc, summary_by_seed, summary_table
 from src.utils.experiment_init import init_criterion_classification
 
 
@@ -146,6 +146,39 @@ class AnalysisTests(unittest.TestCase):
         result = summary_table(frame)
         class_six = result[result.metric == "precision_class_6"]
         self.assertEqual(class_six.dataset.tolist(), ["ISIC"])
+
+    def test_manifest_comparison_pairs_method_seed_fold_and_client(self):
+        rows = []
+        for seed in (1993, 1994):
+            for method, setup, value in (("primary", "federated", 0.8), ("local", "standalone", 0.6)):
+                rows.append({
+                    "study_id": "study", "seed": seed, "dataset": "BUSI", "fold": 0,
+                    "client_id": "BUSI_cls_0", "task": "cls", "method_id": method,
+                    "setup": setup, "acc": value,
+                })
+        comparisons = [{
+            "comparison_id": "primary_vs_local",
+            "left": {"method_id": "primary", "setup": "federated"},
+            "right": {"method_id": "local", "setup": "standalone"},
+        }]
+        aggregate, observations = method_comparisons(pd.DataFrame(rows), comparisons)
+        acc = aggregate[aggregate.metric == "acc"].iloc[0]
+        self.assertEqual(int(acc.n_pairs), 2)
+        self.assertEqual(int(acc.n_seeds), 2)
+        self.assertAlmostEqual(float(acc.mean_delta), 0.2)
+        self.assertEqual(len(observations), 2)
+
+    def test_summary_by_seed_keeps_repetitions_separate(self):
+        frame = pd.DataFrame([
+            {"study_id": "s", "seed": 1, "dataset": "BUSI", "method_id": "m",
+             "setup": "federated", "task": "seg", "dice": 0.2},
+            {"study_id": "s", "seed": 2, "dataset": "BUSI", "method_id": "m",
+             "setup": "federated", "task": "seg", "dice": 0.8},
+        ])
+        result = summary_by_seed(frame)
+        dice = result[result.metric == "dice"]
+        self.assertEqual(set(dice.seed), {"1", "2"})
+        self.assertEqual(set(dice["mean"]), {0.2, 0.8})
 
 
 if __name__ == "__main__":

@@ -1,0 +1,137 @@
+schema_version: 1
+study_id: multi_dataset_balance_v1
+base_config: src/config.yaml
+
+seed_profiles:
+  operational: [1993]
+  final: [1993, 1994, 1995]
+default_seed_profile: operational
+
+output_root: runs/studies/{study_id}
+partition_template: data/federated_studies/{study_id}/seed_{seed}/federated_mapping.csv
+
+# Each arm is explicit so the execution index is an unambiguous record of the eight-run matrix.
+arms:
+  - arm_id: primary
+    method_id: primary
+    setup: federated
+    overrides:
+      federated:
+        local_training: {mode: steps, steps_per_round: 10}
+        aggregation: {mode: hierarchical, client_weighting: uniform}
+      datasets:
+        ISIC_2018: {classification_criterion: CE, class_weighting: balanced_fold}
+
+  - arm_id: local_steps_ce
+    method_id: local_steps_ce
+    setup: standalone
+    overrides:
+      federated:
+        local_training: {mode: steps, steps_per_round: 10}
+        aggregation: {mode: hierarchical, client_weighting: uniform}
+      datasets:
+        ISIC_2018: {classification_criterion: CE, class_weighting: balanced_fold}
+
+  - arm_id: ablation_budget
+    method_id: ablation_budget
+    setup: federated
+    overrides:
+      federated:
+        local_training: {mode: epochs, local_epochs: 2}
+        aggregation: {mode: hierarchical, client_weighting: uniform}
+      datasets:
+        ISIC_2018: {classification_criterion: CE, class_weighting: balanced_fold}
+
+  - arm_id: local_epochs_ce
+    method_id: local_epochs_ce
+    setup: standalone
+    overrides:
+      federated:
+        local_training: {mode: epochs, local_epochs: 2}
+        aggregation: {mode: hierarchical, client_weighting: uniform}
+      datasets:
+        ISIC_2018: {classification_criterion: CE, class_weighting: balanced_fold}
+
+  - arm_id: ablation_weighting
+    method_id: ablation_weighting
+    setup: federated
+    overrides:
+      federated:
+        local_training: {mode: epochs, local_epochs: 2}
+        aggregation: {mode: hierarchical, client_weighting: num_examples}
+      datasets:
+        ISIC_2018: {classification_criterion: CE, class_weighting: balanced_fold}
+
+  - arm_id: ablation_flat
+    method_id: ablation_flat
+    setup: federated
+    overrides:
+      federated:
+        local_training: {mode: epochs, local_epochs: 2}
+        aggregation: {mode: flat, client_weighting: num_examples}
+      datasets:
+        ISIC_2018: {classification_criterion: CE, class_weighting: balanced_fold}
+
+  - arm_id: ablation_focal
+    method_id: ablation_focal
+    setup: federated
+    overrides:
+      federated:
+        local_training: {mode: steps, steps_per_round: 10}
+        aggregation: {mode: hierarchical, client_weighting: uniform}
+      datasets:
+        ISIC_2018:
+          classification_criterion: Focal
+          focal_gamma: 2.0
+          class_weighting: none
+
+  - arm_id: local_steps_focal
+    method_id: local_steps_focal
+    setup: standalone
+    overrides:
+      federated:
+        local_training: {mode: steps, steps_per_round: 10}
+        aggregation: {mode: hierarchical, client_weighting: uniform}
+      datasets:
+        ISIC_2018:
+          classification_criterion: Focal
+          focal_gamma: 2.0
+          class_weighting: none
+
+comparisons:
+  - comparison_id: primary_vs_local
+    left: {method_id: primary, setup: federated}
+    right: {method_id: local_steps_ce, setup: standalone}
+    interpretation: federated transfer under the primary protocol
+  - comparison_id: budget_vs_local
+    left: {method_id: ablation_budget, setup: federated}
+    right: {method_id: local_epochs_ce, setup: standalone}
+    interpretation: federated transfer with a full-epoch local budget
+  - comparison_id: weighting_vs_local
+    left: {method_id: ablation_weighting, setup: federated}
+    right: {method_id: local_epochs_ce, setup: standalone}
+    interpretation: federated transfer with sample-count weighting
+  - comparison_id: flat_vs_local
+    left: {method_id: ablation_flat, setup: federated}
+    right: {method_id: local_epochs_ce, setup: standalone}
+    interpretation: flat sample-weighted aggregation versus matched local-only
+  - comparison_id: focal_vs_local
+    left: {method_id: ablation_focal, setup: federated}
+    right: {method_id: local_steps_focal, setup: standalone}
+    interpretation: federated transfer with unweighted focal loss
+  - comparison_id: effect_local_budget
+    left: {method_id: primary, setup: federated}
+    right: {method_id: ablation_budget, setup: federated}
+    interpretation: fixed steps minus full local epochs
+  - comparison_id: effect_uniform_weighting
+    left: {method_id: ablation_budget, setup: federated}
+    right: {method_id: ablation_weighting, setup: federated}
+    interpretation: uniform clients minus sample-count weighting
+  - comparison_id: effect_hierarchy
+    left: {method_id: ablation_weighting, setup: federated}
+    right: {method_id: ablation_flat, setup: federated}
+    interpretation: hierarchical minus flat aggregation
+  - comparison_id: effect_ce_vs_focal
+    left: {method_id: primary, setup: federated}
+    right: {method_id: ablation_focal, setup: federated}
+    interpretation: balanced-fold cross-entropy minus unweighted focal loss

@@ -56,3 +56,53 @@ venv.bak/
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Model checkpoints and weights
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.pickle
+
+# Logs
+logs/
+*.log
+
+# VS Code
+.vscode/
+
+# Editor temporary files
+*.swp
+*~
+*.swo
+*.orig
+
+# OS files
+.DS_Store
+Thumbs.db
+*.lnk
+
+# Pre-commit and git hooks
+.pre-commit-config.yaml.local
+.git/hooks/*.local
+
+# Temporary/cache directories
+.cache/
+*.cache
+tmp/
+temp/
+
+# Weights & Biases
+wandb/
+
+# MLflow
+mlruns/
+.mlflow
+
+# DVC
+.dvc/cache
+
+# Testing coverage
+.coverage
+.pytest_cache/
+htmlcov/

@@ -91,6 +91,11 @@ def main():
             "max_clients_per_dataset_task": 1,
             "max_folds": 1,
         })
+        local_training = arm_config["federated"].setdefault("local_training", {})
+        if local_training.get("mode") == "steps":
+            local_training["steps_per_round"] = 1
+        for dataset in arm_config.get("datasets", {}).values():
+            dataset["batch_size"] = 1
 
         temporary = tempfile.NamedTemporaryFile(
             mode="w", suffix=".yaml", prefix="fed_multi_smoke_", delete=False, encoding="utf-8"

@@ -11,7 +11,7 @@ from flwr.common import Context
 
 from src.dataset.federated_dataloader import build_client_loader, resolve_class_weights
 from src.federated import local_trainer
-from src.federated.config import dataset_config
+from src.federated.config import dataset_config, local_training_config
 from src.federated.model_split import (
     get_personalized_state,
     get_shared_state,
@@ -66,8 +66,16 @@ class FederatedClient(NumPyClient):
         self.num_classes = len(self.data_cfg["classes"])
         self.share_stem = config["federated"].get("share_stem", True)
         self.inversely_weighted = config["loss"]["inversely_weighted"]
-        self.local_epochs = config["federated"]["local_epochs"]
+        local_training = local_training_config(config)
+        self.local_training_mode = str(local_training.get("mode", "epochs")).lower()
+        self.local_epochs = int(
+            local_training["local_epochs"]
+        )
+        self.steps_per_round = int(local_training.get("steps_per_round", 10))
         self.base_seed = int(config["training"]["seed"])
+        self.data_order_seed = stable_client_seed(
+            self.base_seed, fold, client_id, phase="data_order"
+        )
         self.cuda_benchmark = bool(config["training"].get("cuda_benchmark", False))
         # Ray workers are separate processes.  Seed before constructing the model so local stems
         # and heads are exactly paired between the federated and local-only arms.
@@ -99,12 +107,19 @@ class FederatedClient(NumPyClient):
             classes=self.data_cfg["classes"],
             mode=weighting_mode,
         ) if task == "cls" else None
+        self.classification_criterion_name = self.data_cfg.get(
+            "classification_criterion", config["loss"]["classification_criterion"]
+        )
+        self.focal_gamma = float(
+            self.data_cfg.get("focal_gamma", config["loss"].get("focal_gamma", 2.0))
+        )
         self.cls_criterion = init_criterion_classification(
             n_classes=self.num_classes,
             classes_weighted=self.data_cfg.get("classes_weighted"),
             class_weights=self.class_weights,
-            classification_criterion=config["loss"]["classification_criterion"],
+            classification_criterion=self.classification_criterion_name,
             device=self.device,
+            focal_gamma=self.focal_gamma,
         )
 
         oversampling_cfg = self.data_cfg.get("oversampling")
@@ -130,12 +145,16 @@ class FederatedClient(NumPyClient):
             transforms=_default_transforms(self.data_cfg.get("transforms", {})),
             augmentations=augmentations,
             oversampling=oversampling,
+            local_training_mode=self.local_training_mode,
+            steps_per_round=self.steps_per_round,
+            sampling_seed=self.data_order_seed,
             **common,
         )
         self.val_loader = build_client_loader(
             split="val", augmentations=None, oversampling=False, **common
         )
-        self.n_train = len(self.train_loader.dataset)
+        self.n_train = self.train_loader.effective_num_samples
+        self.n_train_raw = self.train_loader.raw_num_samples
 
         self.state_dir = Path(run_dir) / f"fold_{fold}" / f"client_{client_id}"
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -156,9 +175,17 @@ class FederatedClient(NumPyClient):
             "class_names": list(self.data_cfg["classes"]),
             "class_weighting": weighting_mode,
             "class_weights": weights,
+            "classification_criterion": self.classification_criterion_name,
+            "focal_gamma": self.focal_gamma,
             "channels": self.data_cfg["channels"],
             "share_stem": self.share_stem,
             "initial_seed": self.initial_seed,
+            "data_order_seed": self.data_order_seed,
+            "local_training_mode": self.local_training_mode,
+            "local_epochs": self.local_epochs,
+            "steps_per_round": self.steps_per_round,
+            "raw_train_examples": self.n_train_raw,
+            "effective_train_examples": self.n_train,
             "round_seed_policy": "sha256(training.seed, fold, client_id, phase, round)",
             "final_checkpoint_policy": (
                 "last_round_local_full_model"
@@ -219,10 +246,22 @@ class FederatedClient(NumPyClient):
         if not self.standalone or not has_local_state:
             set_shared_state(self.model, parameters, share_stem=self.share_stem)
 
-        local_trainer.train_local(
+        if self.local_training_mode == "steps":
+            batch_sampler = self.train_loader.batch_sampler
+            if not hasattr(batch_sampler, "set_round"):
+                raise RuntimeError("steps mode requires a round-addressable train batch sampler")
+            batch_sampler.set_round(max(server_round, 1))
+
+        train_result = local_trainer.train_local(
             self.model, self.train_loader, self.optimizer, self.task, self.device,
             self.local_epochs, self.num_classes, self.seg_criterion, self.cls_criterion,
-            self.inversely_weighted,
+            self.inversely_weighted, training_mode=self.local_training_mode,
+            steps_per_round=self.steps_per_round,
+        )
+        logging.info(
+            "[%s] round=%s local_training=%s optimizer_steps=%s examples_processed=%s",
+            self.client_id, server_round, self.local_training_mode,
+            train_result["optimizer_steps"], train_result["examples_processed"],
         )
         val = local_trainer.evaluate_local(
             self.model, self.val_loader, self.task, self.device, self.num_classes,
@@ -246,6 +285,12 @@ class FederatedClient(NumPyClient):
             "dataset": self.dataset,
             "task": self.task,
             "client_id": self.client_id,
+            "local_training_mode": self.local_training_mode,
+            "train_loss": float(train_result["loss"]),
+            "optimizer_steps": int(train_result["optimizer_steps"]),
+            "examples_processed": int(train_result["examples_processed"]),
+            "raw_num_examples": int(self.n_train_raw),
+            "effective_num_examples": int(self.n_train),
             "val_loss": float(val["loss"]),
             "val_metric": float(val["metric"]),
         }

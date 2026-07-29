@@ -6,14 +6,85 @@ channel-aware dataset.  Class weights are deliberately resolved from the unmodif
 rows of the master CSV, so validation/test data and oversampled replicas cannot leak into them.
 """
 
+import hashlib
 import logging
-from typing import Optional, Sequence
+from typing import Iterator, Optional, Sequence
 
 import pandas as pd
-from torch.utils.data import DataLoader
+import torch
+from torch.utils.data import DataLoader, Sampler
 
 from src.dataset.BUSI_dataset import BUSI
 from src.dataset.BUSI_dataloader import deterministic_oversampling
+
+
+class RotatingBatchSampler(Sampler[list[int]]):
+    """Deterministic, round-addressable batches over an infinite permutation stream.
+
+    Each cycle visits every dataset index exactly once in a seeded random order. Consecutive
+    cycles are concatenated before batches are formed, so a batch crossing a cycle boundary is
+    still full. A round is addressed by its absolute offset in that stream; no in-memory cursor
+    is required, which makes the sequence stable when Flower recreates a Ray client worker.
+    """
+
+    def __init__(
+        self,
+        dataset_size: int,
+        batch_size: int,
+        steps_per_round: int,
+        seed: int,
+        server_round: int = 1,
+    ):
+        for name, value in (
+            ("dataset_size", dataset_size),
+            ("batch_size", batch_size),
+            ("steps_per_round", steps_per_round),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise ValueError(f"seed must be an integer, got {seed!r}")
+
+        self.dataset_size = dataset_size
+        self.batch_size = batch_size
+        self.steps_per_round = steps_per_round
+        self.seed = seed
+        self.server_round = 1
+        self.set_round(server_round)
+
+    def set_round(self, server_round: int) -> None:
+        """Select a one-based federated round without consuming earlier batches."""
+        if isinstance(server_round, bool) or not isinstance(server_round, int) or server_round < 1:
+            raise ValueError(f"server_round must be a positive integer, got {server_round!r}")
+        self.server_round = server_round
+
+    def __len__(self) -> int:
+        return self.steps_per_round
+
+    def _permutation(self, cycle: int) -> list[int]:
+        payload = f"{self.seed}|{cycle}".encode("utf-8")
+        cycle_seed = int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
+        generator = torch.Generator()
+        generator.manual_seed(cycle_seed)
+        return torch.randperm(self.dataset_size, generator=generator).tolist()
+
+    def __iter__(self) -> Iterator[list[int]]:
+        examples_per_round = self.steps_per_round * self.batch_size
+        stream_position = (self.server_round - 1) * examples_per_round
+        cycle, offset = divmod(stream_position, self.dataset_size)
+        permutation = self._permutation(cycle)
+
+        for _ in range(self.steps_per_round):
+            batch = []
+            while len(batch) < self.batch_size:
+                take = min(self.batch_size - len(batch), self.dataset_size - offset)
+                batch.extend(permutation[offset:offset + take])
+                offset += take
+                if offset == self.dataset_size:
+                    cycle += 1
+                    offset = 0
+                    permutation = self._permutation(cycle)
+            yield batch
 
 
 def list_clients(partition_file: str) -> pd.DataFrame:
@@ -157,6 +228,9 @@ def build_client_loader(
     channels: int = 1,
     classes: Optional[Sequence[str]] = None,
     max_samples: Optional[int] = None,
+    local_training_mode: str = "epochs",
+    steps_per_round: int = 10,
+    sampling_seed: int = 0,
 ) -> DataLoader:
     """Build the DataLoader for a single client/split.
 
@@ -167,8 +241,16 @@ def build_client_loader(
     ``max_samples`` is a deterministic smoke-test budget.  It is applied after optional train
     oversampling so it is a hard cap on loader work; class weights remain based on the complete,
     unmodified master partition via :func:`resolve_class_weights`.
+
+    In ``steps`` mode, the train loader yields exactly ``steps_per_round`` full batches from a
+    deterministic rotating stream. Call ``loader.batch_sampler.set_round(round)`` before use.
     """
     mapping = load_client_mapping(partition_file, fold, client_id, split, dataset=dataset)
+    raw_num_samples = len(mapping)
+
+    local_training_mode = str(local_training_mode).lower()
+    if local_training_mode not in {"epochs", "steps"}:
+        raise ValueError("local_training_mode must be 'epochs' or 'steps'")
 
     is_train = split == "train"
     if is_train and oversampling and len(mapping) > 0:
@@ -196,11 +278,29 @@ def build_client_loader(
         f" (smoke cap={max_samples})" if max_samples is not None else "",
     )
 
-    return DataLoader(
-        client_dataset,
-        batch_size=batch_size if split != "test" else 1,
-        # RandomSampler rejects an empty dataset.  Empty slices remain iterable and surface as zero
-        # batches, which lets the caller issue the domain-specific validation message.
-        shuffle=is_train and len(client_dataset) > 0,
-        drop_last=False,
-    )
+    if is_train and local_training_mode == "steps" and len(client_dataset) > 0:
+        loader = DataLoader(
+            client_dataset,
+            batch_sampler=RotatingBatchSampler(
+                dataset_size=len(client_dataset),
+                batch_size=batch_size,
+                steps_per_round=steps_per_round,
+                seed=sampling_seed,
+            ),
+        )
+    else:
+        loader = DataLoader(
+            client_dataset,
+            batch_size=batch_size if split != "test" else 1,
+            # RandomSampler rejects an empty dataset. Empty slices remain iterable and surface as
+            # zero batches, which lets the caller issue the domain-specific validation message.
+            shuffle=is_train and len(client_dataset) > 0,
+            drop_last=False,
+        )
+
+    # Explicit loader metadata lets clients report raw ownership, effective oversampled size and
+    # actual exposure without re-reading the partition or leaking validation/test data.
+    loader.raw_num_samples = raw_num_samples
+    loader.effective_num_samples = len(client_dataset)
+    loader.local_training_mode = local_training_mode
+    return loader

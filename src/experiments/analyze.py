@@ -20,6 +20,7 @@ and ``--out``.
 import argparse
 import base64
 import io
+import json
 import logging
 import re
 from pathlib import Path
@@ -29,6 +30,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import wilcoxon
 from sklearn.metrics import roc_auc_score
+import yaml
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402  (must follow the Agg backend selection)
@@ -61,6 +63,9 @@ CLS_METRICS = CLS_BASE_METRICS + [
 ]
 PRIMARY = {"seg": "dice", "cls": "acc"}
 LEGACY_DATASET = "legacy"
+LEGACY_STUDY = "legacy"
+LEGACY_METHOD = "legacy"
+LEGACY_SEED = "legacy"
 
 _CLASS_METRIC_RE = re.compile(r"^(precision|recall)_class_(\d+)(?:_(.+))?$")
 _PROB_RE = re.compile(r"^prob_(\d+)$")
@@ -73,6 +78,30 @@ def _with_dataset(df):
         out["dataset"] = LEGACY_DATASET
     else:
         out["dataset"] = out["dataset"].fillna(LEGACY_DATASET).astype(str)
+    return out
+
+
+def _with_study_metadata(df):
+    """Canonicalize study identifiers while keeping historical result CSVs readable."""
+    out = _with_dataset(df)
+    if "study_id" not in out:
+        out["study_id"] = LEGACY_STUDY
+    else:
+        out["study_id"] = out["study_id"].fillna(LEGACY_STUDY).astype(str)
+    if "method_id" not in out:
+        out["method_id"] = (
+            out["setup"].astype(str) if "setup" in out else LEGACY_METHOD
+        )
+    else:
+        out["method_id"] = out["method_id"].fillna(LEGACY_METHOD).astype(str)
+    if "arm_id" not in out:
+        out["arm_id"] = out["method_id"]
+    else:
+        out["arm_id"] = out["arm_id"].fillna(out["method_id"]).astype(str)
+    if "seed" not in out:
+        out["seed"] = LEGACY_SEED
+    else:
+        out["seed"] = out["seed"].fillna(LEGACY_SEED).astype(str)
     return out
 
 
@@ -118,9 +147,11 @@ def _add_class_metadata(row, metric, group):
 
 
 def summary_table(df):
-    df = _with_dataset(df)
+    df = _with_study_metadata(df)
     rows = []
-    for (dataset, setup, task), group in df.groupby(["dataset", "setup", "task"]):
+    group_keys = ["study_id", "dataset", "method_id", "setup", "task"]
+    for keys, group in df.groupby(group_keys):
+        study_id, dataset, method_id, setup, task = keys
         for metric in _metrics_for(task, group.columns):
             if metric not in group:
                 continue
@@ -130,16 +161,47 @@ def summary_table(df):
             if not values.notna().any():
                 continue
             row = {
+                "study_id": study_id,
                 "dataset": dataset,
+                "method_id": method_id,
                 "setup": setup,
                 "task": task,
                 "metric": metric,
                 "mean": values.mean(),
                 "std": values.std(),
                 "n": int(values.notna().sum()),
+                "n_seeds": int(group.loc[values.notna(), "seed"].nunique()),
             }
             _add_class_metadata(row, metric, group)
             rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def summary_by_seed(df):
+    """Mean/std across client-fold observations without hiding between-seed variation."""
+    df = _with_study_metadata(df)
+    rows = []
+    keys = ["study_id", "seed", "dataset", "method_id", "setup", "task"]
+    for values_key, group in df.groupby(keys):
+        study_id, seed, dataset, method_id, setup, task = values_key
+        for metric in _metrics_for(task, group.columns):
+            if metric not in group:
+                continue
+            values = pd.to_numeric(group[metric], errors="coerce")
+            if not values.notna().any():
+                continue
+            rows.append({
+                "study_id": study_id,
+                "seed": seed,
+                "dataset": dataset,
+                "method_id": method_id,
+                "setup": setup,
+                "task": task,
+                "metric": metric,
+                "mean": values.mean(),
+                "std": values.std(),
+                "n": int(values.notna().sum()),
+            })
     return pd.DataFrame(rows)
 
 
@@ -225,6 +287,98 @@ def per_client_deltas(df, a="federated", b="standalone"):
     return pd.DataFrame(rows)
 
 
+def _load_comparisons(manifest):
+    if manifest is None:
+        return []
+    if isinstance(manifest, (str, Path)):
+        with Path(manifest).open(encoding="utf-8") as stream:
+            manifest = yaml.safe_load(stream)
+    return list((manifest or {}).get("comparisons", []))
+
+
+def method_comparisons(df, comparisons):
+    """Evaluate manifest-declared paired contrasts without pooling datasets or seeds."""
+    df = _with_study_metadata(df)
+    pair_rows, observation_rows = [], []
+    key = ["study_id", "seed", "dataset", "fold", "client_id", "task"]
+    for comparison in comparisons:
+        left_spec, right_spec = comparison["left"], comparison["right"]
+        left = df[
+            (df.method_id == str(left_spec["method_id"]))
+            & (df.setup == left_spec["setup"])
+        ]
+        right = df[
+            (df.method_id == str(right_spec["method_id"]))
+            & (df.setup == right_spec["setup"])
+        ]
+        for (dataset, task), group in df.groupby(["dataset", "task"]):
+            metrics = _metrics_for(task, group.columns)
+            task_left = left[(left.dataset == dataset) & (left.task == task)]
+            task_right = right[(right.dataset == dataset) & (right.task == task)]
+            for metric in metrics:
+                if metric not in task_left or metric not in task_right:
+                    continue
+                paired = task_left[key + [metric]].merge(
+                    task_right[key + [metric]], on=key, suffixes=("_left", "_right")
+                )
+                left_values = pd.to_numeric(paired[f"{metric}_left"], errors="coerce")
+                right_values = pd.to_numeric(paired[f"{metric}_right"], errors="coerce")
+                valid = left_values.notna() & right_values.notna()
+                paired = paired.loc[valid].copy()
+                if paired.empty:
+                    continue
+                left_array = left_values.loc[valid].to_numpy(float)
+                right_array = right_values.loc[valid].to_numpy(float)
+                differences = left_array - right_array
+                if np.all(differences == 0):
+                    statistic, p_value = np.nan, np.nan
+                else:
+                    try:
+                        statistic, p_value = wilcoxon(left_array, right_array)
+                    except ValueError:
+                        statistic, p_value = np.nan, np.nan
+                pair_rows.append({
+                    "comparison_id": comparison["comparison_id"],
+                    "interpretation": comparison.get("interpretation", ""),
+                    "dataset": dataset,
+                    "task": task,
+                    "metric": metric,
+                    "left_method": left_spec["method_id"],
+                    "left_setup": left_spec["setup"],
+                    "right_method": right_spec["method_id"],
+                    "right_setup": right_spec["setup"],
+                    "n_pairs": len(differences),
+                    "n_seeds": int(paired["seed"].nunique()),
+                    "left_mean": left_array.mean(),
+                    "right_mean": right_array.mean(),
+                    "mean_delta": differences.mean(),
+                    "median_delta": float(np.median(differences)),
+                    "wilcoxon_stat": statistic,
+                    "wilcoxon_p": p_value,
+                    "inference_scope": "exploratory_only_non_independent_client_fold_pairs",
+                })
+                if metric == PRIMARY.get(task):
+                    for record, left_value, right_value, delta in zip(
+                        paired.itertuples(index=False), left_array, right_array, differences
+                    ):
+                        observation_rows.append({
+                            "comparison_id": comparison["comparison_id"],
+                            "study_id": record.study_id,
+                            "seed": record.seed,
+                            "dataset": record.dataset,
+                            "fold": record.fold,
+                            "client_id": record.client_id,
+                            "task": record.task,
+                            "metric": metric,
+                            "left_method": left_spec["method_id"],
+                            "right_method": right_spec["method_id"],
+                            "left": left_value,
+                            "right": right_value,
+                            "delta": delta,
+                        })
+    return pd.DataFrame(pair_rows), pd.DataFrame(observation_rows)
+
+
 def _probability_columns(dataset_predictions):
     """Find the complete contiguous prob_0..prob_K-1 space for one dataset."""
     numbered = {
@@ -275,7 +429,7 @@ def pooled_auc(pred_paths):
     if not pred_paths:
         return pd.DataFrame()
     predictions = pd.concat(
-        [_with_dataset(pd.read_csv(path)) for path in pred_paths], ignore_index=True
+        [_with_study_metadata(pd.read_csv(path)) for path in pred_paths], ignore_index=True
     )
     rows = []
     for dataset, dataset_predictions in predictions.groupby("dataset"):
@@ -285,10 +439,15 @@ def pooled_auc(pred_paths):
             continue
         num_classes = len(probability_columns)
         class_names = _class_names_for(dataset_predictions, num_classes)
-        for (setup, fold), group in dataset_predictions.groupby(["setup", "fold"]):
+        group_keys = ["study_id", "method_id", "setup", "seed", "fold"]
+        for values_key, group in dataset_predictions.groupby(group_keys):
+            study_id, method_id, setup, seed, fold = values_key
             row = {
+                "study_id": study_id,
                 "dataset": dataset,
+                "method_id": method_id,
                 "setup": setup,
+                "seed": seed,
                 "fold": fold,
                 "num_classes": num_classes,
                 "n": len(group),
@@ -297,10 +456,15 @@ def pooled_auc(pred_paths):
             if class_names is not None:
                 row["class_names"] = class_names
             rows.append(row)
-        for setup, group in dataset_predictions.groupby("setup"):
+        overall_keys = ["study_id", "method_id", "setup", "seed"]
+        for values_key, group in dataset_predictions.groupby(overall_keys):
+            study_id, method_id, setup, seed = values_key
             row = {
+                "study_id": study_id,
                 "dataset": dataset,
+                "method_id": method_id,
                 "setup": setup,
+                "seed": seed,
                 "fold": "all",
                 "num_classes": num_classes,
                 "n": len(group),
@@ -325,12 +489,14 @@ def _metric_boxplot(df, task, metrics, dataset=None):
     if dataset is not None:
         subset = subset[subset.dataset == dataset]
     metrics = [metric for metric in metrics if metric in subset.columns]
-    setups = sorted(subset.setup.unique())
-    width = 0.8 / max(len(setups), 1)
+    subset = subset.copy()
+    subset["series"] = subset["method_id"].astype(str) + " (" + subset["setup"] + ")"
+    series = sorted(subset.series.unique())
+    width = 0.8 / max(len(series), 1)
     colors = plt.cm.Set2.colors
     fig, axis = plt.subplots(figsize=(8, 4))
-    for setup_index, setup in enumerate(setups):
-        setup_rows = subset[subset.setup == setup]
+    for setup_index, label in enumerate(series):
+        setup_rows = subset[subset.series == label]
         for metric_index, metric in enumerate(metrics):
             values = pd.to_numeric(setup_rows[metric], errors="coerce").dropna().to_numpy()
             if len(values) == 0:
@@ -347,14 +513,14 @@ def _metric_boxplot(df, task, metrics, dataset=None):
                 facecolor=colors[setup_index % len(colors)], alpha=0.85
             )
         axis.plot(
-            [], [], color=colors[setup_index % len(colors)], lw=6, label=setup
+            [], [], color=colors[setup_index % len(colors)], lw=6, label=label
         )
     axis.set_xticks(range(len(metrics)))
     axis.set_xticklabels(metrics, rotation=20, ha="right")
     axis.set_ylim(0, 1)
     prefix = f"{dataset} / " if dataset is not None else ""
     axis.set_title(f"{prefix}{task} - distribution across client-fold")
-    if setups:
+    if series:
         axis.legend(fontsize=8)
     return _fig_to_b64(fig)
 
@@ -371,9 +537,8 @@ def _delta_bars(per_client, task, dataset=None):
     axis.axhline(0, color="black", lw=0.8)
     axis.tick_params(axis="x", rotation=60)
     prefix = f"{dataset} / " if dataset is not None else ""
-    axis.set_title(
-        f"{prefix}{task} - federated minus local ({PRIMARY[task]}) per client-fold"
-    )
+    comparison = subset["comparison_id"].iloc[0] if not subset.empty else "comparison"
+    axis.set_title(f"{prefix}{task} - {comparison} ({PRIMARY[task]}) per client-fold")
     return _fig_to_b64(fig)
 
 
@@ -382,7 +547,9 @@ def _auc_bars(pooled, dataset=None):
         pooled = pooled[pooled.dataset == dataset]
     overall = pooled[pooled.fold == "all"]
     fig, axis = plt.subplots(figsize=(5, 4))
-    axis.bar(overall["setup"], overall["auc_pooled"], color="#264653")
+    labels = overall["method_id"].astype(str) + " (" + overall["setup"] + ")"
+    axis.bar(labels, overall["auc_pooled"], color="#264653")
+    axis.tick_params(axis="x", rotation=55)
     axis.set_ylim(0, 1)
     prefix = f"{dataset} - " if dataset is not None else ""
     axis.set_title(f"{prefix}pooled OvR-macro AUC (all folds)")
@@ -390,7 +557,7 @@ def _auc_bars(pooled, dataset=None):
 
 
 def build_html(df, summary, deltas, per_client, pooled, out):
-    df = _with_dataset(df)
+    df = _with_study_metadata(df)
     charts = []
     dataset_tasks = (
         df[["dataset", "task"]].drop_duplicates().sort_values(["dataset", "task"])
@@ -409,13 +576,17 @@ def build_html(df, summary, deltas, per_client, pooled, out):
             .drop_duplicates()
             .sort_values(["dataset", "task"])
         )
-        charts.extend(
-            (
-                f"{dataset} / {task} per-client delta",
-                _delta_bars(per_client, task, dataset=dataset),
-            )
-            for dataset, task in client_dataset_tasks.itertuples(index=False, name=None)
-        )
+        for comparison_id in sorted(per_client.comparison_id.unique()):
+            comparison_rows = per_client[per_client.comparison_id == comparison_id]
+            for dataset, task in client_dataset_tasks.itertuples(index=False, name=None):
+                selected = comparison_rows[
+                    (comparison_rows.dataset == dataset) & (comparison_rows.task == task)
+                ]
+                if not selected.empty:
+                    charts.append((
+                        f"{comparison_id}: {dataset} / {task}",
+                        _delta_bars(selected, task, dataset=dataset),
+                    ))
     if not pooled.empty:
         charts.extend(
             (f"{dataset} pooled AUC", _auc_bars(pooled, dataset=dataset))
@@ -429,7 +600,7 @@ def build_html(df, summary, deltas, per_client, pooled, out):
     tables = ""
     if not deltas.empty:
         tables += (
-            "<h2>Federated vs Local - exploratory paired deltas</h2>"
+            "<h2>Manifest-declared exploratory paired deltas</h2>"
             "<p><strong>Inference warning:</strong> client × CV-fold pairs are not independent "
             "replicates. Wilcoxon p-values are descriptive diagnostics, not evidence of "
             "confirmatory statistical significance. Use independent seeds or paired OOF "
@@ -437,7 +608,7 @@ def build_html(df, summary, deltas, per_client, pooled, out):
             + deltas.round(4).to_html(index=False)
         )
     tables += (
-        "<h2>Summary (mean +/- std per dataset x task x setup)</h2>"
+        "<h2>Summary (mean +/- std per dataset x task x method)</h2>"
         + summary.round(4).to_html(index=False)
     )
 
@@ -454,16 +625,113 @@ th{{background:#f4f4f4}}</style></head><body>
     (out / "report.html").write_text(html, encoding="utf-8")
 
 
-def run(results, preds, out):
+def aggregation_audit(result_paths):
+    """Flatten per-round aggregation histories stored beside result files."""
+    rows = []
+    for result_path in result_paths:
+        result_path = Path(result_path)
+        result_frame = _with_study_metadata(pd.read_csv(result_path, nrows=1))
+        metadata = result_frame.iloc[0]
+        for history_path in sorted(result_path.parent.glob("fold_*/aggregation_history.json")):
+            # Resume-by-fold archives interrupted work as ``fold_N.incomplete_<timestamp>``.
+            # Those histories are forensic artifacts, not completed experiment folds, and must
+            # not be folded into the audit or parsed as a numeric fold identifier.
+            fold_name = history_path.parent.name.removeprefix("fold_")
+            if not fold_name.isdecimal():
+                continue
+            fold = int(fold_name)
+            with history_path.open(encoding="utf-8") as stream:
+                history = json.load(stream)
+            for event in history:
+                for client in event.get("clients", []):
+                    rows.append({
+                        "study_id": metadata.study_id,
+                        "method_id": metadata.method_id,
+                        "setup": metadata.setup,
+                        "seed": metadata.seed,
+                        "fold": fold,
+                        "round": event["round"],
+                        "stage": event["stage"],
+                        "aggregation_mode": event["aggregation_mode"],
+                        "client_weighting": event["client_weighting"],
+                        **client,
+                    })
+    return pd.DataFrame(rows)
+
+
+def partition_audits(result_paths):
+    """Describe dataset scale and fold-local class weights from paired study partitions."""
+    sources = {}
+    for result_path in result_paths:
+        run_dir = Path(result_path).parent
+        metadata_path = run_dir / "study_run.yaml"
+        if not metadata_path.exists():
+            continue
+        metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8")) or {}
+        partition_path = metadata.get("partition_path")
+        if partition_path:
+            sources[(str(metadata.get("study_id", LEGACY_STUDY)), str(metadata.get("seed")))] = Path(partition_path)
+
+    composition_rows, class_rows = [], []
+    for (study_id, seed), partition_path in sorted(sources.items()):
+        mapping = pd.read_csv(partition_path, low_memory=False)
+        if "dataset" not in mapping:
+            mapping["dataset"] = LEGACY_DATASET
+        unique_column = "img_path" if "img_path" in mapping else None
+        counts = (
+            mapping.groupby("dataset")[unique_column].nunique()
+            if unique_column else mapping.groupby("dataset").size()
+        )
+        total = int(counts.sum())
+        for dataset, count in counts.items():
+            composition_rows.append({
+                "study_id": study_id,
+                "seed": seed,
+                "dataset": dataset,
+                "unique_images": int(count),
+                "fraction_unique_images": float(count / total) if total else np.nan,
+            })
+
+        required = {"fold", "split", "class"}
+        if required.issubset(mapping.columns):
+            train = mapping[(mapping.split == "train")]
+            if "task" in mapping:
+                train = train[train.task == "cls"]
+            for (fold, dataset), group in train.groupby(["fold", "dataset"]):
+                class_counts = group["class"].dropna().value_counts().sort_index()
+                n_samples, n_classes = int(class_counts.sum()), int(len(class_counts))
+                for class_name, count in class_counts.items():
+                    class_rows.append({
+                        "study_id": study_id,
+                        "seed": seed,
+                        "fold": int(fold),
+                        "dataset": dataset,
+                        "class_name": class_name,
+                        "train_examples": int(count),
+                        "balanced_fold_weight": n_samples / (n_classes * int(count)),
+                    })
+    return pd.DataFrame(composition_rows), pd.DataFrame(class_rows)
+
+
+def run(results, preds, out, manifest=None):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    df = pd.concat([_with_dataset(pd.read_csv(path)) for path in results], ignore_index=True)
+    df = pd.concat(
+        [_with_study_metadata(pd.read_csv(path)) for path in results], ignore_index=True
+    )
 
     summary = summary_table(df)
     summary.to_csv(out / "summary_per_task_setup.csv", index=False)
+    by_seed = summary_by_seed(df)
+    by_seed.to_csv(out / "summary_by_seed.csv", index=False)
 
     deltas, per_client = pd.DataFrame(), pd.DataFrame()
-    if {"federated", "standalone"}.issubset(set(df.setup.unique())):
+    comparisons = _load_comparisons(manifest)
+    if comparisons:
+        deltas, per_client = method_comparisons(df, comparisons)
+        deltas.to_csv(out / "method_comparisons.csv", index=False)
+        per_client.to_csv(out / "per_client_method_deltas.csv", index=False)
+    elif {"federated", "standalone"}.issubset(set(df.setup.unique())):
         logging.warning(
             "Wilcoxon client x CV-fold pairs are non-independent; treating p-values as "
             "exploratory diagnostics only"
@@ -471,18 +739,28 @@ def run(results, preds, out):
         deltas = paired_deltas(df)
         deltas.to_csv(out / "federated_vs_local_wilcoxon.csv", index=False)
         per_client = per_client_deltas(df)
+        per_client["comparison_id"] = "federated_vs_local"
         per_client.to_csv(out / "per_client_deltas.csv", index=False)
 
     pooled = pooled_auc(preds)
     if not pooled.empty:
         pooled.to_csv(out / "pooled_auc.csv", index=False)
 
+    audit = aggregation_audit(results)
+    if not audit.empty:
+        audit.to_csv(out / "aggregation_audit.csv", index=False)
+    composition, class_balance = partition_audits(results)
+    if not composition.empty:
+        composition.to_csv(out / "data_composition.csv", index=False)
+    if not class_balance.empty:
+        class_balance.to_csv(out / "class_balance_audit.csv", index=False)
+
     build_html(df, summary, deltas, per_client, pooled, out)
 
     logging.info(
-        "\nSummary (mean per dataset x task x setup):\n%s",
+        "\nSummary (mean per dataset x task x method):\n%s",
         summary.pivot_table(
-            index=["dataset", "task", "metric"], columns="setup", values="mean"
+            index=["dataset", "task", "metric"], columns="method_id", values="mean"
         ).round(4),
     )
     logging.info(f"Wrote analysis tables + report.html to {out}")
@@ -501,8 +779,9 @@ def main():
         help="per-setup *_cls_predictions.csv files (for pooled AUC)",
     )
     parser.add_argument("--out", default=OUT, help="output directory for analysis tables")
+    parser.add_argument("--manifest", default=None, help="study manifest with paired comparisons")
     args = parser.parse_args()
-    run(args.results, args.preds, args.out)
+    run(args.results, args.preds, args.out, manifest=args.manifest)
 
 
 if __name__ == "__main__":
