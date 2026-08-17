@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Pipeline de análise dos resultados federados, métricas, deltas pareados, AUC pooled e limitações estatísticas.">
+  <title>Análise dos resultados — métricas, comparações e auditoria</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="model_pipeline.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <div class="brand">Pipeline do modelo</div>
+      <nav class="docnav" aria-label="Documentos do pipeline">
+        <a href="preprocessamento_dados.html">Pré-processamento</a>
+        <a href="treinamento_modelo.html">Treinamento</a>
+        <a href="inferencia_modelo.html">Inferência</a>
+        <a class="current" href="analise_resultados.html">Análise</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="shell">
+      <div class="hero">
+        <div>
+          <div class="eyebrow">Métricas · comparações pareadas · auditoria</div>
+          <h1>Como os resultados são analisados.</h1>
+          <p class="lead">Dos CSVs de teste a um relatório interpretável: padronização de metadados, isolamento por dataset e tarefa, sumários, contrastes definidos no manifesto, AUC pooled e limites de inferência.</p>
+        </div>
+        <aside class="hero-note">
+          <strong>Regra principal</strong>
+          <p>Não existe uma única pontuação “do estudo”. BUSI e ISIC têm modalidades, tamanhos e espaços de classes diferentes; segmentação e classificação respondem a perguntas diferentes.</p>
+          <div class="mono">análise = dataset × tarefa × método × setup × desenho de avaliação</div>
+        </aside>
+      </div>
+
+      <div class="journey" style="--steps:6" aria-label="Resumo da análise">
+        <div class="journey-step"><div class="journey-n">01</div><b>Coletar</b><span>resultados e probabilidades</span></div>
+        <div class="journey-step"><div class="journey-n">02</div><b>Padronizar</b><span>metadados e desenho de avaliação</span></div>
+        <div class="journey-step"><div class="journey-n">03</div><b>Resumir</b><span>média, desvio, n e seeds</span></div>
+        <div class="journey-step"><div class="journey-n">04</div><b>Comparar</b><span>pares declarados no manifesto</span></div>
+        <div class="journey-step"><div class="journey-n">05</div><b>Auditar</b><span>AUC, pesos e composição</span></div>
+        <div class="journey-step"><div class="journey-n">06</div><b>Interpretar</b><span>escopo descritivo ou exploratório</span></div>
+      </div>
+    </div>
+
+    <section id="entradas">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">01 · Entradas</span><h2>O analisador recebe dois níveis de evidência</h2></div>
+          <p>Os arquivos de resultado têm uma linha por cliente × fold; os arquivos de predição têm uma linha por imagem de classificação. Ambos são necessários porque algumas métricas podem ser agregadas diretamente, enquanto a AUC pooled exige probabilidades individuais.</p>
+        </div>
+        <div class="split-view">
+          <article class="panel"><div class="panel-head"><h3>*_test_results.csv</h3><p>nível cliente × fold</p></div><div class="panel-body"><ul><li>métricas finais de seg ou cls;</li><li>dataset, tarefa, setup e método;</li><li>fold, cliente, seed e esquema;</li><li>tamanho da fatia de teste.</li></ul></div></article>
+          <article class="panel"><div class="panel-head blue"><h3>*_cls_predictions.csv</h3><p>nível imagem</p></div><div class="panel-body"><ul><li>ground truth e classe prevista;</li><li>probabilidades por classe;</li><li>nomes das classes;</li><li>dataset e identificadores do run.</li></ul></div></article>
+        </div>
+        <div class="callout info"><b>Compatibilidade com arquivos antigos.</b><p>Se colunas como <code>dataset</code>, <code>study_id</code> ou <code>method_id</code> estiverem ausentes, o analisador preenche chaves explícitas <code>legacy</code>. Um único fold sem metadado vira <code>unknown_single_split</code>, não é presumido como holdout.</p></div>
+      </div>
+    </section>
+
+    <section id="isolamento">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">02 · Isolamento semântico</span><h2>Nunca misturar espaços incompatíveis</h2></div>
+          <p>Antes de qualquer média ou gráfico, as linhas são separadas por desenho de avaliação, dataset e tarefa. Isso evita combinar probabilidades de 3 classes com probabilidades de 7 classes ou métricas de pixels com métricas de diagnóstico.</p>
+        </div>
+        <div class="matrix" aria-label="Métricas por dataset e tarefa">
+          <div class="head">Grupo</div><div class="head">Dice/IoU</div><div class="head">Acc/F1</div><div class="head">Probabilidades</div><div class="head">Classes</div>
+          <div><strong>BUSI · seg</strong></div><div class="yes">sim</div><div class="no">não</div><div class="no">não</div><div>máscara binária</div>
+          <div><strong>BUSI · cls</strong></div><div class="no">não</div><div class="yes">sim</div><div class="yes">prob_0…2</div><div>3 diagnósticos</div>
+          <div><strong>ISIC · seg</strong></div><div class="yes">sim</div><div class="no">não</div><div class="no">não</div><div>máscara binária</div>
+          <div><strong>ISIC · cls</strong></div><div class="no">não</div><div class="yes">sim</div><div class="yes">prob_0…6</div><div>7 diagnósticos</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="metricas">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">03 · Métricas</span><h2>O que cada número responde</h2></div>
+          <p>O pipeline mantém as métricas em colunas separadas. A leitura deve combinar medidas complementares, especialmente em classificação desbalanceada e segmentação com muito fundo.</p>
+        </div>
+        <h3>Segmentação</h3>
+        <div class="metric-grid">
+          <div class="metric"><b>Dice</b><span>Quanto as duas regiões se sobrepõem; métrica primária nos deltas por cliente.</span></div>
+          <div class="metric"><b>IoU</b><span>Interseção sobre união; penaliza desacordo espacial.</span></div>
+          <div class="metric"><b>Sensibilidade</b><span>Quanto da lesão real foi recuperado.</span></div>
+          <div class="metric"><b>Especificidade</b><span>Quanto do fundo foi corretamente rejeitado.</span></div>
+          <div class="metric"><b>Precisão</b><span>Quanto da região prevista realmente pertence à lesão.</span></div>
+        </div>
+        <h3 style="margin-top:30px">Classificação</h3>
+        <div class="metric-grid">
+          <div class="metric"><b>Acurácia</b><span>Percentual total correto; primária nos deltas por cliente.</span></div>
+          <div class="metric"><b>Macro-F1</b><span>Equilibra precisão e recall dando o mesmo peso a cada classe.</span></div>
+          <div class="metric"><b>Balanced acc</b><span>Recall médio entre classes; essencial no ISIC.</span></div>
+          <div class="metric"><b>AUC OvR macro</b><span>Capacidade de ordenar cada classe contra as demais.</span></div>
+          <div class="metric"><b>Por classe</b><span>Precisão e recall revelam quais diagnósticos foram ignorados ou confundidos.</span></div>
+        </div>
+        <div class="callout danger"><b>Acurácia isolada pode enganar no ISIC.</b><p>A classe NV ocupa cerca de 66,9% do pool rotulado. Um preditor constante de NV já alcança aproximadamente 0,669 de acurácia; por isso balanced accuracy e macro-F1 devem aparecer ao lado.</p></div>
+      </div>
+    </section>
+
+    <section id="sumarios">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">04 · Sumários</span><h2>Média e dispersão sem esconder a unidade</h2></div>
+          <p>O analisador transforma cada grupo em formato longo: uma linha por métrica. Além de média e desvio, registra número de observações, número de seeds e a unidade observacional adequada.</p>
+        </div>
+        <div class="cards two">
+          <article class="card green"><div class="num">Σ</div><h3>summary_per_task_setup.csv</h3><p>Resume dataset × tarefa × método × setup dentro de cada esquema. Em CV, a unidade é <code>client_fold</code>; no holdout, <code>client_holdout</code>.</p></article>
+          <article class="card blue"><div class="num">seed</div><h3>summary_by_seed.csv</h3><p>Calcula os mesmos sumários separadamente por seed, permitindo observar variação entre inicializações sem escondê-la na média geral.</p></article>
+        </div>
+        <div class="formula" style="margin-top:22px"><div class="formula-main"><em>grupo</em> = study_id × scheme × dataset × method_id × setup × task<br><em>saída</em> = métrica × mean × std × n × n_seeds</div><div class="formula-note">Colunas de classes que pertencem ao outro dataset aparecem como NaN após a concatenação e são descartadas no grupo correspondente.</div></div>
+      </div>
+    </section>
+
+    <section id="comparacoes">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">05 · Contrastes</span><h2>As comparações vêm do manifesto</h2></div>
+          <p>O arquivo do estudo declara qual método fica à esquerda, qual fica à direita e qual pergunta o contraste responde. O analisador não escolhe pares pelo nome nem mistura budgets diferentes por acidente.</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Contraste</th><th>Esquerda</th><th>Direita</th><th>Interpretação</th></tr></thead>
+            <tbody>
+              <tr><td><strong>primary_vs_local</strong></td><td>Federado · steps · CE</td><td>Local · steps · CE</td><td>Transferência federada no protocolo principal</td></tr>
+              <tr><td><strong>budget_vs_local</strong></td><td>Federado · epochs</td><td>Local · epochs</td><td>Federação com orçamento local por épocas</td></tr>
+              <tr><td><strong>effect_local_budget</strong></td><td>Federado · steps</td><td>Federado · epochs</td><td>Efeito do orçamento local</td></tr>
+              <tr><td><strong>effect_uniform_weighting</strong></td><td>Clientes uniformes</td><td>Peso por exemplos</td><td>Efeito da ponderação interna</td></tr>
+              <tr><td><strong>effect_hierarchy</strong></td><td>Hierárquica</td><td>Flat</td><td>Efeito da estrutura de agregação</td></tr>
+              <tr><td><strong>effect_ce_vs_focal</strong></td><td>CE balanceada</td><td>Focal sem pesos</td><td>Efeito da perda de classificação</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 style="margin-top:30px">Como o pareamento é feito</h3>
+        <div class="formula"><div class="formula-main"><em>chave</em> = study_id + seed + scheme + dataset + fold + client_id + task<br><em>delta</em> = métrica_esquerda − métrica_direita</div><div class="formula-note">Delta positivo favorece o método à esquerda somente para métricas em que maior é melhor — que é o caso das métricas analisadas aqui.</div></div>
+        <div class="cards two" style="margin-top:22px">
+          <article class="card"><h3>method_comparisons.csv</h3><p>Uma linha por contraste × dataset × tarefa × métrica, com médias dos lados, delta médio/mediano, número de pares, seeds e escopo inferencial.</p></article>
+          <article class="card"><h3>per_client_method_deltas.csv</h3><p>Uma linha por observação pareada para a métrica primária: Dice em seg e acurácia em cls. Alimenta os gráficos de barras de delta.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="inferencia-estatistica">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">06 · Escopo estatístico</span><h2>Holdout e CV não autorizam a mesma leitura</h2></div>
+          <p>O próprio CSV recebe uma etiqueta de escopo. Isso evita transformar um diagnóstico exploratório ou uma comparação descritiva em uma afirmação confirmatória.</p>
+        </div>
+        <div class="split-view">
+          <article class="panel"><div class="panel-head orange"><h3>CV com uma seed</h3><p>exploratório</p></div><div class="panel-body"><p>O Wilcoxon usa pares cliente × fold. Porém folds compartilham imagens de treino e clientes do mesmo fold participam da mesma agregação.</p><p>Etiqueta: <code>exploratory_only_non_independent_client_fold_pairs</code>.</p></div></article>
+          <article class="panel"><div class="panel-head dark"><h3>Holdout único</h3><p>descritivo</p></div><div class="panel-body"><p>Há uma única separação externa. O pipeline não calcula estatística nem p-valor de Wilcoxon.</p><p>Etiqueta: <code>descriptive_only_single_holdout</code>.</p></div></article>
+        </div>
+        <div class="callout danger"><b>Não se usa “estatisticamente significativo” para os p-valores deste estudo.</b><p>Para inferência confirmatória seriam necessárias seeds independentes ou uma estratégia amostral OOF adequadamente pareada, com a unidade independente definida antes da análise.</p></div>
+      </div>
+    </section>
+
+    <section id="auc">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">07 · AUC pooled</span><h2>Reunir probabilidades sem misturar datasets</h2></div>
+          <p>A AUC calculada por cliente pode ser indefinida quando falta alguma classe. A análise relê as probabilidades individuais e calcula uma AUC OvR macro para grupos maiores, sempre isolados por dataset.</p>
+        </div>
+        <div class="flow">
+          <div class="flow-row"><div class="flow-icon">1</div><div><b>Descobrir o espaço completo</b><p>Procura uma sequência contínua <code>prob_0…prob_K-1</code> sem valores ausentes para aquele dataset.</p></div><span class="tag">K classes</span></div>
+          <div class="flow-row"><div class="flow-icon">2</div><div><b>Agrupar previsões</b><p>Separa por estudo, esquema, método, setup, seed e fold; depois cria também uma linha <code>fold=all</code>.</p></div><span class="tag blue">pooled</span></div>
+          <div class="flow-row"><div class="flow-icon">3</div><div><b>Calcular OvR macro</b><p>Cada classe é comparada contra todas as outras e recebe o mesmo peso na média.</p></div><span class="tag">AUC</span></div>
+          <div class="flow-row"><div class="flow-icon">4</div><div><b>Marcar o escopo</b><p>CV vira <code>out_of_fold</code>; holdout vira <code>holdout_test</code>.</p></div><span class="tag orange">auditável</span></div>
+        </div>
+        <div class="callout info"><b>AUC alta não garante boa decisão argmax.</b><p>O modelo pode ordenar corretamente as classes e ainda produzir acurácia baixa por calibração ou por perda ponderada sob orçamento insuficiente. Por isso AUC, balanced accuracy e macro-F1 respondem a aspectos diferentes.</p></div>
+      </div>
+    </section>
+
+    <section id="auditorias">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">08 · Auditorias</span><h2>Verificar o mecanismo, não só a métrica</h2></div>
+          <p>A análise também lê a partição e os históricos de agregação. Isso permite conferir se o experimento executado corresponde ao experimento descrito.</p>
+        </div>
+        <div class="cards four">
+          <article class="card green"><div class="num">W</div><h3>aggregation_audit.csv</h3><p>Peso base/final, modo de agregação, exemplos, steps e participação por cliente e rodada.</p></article>
+          <article class="card blue"><div class="num">N</div><h3>data_composition.csv</h3><p>Quantidade e fração de imagens únicas por dataset na partição pareada.</p></article>
+          <article class="card orange"><div class="num">C</div><h3>class_balance_audit.csv</h3><p>Contagens de treino e peso balanceado calculado para cada classe, dataset e fold.</p></article>
+          <article class="card purple"><div class="num">#</div><h3>study_run.yaml</h3><p>Relaciona método, seed, configuração resolvida e SHA-256 da partição usada.</p></article>
+        </div>
+        <div class="callout"><b>Diretórios <code>fold_N.incomplete_*</code> são forenses.</b><p>Se uma execução foi retomada, seus históricos antigos são preservados, mas o analisador exclui esses diretórios das auditorias de folds concluídos.</p></div>
+      </div>
+    </section>
+
+    <section id="artefatos">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">09 · Artefatos finais</span><h2>O diretório de análise</h2></div>
+          <p>Os arquivos tabulares são a fonte primária para auditoria e reuso. O <code>report.html</code> organiza gráficos e tabelas para leitura humana, mas não substitui os CSVs.</p>
+        </div>
+        <div class="filetree"><pre>runs/studies/&lt;study_id&gt;/analysis/
+├── <span class="accent">summary_per_task_setup.csv</span>   <span class="dim"># visão geral por método</span>
+├── <span class="accent">summary_by_seed.csv</span>           <span class="dim"># variação entre seeds</span>
+├── <span class="accent">method_comparisons.csv</span>         <span class="dim"># contrastes declarados</span>
+├── per_client_method_deltas.csv  <span class="dim"># deltas primários por par</span>
+├── <span class="accent">pooled_auc.csv</span>                <span class="dim"># AUC por fold e global</span>
+├── aggregation_audit.csv         <span class="dim"># participação real</span>
+├── data_composition.csv          <span class="dim"># escala dos datasets</span>
+├── class_balance_audit.csv       <span class="dim"># pesos e contagens</span>
+└── <span class="accent">report.html</span>                  <span class="dim"># gráficos + tabelas</span></pre></div>
+      </div>
+    </section>
+
+    <section id="leitura">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">10 · Ordem de leitura</span><h2>Uma leitura que evita atalhos</h2></div>
+          <p>A interpretação deve começar pelo desenho e pelo orçamento, passar pela qualidade absoluta e só então chegar aos deltas entre métodos.</p>
+        </div>
+        <div class="flow">
+          <div class="flow-row"><div class="flow-icon">1</div><div><b>Confirmar setup e budget</b><p>Verifique steps versus epochs, perda, ponderação, modo de agregação, seed e esquema de avaliação.</p></div><span class="tag orange">antes</span></div>
+          <div class="flow-row"><div class="flow-icon">2</div><div><b>Ler qualidade absoluta</b><p>Use Dice/IoU para seg e o conjunto acc + macro-F1 + balanced acc + AUC para cls.</p></div><span class="tag">summary</span></div>
+          <div class="flow-row"><div class="flow-icon">3</div><div><b>Inspecionar classes</b><p>Confira precisão e recall por diagnóstico, principalmente classes raras do ISIC.</p></div><span class="tag blue">por classe</span></div>
+          <div class="flow-row"><div class="flow-icon">4</div><div><b>Ler deltas pareados</b><p>Observe média, mediana, direção por cliente e consistência entre datasets.</p></div><span class="tag">comparação</span></div>
+          <div class="flow-row"><div class="flow-icon">5</div><div><b>Auditar participação</b><p>Confirme se os pesos e a exposição local correspondem ao braço declarado.</p></div><span class="tag purple">mecanismo</span></div>
+          <div class="flow-row"><div class="flow-icon">6</div><div><b>Respeitar o escopo</b><p>Apresente trade-offs e limitações; holdout é descritivo e CV de uma seed é exploratório.</p></div><span class="tag orange">conclusão</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="comandos">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">11 · Reprodução</span><h2>Executar ou repetir somente a análise</h2></div>
+          <p>O runner normalmente chama a análise ao terminar os braços. Ela também pode ser refeita sem treinar novamente.</p>
+        </div>
+        <div class="commands"><pre><span class="comment"># Reanalisar todos os braços completos do estudo</span>
+<span class="cmd">python -m src.experiments.study_runner --analyze-only</span>
+
+<span class="comment"># Análise avulsa de dois ou três setups</span>
+<span class="cmd">python -m src.experiments.analyze \</span>
+  <span class="cmd">--results &lt;arquivos *_test_results.csv&gt; \</span>
+  <span class="cmd">--preds &lt;arquivos *_cls_predictions.csv&gt; \</span>
+  <span class="cmd">--out runs/comparison \</span>
+  <span class="cmd">--manifest studies/multi_dataset_balance_v1.yaml</span></pre></div>
+        <div class="callout info"><b>Sem manifesto, o analisador só conhece o par genérico federated × standalone.</b><p>Com o manifesto, ele usa os contrastes exatos do desenho — incluindo orçamento, ponderação, hierarquia e perda.</p></div>
+      </div>
+    </section>
+
+    <section id="continuidade">
+      <div class="shell">
+        <div class="section-head"><div><span class="kicker">Documentos relacionados</span><h2>Rastrear a evidência de ponta a ponta</h2></div><p>Cada número analisado pode ser rastreado até uma imagem do split externo, um modelo recomposto e uma configuração resolvida.</p></div>
+        <div class="related">
+          <a href="preprocessamento_dados.html"><b>Pré-processamento</b><small>Origem e separação dos dados.</small></a>
+          <a href="treinamento_modelo.html"><b>Treinamento</b><small>Como os métodos produziram seus checkpoints.</small></a>
+          <a href="inferencia_modelo.html"><b>Inferência</b><small>Como checkpoints produziram os CSVs.</small></a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer><div class="shell foot"><span>Documento técnico visual · fed_multi_task_breast_cancer</span><span>Código local verificado em 16 ago. 2026.</span></div></footer>
+</body>
+</html>

@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Fluxo completo de preparação, particionamento e carregamento das imagens Curated BUSI e ISIC 2018.">
+  <title>Do dado bruto ao lote de treino — pipeline de pré-processamento</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f5f2ea;
+      --surface: #fffdf8;
+      --surface-2: #eee9de;
+      --ink: #18211d;
+      --muted: #647068;
+      --line: #d9d3c7;
+      --green: #12664f;
+      --green-2: #1f8a6d;
+      --orange: #d56a28;
+      --blue: #276a8c;
+      --yellow: #f1c75b;
+      --red: #b74435;
+      --shadow: 0 18px 50px rgba(42, 50, 45, .09);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 92% 3%, rgba(213, 106, 40, .12), transparent 24rem),
+        radial-gradient(circle at 3% 25%, rgba(31, 138, 109, .10), transparent 28rem),
+        var(--paper);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      line-height: 1.6;
+    }
+
+    a { color: var(--green); }
+    code {
+      padding: .12rem .38rem;
+      border-radius: .35rem;
+      background: var(--surface-2);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: .88em;
+      overflow-wrap: anywhere;
+    }
+    button { font: inherit; }
+    img { display: block; max-width: 100%; }
+
+    .shell { width: min(1180px, calc(100% - 36px)); margin: 0 auto; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid rgba(217, 211, 199, .85);
+      background: rgba(245, 242, 234, .88);
+      backdrop-filter: blur(14px);
+    }
+    .topbar-inner {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .brand { font-weight: 760; letter-spacing: -.02em; }
+    .topnav { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .topnav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-size: .83rem;
+      padding: 7px 10px;
+      border-radius: 999px;
+    }
+    .topnav a:hover { color: var(--ink); background: var(--surface); }
+
+    .hero {
+      padding: clamp(62px, 10vw, 120px) 0 68px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(300px, .75fr);
+      gap: 52px;
+      align-items: center;
+    }
+    .eyebrow {
+      color: var(--green);
+      font-size: .75rem;
+      font-weight: 800;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3 { line-height: 1.12; letter-spacing: -.035em; }
+    h1 { font-size: clamp(2.65rem, 6vw, 5.55rem); margin: 15px 0 24px; max-width: 900px; }
+    h2 { font-size: clamp(2rem, 4vw, 3.35rem); margin: 0 0 16px; }
+    h3 { font-size: 1.2rem; margin: 0 0 9px; letter-spacing: -.02em; }
+    .lead { font-size: clamp(1.05rem, 2vw, 1.28rem); color: var(--muted); max-width: 760px; }
+    .hero-note {
+      background: var(--ink);
+      color: white;
+      padding: 28px;
+      border-radius: 26px;
+      box-shadow: var(--shadow);
+      transform: rotate(1.5deg);
+    }
+    .hero-note strong { color: #8be1c3; }
+    .hero-note .mono { font-family: Consolas, monospace; font-size: .85rem; color: #c9d3ce; }
+
+    .route {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 0;
+      margin: 0 0 100px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      overflow: hidden;
+      background: var(--surface);
+      box-shadow: var(--shadow);
+    }
+    .route-step { position: relative; min-height: 145px; padding: 22px 16px; border-right: 1px solid var(--line); }
+    .route-step:last-child { border-right: 0; }
+    .route-step::after {
+      content: "→";
+      position: absolute;
+      right: -11px;
+      top: 21px;
+      width: 22px;
+      height: 22px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--green);
+      color: white;
+      z-index: 2;
+      font-size: .78rem;
+    }
+    .route-step:last-child::after { display: none; }
+    .route-n { color: var(--orange); font-size: .72rem; font-weight: 850; letter-spacing: .1em; }
+    .route-step b { display: block; margin: 10px 0 5px; line-height: 1.25; }
+    .route-step span { color: var(--muted); font-size: .82rem; line-height: 1.35; display: block; }
+
+    section { padding: 82px 0; border-top: 1px solid var(--line); }
+    .section-head { display: grid; grid-template-columns: .65fr 1.35fr; gap: 36px; margin-bottom: 38px; }
+    .section-head p { margin: 0; color: var(--muted); font-size: 1.04rem; }
+    .kicker { color: var(--orange); font-weight: 800; font-size: .78rem; letter-spacing: .11em; text-transform: uppercase; }
+
+    .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 23px;
+      background: rgba(255, 253, 248, .76);
+    }
+    .card p { color: var(--muted); margin: 0; }
+    .card .num { color: var(--green); font-weight: 850; font-size: 2rem; line-height: 1; margin-bottom: 14px; }
+    .card.warn { border-color: rgba(183, 68, 53, .4); background: rgba(183, 68, 53, .055); }
+
+    .tabs { display: flex; gap: 8px; margin: 0 0 22px; }
+    .tab {
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--muted);
+      padding: 10px 17px;
+      border-radius: 999px;
+      cursor: pointer;
+      font-weight: 720;
+    }
+    .tab[aria-selected="true"] { border-color: var(--green); background: var(--green); color: white; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; animation: show .24s ease-out; }
+    @keyframes show { from { opacity: 0; transform: translateY(4px); } }
+
+    .dataset-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 24px; align-items: start; }
+    .pipeline { display: grid; gap: 12px; }
+    .pipe-row {
+      display: grid;
+      grid-template-columns: 52px 1fr auto;
+      gap: 14px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface);
+      padding: 15px 17px;
+    }
+    .pipe-icon { width: 42px; height: 42px; display: grid; place-items: center; border-radius: 13px; background: var(--surface-2); font-size: 1.25rem; }
+    .pipe-row p { margin: 3px 0 0; color: var(--muted); font-size: .9rem; }
+    .tag { padding: 5px 9px; border-radius: 999px; background: #dcece6; color: var(--green); font-size: .72rem; font-weight: 800; white-space: nowrap; }
+    .tag.orange { background: #f7e2d4; color: #a44f1d; }
+
+    .sample {
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: var(--surface);
+      position: sticky;
+      top: 82px;
+    }
+    .sample-pair { display: grid; grid-template-columns: 1fr 1fr; background: #111; }
+    .sample-pair figure { margin: 0; position: relative; }
+    .sample-pair img { width: 100%; aspect-ratio: 1; object-fit: cover; image-rendering: auto; }
+    .sample-pair figcaption { position: absolute; left: 7px; bottom: 7px; color: white; background: rgba(0,0,0,.6); border-radius: 6px; padding: 3px 6px; font-size: .66rem; }
+    .sample-copy { padding: 18px; }
+    .sample-copy p { margin: 4px 0 0; color: var(--muted); font-size: .88rem; }
+
+    .contract {
+      display: grid;
+      grid-template-columns: 1fr 1.4fr;
+      border-radius: 22px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      background: var(--surface);
+    }
+    .tree { padding: 28px; background: var(--ink); color: #dfe7e3; font: .9rem/1.85 Consolas, monospace; }
+    .tree .accent { color: #8be1c3; }
+    .tree .dim { color: #92a099; }
+    .contract-copy { padding: 28px; }
+    .contract-copy p { color: var(--muted); }
+    .schema { display: flex; flex-wrap: wrap; gap: 7px; }
+    .schema code { border: 1px solid var(--line); background: var(--paper); }
+
+    .fork {
+      display: grid;
+      grid-template-columns: 1fr 70px 1fr;
+      align-items: stretch;
+      gap: 14px;
+    }
+    .fork-col { display: grid; gap: 12px; }
+    .fork-mid { display: grid; place-items: center; color: var(--muted); font-weight: 800; }
+    .flow-card { padding: 20px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); }
+    .flow-card small { display: block; color: var(--muted); }
+    .flow-card.bus { border-left: 5px solid var(--orange); }
+    .flow-card.isic { border-left: 5px solid var(--blue); }
+    .flow-card.final { border-left: 5px solid var(--green); }
+
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); }
+    table { width: 100%; border-collapse: collapse; min-width: 720px; }
+    th, td { padding: 13px 16px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font-size: .74rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); background: var(--surface-2); }
+    tr:last-child td { border-bottom: 0; }
+    td strong { color: var(--green); }
+
+    .guardrails { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+    .guard {
+      border: 1px solid rgba(183, 68, 53, .28);
+      background: rgba(183, 68, 53, .05);
+      border-radius: 16px;
+      padding: 18px;
+    }
+    .guard b { color: var(--red); }
+    .guard p { margin: 5px 0 0; color: var(--muted); }
+
+    .loader-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .loader { border-radius: 20px; padding: 22px; color: white; min-height: 260px; }
+    .loader.train { background: var(--green); }
+    .loader.val { background: var(--blue); }
+    .loader.test { background: var(--ink); }
+    .loader ul { padding-left: 18px; margin-bottom: 0; }
+    .loader li { margin: 7px 0; }
+
+    .callout {
+      margin-top: 24px;
+      border-radius: 20px;
+      padding: 23px 25px;
+      background: #fff3cc;
+      border: 1px solid #e4c866;
+    }
+    .callout p { margin: 5px 0 0; color: #665522; }
+
+    .commands { background: #131a17; color: #e7eee9; border-radius: 22px; padding: 26px; overflow-x: auto; }
+    .commands pre { margin: 0; font: .88rem/1.8 Consolas, monospace; }
+    .commands .comment { color: #8ca096; }
+    .commands .cmd { color: #8be1c3; }
+
+    footer { padding: 50px 0 70px; color: var(--muted); font-size: .88rem; }
+    footer .foot { border-top: 1px solid var(--line); padding-top: 24px; display: flex; justify-content: space-between; gap: 20px; }
+
+    @media (max-width: 920px) {
+      .hero, .section-head, .dataset-layout, .contract { grid-template-columns: 1fr; }
+      .route { grid-template-columns: repeat(3, 1fr); }
+      .route-step:nth-child(3) { border-right: 0; }
+      .route-step:nth-child(-n+3) { border-bottom: 1px solid var(--line); }
+      .route-step:nth-child(3)::after { display: none; }
+      .sample { position: static; }
+      .cards, .loader-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      .shell { width: min(100% - 24px, 1180px); }
+      .topnav { display: none; }
+      .hero { padding-top: 50px; }
+      .hero-note { transform: none; }
+      .route { grid-template-columns: 1fr; }
+      .route-step { border-right: 0; border-bottom: 1px solid var(--line); min-height: 0; }
+      .route-step::after { display: none; }
+      .fork { grid-template-columns: 1fr; }
+      .fork-mid { min-height: 38px; }
+      .guardrails { grid-template-columns: 1fr; }
+      footer .foot { flex-direction: column; }
+    }
+
+    @media print {
+      .topbar, .tabs { display: none; }
+      body { background: white; }
+      .shell { width: 100%; }
+      .tab-panel { display: block !important; }
+      .sample { position: static; }
+      section { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <div class="brand">Pipeline de dados</div>
+      <nav class="topnav" aria-label="Navegação principal">
+        <a href="#entrada">Entrada</a>
+        <a href="#preprocessamento">Pré-processamento</a>
+        <a href="#contrato">Mapping</a>
+        <a href="#separacao">Separação</a>
+        <a href="#carregamento">Tratamento</a>
+        <a href="#reproduzir">Reproduzir</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="shell">
+      <div class="hero">
+        <div>
+          <div class="eyebrow">Curated BUSI + ISIC 2018</div>
+          <h1>Do dado bruto ao lote de treino.</h1>
+          <p class="lead">Um mapa visual de tudo o que acontece com as imagens: validações, curadoria, redimensionamento, máscaras, metadados, divisão por folds e clientes, oversampling e transformações aplicadas em tempo de treino.</p>
+        </div>
+        <aside class="hero-note">
+          <strong>Ideia central</strong>
+          <p>O pré-processamento grava uma variante física e determinística. A separação apenas atribui linhas do CSV. As transformações aleatórias acontecem depois, sob demanda, sem alterar os arquivos originais.</p>
+          <div class="mono">raw → processed_128 → mapping.csv → federated_mapping.csv → Dataset → DataLoader</div>
+        </aside>
+      </div>
+
+      <div class="route" aria-label="Resumo do fluxo em seis etapas">
+        <div class="route-step"><div class="route-n">01</div><b>Configurar</b><span>dataset, variante e resolução</span></div>
+        <div class="route-step"><div class="route-n">02</div><b>Ler o raw</b><span>imagens, máscaras e rótulos oficiais</span></div>
+        <div class="route-step"><div class="route-n">03</div><b>Padronizar</b><span>128 × 128, canais e máscara binária</span></div>
+        <div class="route-step"><div class="route-n">04</div><b>Catalogar</b><span>metadados no mapping.csv</span></div>
+        <div class="route-step"><div class="route-n">05</div><b>Separar</b><span>fold, cliente e train/val/test</span></div>
+        <div class="route-step"><div class="route-n">06</div><b>Carregar</b><span>tensor, oversampling e augmentations</span></div>
+      </div>
+    </div>
+
+    <section id="entrada">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">01 · Entrada e travas</span><h2>Antes de tocar em uma imagem</h2></div>
+          <p>Os scripts não recebem caminhos improvisados. Eles derivam tudo de <code>data.root</code>, <code>data.dataset</code> e <code>data.variant</code>, usando <code>src/dataset/paths.py</code>. Isso reduz o risco de misturar datasets ou sobrescrever uma variante congelada.</p>
+        </div>
+        <div class="cards">
+          <article class="card"><div class="num">1</div><h3>Dataset correto</h3><p>O script aborta se <code>data.dataset</code> não corresponder a <code>Curated_BUSI</code> ou <code>ISIC_2018</code>.</p></article>
+          <article class="card"><div class="num">128²</div><h3>Variante coerente</h3><p>Se <code>processed_128</code> já contém outro tamanho, a execução é bloqueada. Resoluções diferentes exigem variantes diferentes.</p></article>
+          <article class="card"><div class="num">raw/</div><h3>Fonte preservada</h3><p>Somente os scripts de pré-processamento leem o download extraído. O treinamento nunca lê diretamente os dados brutos.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="preprocessamento">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">02 · Pré-processamento físico</span><h2>Dois datasets, duas receitas</h2></div>
+          <p>Os layouts originais não têm nada em comum. Por isso cada base possui seu próprio script, mas ambas terminam no mesmo contrato de saída. Selecione um dataset para acompanhar a receita real.</p>
+        </div>
+
+        <div class="tabs" role="tablist" aria-label="Datasets">
+          <button class="tab" role="tab" aria-selected="true" aria-controls="panel-busi" id="tab-busi">Curated BUSI</button>
+          <button class="tab" role="tab" aria-selected="false" aria-controls="panel-isic" id="tab-isic">ISIC 2018</button>
+        </div>
+
+        <div class="tab-panel active" id="panel-busi" role="tabpanel" aria-labelledby="tab-busi">
+          <div class="dataset-layout">
+            <div class="pipeline">
+              <div class="pipe-row"><div class="pipe-icon">⌁</div><div><b>Curadoria</b><p>Lê <code>curation_list.csv</code> e mantém somente os IDs aprovados após remoção de duplicatas por SSIM.</p></div><span class="tag orange">450 imagens</span></div>
+              <div class="pipe-row"><div class="pipe-icon">◐</div><div><b>Leitura em escala de cinza</b><p>Imagem de ultrassom e máscara são abertas com um canal.</p></div><span class="tag">1 canal</span></div>
+              <div class="pipe-row"><div class="pipe-icon">⊕</div><div><b>União de máscaras</b><p>Quando um caso possui máscara principal e <code>_mask_1</code>, as duas são somadas em uma máscara total.</p></div><span class="tag">por caso</span></div>
+              <div class="pipe-row"><div class="pipe-icon">↔</div><div><b>Redimensionamento</b><p>Imagem e máscara são levadas a 128 × 128 com <code>INTER_NEAREST</code>.</p></div><span class="tag orange">congelado</span></div>
+              <div class="pipe-row"><div class="pipe-icon">▤</div><div><b>Catálogo final</b><p>Classe e ID vêm do nome do arquivo; dimensões e estatísticas vêm do que foi realmente salvo.</p></div><span class="tag">mapping.csv</span></div>
+            </div>
+            <aside class="sample">
+              <div class="sample-pair">
+                <figure><img src="../data/Curated_BUSI/processed_128/images/benign_id_20.png" alt="Exemplo de ultrassom benigno do Curated BUSI"><figcaption>imagem</figcaption></figure>
+                <figure><img src="../data/Curated_BUSI/processed_128/masks/benign_id_20_mask.png" alt="Máscara correspondente ao exemplo BUSI"><figcaption>máscara</figcaption></figure>
+              </div>
+              <div class="sample-copy"><b>Curated BUSI</b><p>222 benignas · 164 malignas · 64 normais. Toda linha tem imagem, máscara e classe.</p></div>
+            </aside>
+          </div>
+          <div class="callout"><b>Por que não trocar o interpolador?</b><p><code>INTER_NEAREST</code> não é a escolha usual para fotografias, mas é parte da construção do artefato curado. Trocá-lo mudaria os pixels, invalidando a partição congelada e a comparabilidade com resultados já produzidos.</p></div>
+        </div>
+
+        <div class="tab-panel" id="panel-isic" role="tabpanel" aria-labelledby="tab-isic">
+          <div class="dataset-layout">
+            <div class="pipeline">
+              <div class="pipe-row"><div class="pipe-icon">⑴</div><div><b>Task 1 — segmentação</b><p>Pareia cada JPG com sua máscara PNG nos splits oficiais train, val e test.</p></div><span class="tag">3.694 linhas</span></div>
+              <div class="pipe-row"><div class="pipe-icon">⑶</div><div><b>Task 3 — classificação</b><p>Lê o CSV one-hot, valida uma classe por imagem e recupera <code>lesion_id</code> quando publicado.</p></div><span class="tag">11.720 linhas</span></div>
+              <div class="pipe-row"><div class="pipe-icon">◉</div><div><b>Imagem dermatoscópica</b><p>Abre em cor, reduz a 128 × 128 com <code>INTER_AREA</code> e grava em PNG.</p></div><span class="tag">3 canais</span></div>
+              <div class="pipe-row"><div class="pipe-icon">◑</div><div><b>Máscara binária</b><p>Usa vizinho mais próximo e rebinariza em {0, 255}, evitando tons intermediários.</p></div><span class="tag">seg apenas</span></div>
+              <div class="pipe-row"><div class="pipe-icon">≠</div><div><b>Pools disjuntos</b><p>O script verifica que nenhum ID aparece nas duas tarefas. Linhas de segmentação não têm classe; linhas de classificação não têm máscara.</p></div><span class="tag orange">zero overlap</span></div>
+            </div>
+            <aside class="sample">
+              <div class="sample-pair">
+                <figure><img src="../data/ISIC_2018/processed_128/images/ISIC_0012169.png" alt="Exemplo dermatoscópico ISIC 2018"><figcaption>imagem RGB</figcaption></figure>
+                <figure><img src="../data/ISIC_2018/processed_128/masks/ISIC_0012169_mask.png" alt="Máscara correspondente ao exemplo ISIC"><figcaption>máscara</figcaption></figure>
+              </div>
+              <div class="sample-copy"><b>ISIC 2018</b><p>15.414 linhas no total. As duas supervisões pertencem a conjuntos diferentes de imagens.</p></div>
+            </aside>
+          </div>
+          <div class="callout"><b>Razão de aspecto</b><p>A configuração atual usa <code>PRESERVE_ASPECT = False</code>: as imagens são ajustadas diretamente ao quadrado. O helper permite padding em tela preta, mas essa alternativa está desligada no artefato atual.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="contrato">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">03 · Contrato comum</span><h2>O ponto de encontro é o CSV</h2></div>
+          <p>Depois de salvar as imagens, o pipeline relê os arquivos de saída. Assim, dimensões, área tumoral e caixa delimitadora descrevem o artefato efetivamente gravado, não apenas a intenção do código.</p>
+        </div>
+        <div class="contract">
+          <div class="tree">
+            data/<span class="accent">&lt;dataset&gt;</span>/<br>
+            ├── raw/ <span class="dim"># fonte original</span><br>
+            ├── archives/<br>
+            └── <span class="accent">processed_128/</span><br>
+            &nbsp;&nbsp;&nbsp;&nbsp;├── images/<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;├── masks/<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;└── <span class="accent">mapping.csv</span>
+          </div>
+          <div class="contract-copy">
+            <h3>Colunas base</h3>
+            <p>Caminhos relativos ao repositório, identidade, forma da imagem e medidas derivadas da máscara.</p>
+            <div class="schema"><code>img_path</code><code>mask_path</code><code>class</code><code>id</code><code>dim1</code><code>dim2</code><code>tumor_pixels</code><code>y_min</code><code>y_max</code><code>x_min</code><code>x_max</code><code>y_size</code><code>x_size</code></div>
+            <h3 style="margin-top:22px">Campos extras do ISIC</h3>
+            <div class="schema"><code>task</code><code>official_split</code><code>lesion_id</code></div>
+            <p><code>NaN</code> nas medidas de máscara significa “não se aplica”. Zero é reservado para uma máscara realmente vazia, como nos casos normais do BUSI.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="separacao">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">04 · Separação da base</span><h2>Uma partição, estratégias diferentes</h2></div>
+          <p>O <code>mapping.csv</code> descreve os exemplos. O <code>federated_mapping.csv</code> acrescenta a posse experimental: <code>dataset</code>, <code>fold</code>, <code>client_id</code>, <code>task</code> e <code>split</code>. A geração é determinística com seed 1993 e CV = 4.</p>
+        </div>
+
+        <div class="fork">
+          <div class="fork-col">
+            <div class="flow-card bus"><b>BUSI · pool compartilhado</b><small>Cada imagem possui máscara e classe.</small></div>
+            <div class="flow-card bus"><b>StratifiedKFold</b><small>Quatro folds estratificados por classe; o mesmo fold externo serve a seg e cls.</small></div>
+            <div class="flow-card bus"><b>Filtro da segmentação</b><small>A classe normal é removida apenas da tarefa seg, pois sua máscara é vazia.</small></div>
+          </div>
+          <div class="fork-mid">versus</div>
+          <div class="fork-col">
+            <div class="flow-card isic"><b>ISIC · pools por tarefa</b><small>Segmentação e classificação não compartilham imagens.</small></div>
+            <div class="flow-card isic"><b>Seg: KFold</b><small>Usa as 3.694 linhas da Task 1, sem rótulo de classe.</small></div>
+            <div class="flow-card isic"><b>Cls: StratifiedGroupKFold</b><small>Usa somente as 10.015 linhas oficiais de treino, agrupadas por <code>lesion_id</code>.</small></div>
+          </div>
+        </div>
+
+        <div style="height:20px"></div>
+        <div class="flow-card final"><b>Dentro de cada fold</b><small>O pool de treino é distribuído entre os clientes por Dirichlet estratificada (α = 100, quase IID); o teste é distribuído uniformemente por classe. Depois, 20% do pool de cada cliente vira validação. No ISIC cls, cada lesão permanece inteira em todas essas camadas.</small></div>
+
+        <div style="height:28px"></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Dataset / tarefa</th><th>Pool usado</th><th>Fold externo</th><th>Alocação a clientes</th><th>Proteção-chave</th></tr></thead>
+            <tbody>
+              <tr><td><strong>BUSI · seg</strong></td><td>BUSI sem normal</td><td>StratifiedKFold</td><td>Dirichlet por classe</td><td>Mesmo fold de cls</td></tr>
+              <tr><td><strong>BUSI · cls</strong></td><td>BUSI completo</td><td>StratifiedKFold</td><td>Dirichlet por classe</td><td>Estratificação por diagnóstico</td></tr>
+              <tr><td><strong>ISIC · seg</strong></td><td>Task 1 completa</td><td>KFold</td><td>Dirichlet sobre linhas sem classe</td><td>Pool exclusivo da tarefa</td></tr>
+              <tr><td><strong>ISIC · cls</strong></td><td>Task 3 train</td><td>StratifiedGroupKFold</td><td>Dirichlet agrupada</td><td><code>lesion_id</code> não cruza cliente nem split</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 style="margin-top:34px">Travas de integridade</h3>
+        <div class="guardrails">
+          <div class="guard"><b>Sem duplicidade de posse</b><p>Uma imagem não pode aparecer mais de uma vez no mesmo dataset × fold × tarefa.</p></div>
+          <div class="guard"><b>Sem vazamento de lesão</b><p>Fotos do mesmo <code>lesion_id</code> não podem atravessar clientes ou train/val/test.</p></div>
+          <div class="guard"><b>Partição congelada</b><p>Treino federado e local-only leem exatamente o mesmo CSV mestre; ele não é recriado silenciosamente.</p></div>
+          <div class="guard"><b>Caminhos não são editados</b><p>Mover dados invalida os caminhos relativos. A correção é regenerar de forma determinística, nunca editar o CSV à mão.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="carregamento">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">05 · Tratamento em tempo de treino</span><h2>O arquivo vira tensor sob demanda</h2></div>
+          <p>O dataset é lazy: guarda apenas as linhas do CSV e abre cada imagem no <code>__getitem__</code>. Isso evita manter milhares de imagens na memória e permite que cada cliente carregue apenas a própria fatia.</p>
+        </div>
+
+        <div class="cards">
+          <article class="card"><div class="num">C×H×W</div><h3>Imagem</h3><p>BUSI: tensor float32 <code>1×128×128</code>. ISIC: OpenCV BGR → RGB, transposição e tensor <code>3×128×128</code>.</p></article>
+          <article class="card"><div class="num">0/1</div><h3>Máscara</h3><p>A máscara é lida em cinza, converte 255 para 1 e ganha dimensão de canal: <code>1×128×128</code>.</p></article>
+          <article class="card"><div class="num">−1</div><h3>Supervisão ausente</h3><p>Segmentação-only recebe label −1; classificação-only recebe máscara zerada. O trainer usa apenas a supervisão da tarefa do cliente.</p></article>
+        </div>
+
+        <h3 style="margin-top:34px">O que muda entre train, validation e test</h3>
+        <div class="loader-grid">
+          <article class="loader train"><h3>Train</h3><ul><li>pode aplicar oversampling determinístico;</li><li>shuffle em modo epochs;</li><li>flip horizontal p = 0,5;</li><li>flip vertical p = 0,5;</li><li>rotação aleatória até 360°;</li><li>batch size configurado (32).</li></ul></article>
+          <article class="loader val"><h3>Validation</h3><ul><li>sem oversampling;</li><li>sem transformações geométricas;</li><li>sem shuffle;</li><li>batch size configurado;</li><li>usada para avaliação local/diagnóstico.</li></ul></article>
+          <article class="loader test"><h3>Test</h3><ul><li>sem oversampling;</li><li>sem transformações geométricas;</li><li>sem shuffle;</li><li>batch size = 1;</li><li>reservado para a avaliação final.</li></ul></article>
+        </div>
+
+        <div class="callout"><b>Imagem e máscara se movem juntas</b><p>Antes das transformações geométricas, a máscara, os canais da imagem e eventuais canais derivados são concatenados. Assim, um único sorteio de flip/rotação é aplicado a todos; depois o tensor é separado novamente. Isso mantém o contorno alinhado à lesão.</p></div>
+
+        <div style="height:28px"></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Tratamento</th><th>BUSI seg</th><th>BUSI cls</th><th>ISIC seg</th><th>ISIC cls</th></tr></thead>
+            <tbody>
+              <tr><td>Oversampling configurado</td><td>Não</td><td><strong>Sim</strong></td><td>Não</td><td>Não</td></tr>
+              <tr><td>Ponderação de classes</td><td>n/a</td><td>Nenhuma</td><td>n/a</td><td><strong>Balanceada por fold</strong></td></tr>
+              <tr><td>Canais legados CLAHE/Sobel/brilho/contraste</td><td>Desligados</td><td>Desligados</td><td>Não suportados em RGB</td><td>Não suportados em RGB</td></tr>
+              <tr><td>Normalização min–max no loader federado</td><td>Não aplicada</td><td>Não aplicada</td><td>Não aplicada</td><td>Não aplicada</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="reproduzir">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">06 · Reprodução</span><h2>Como gerar os artefatos</h2></div>
+          <p>O dataset selecionado em <code>src/config.yaml</code> deve corresponder ao script. A partição federada é criada somente quando existe intenção explícita de gerar ou substituir esse artefato experimental.</p>
+        </div>
+        <div class="commands" aria-label="Comandos de reprodução"><pre><span class="comment"># 1) Em src/config.yaml, selecione data.dataset e uma variante coerente.</span>
+
+<span class="comment"># 2) Gere o contrato físico de cada dataset (execute um por vez).</span>
+<span class="cmd">python -m src.dataset.Curated_BUSI_preprocessing</span>
+<span class="cmd">python -m src.dataset.ISIC_2018_preprocessing</span>
+
+<span class="comment"># 3) Com os dois mapping.csv prontos, gere a partição multi-dataset.</span>
+<span class="cmd">python -m src.dataset.federated_partition</span>
+
+<span class="comment"># Saída consumida pelo estudo:</span>
+data/federated_multi/federated_mapping.csv</pre></div>
+        <div class="callout"><b>Resumo operacional</b><p><strong>Pré-processar</strong> altera os arquivos da variante. <strong>Particionar</strong> não altera imagens: cria atribuições no CSV. <strong>Treinar</strong> não altera nenhum dos dois: carrega a fatia e aplica transformações apenas em memória.</p></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell foot"><span>Documento técnico visual · fed_multi_task_breast_cancer</span><span>Baseado no código e nos artefatos locais verificados em 14 ago. 2026.</span></div>
+  </footer>
+
+  <script>
+    const tabs = [...document.querySelectorAll('.tab')];
+    const panels = [...document.querySelectorAll('.tab-panel')];
+    tabs.forEach((tab) => tab.addEventListener('click', () => {
+      tabs.forEach((item) => item.setAttribute('aria-selected', String(item === tab)));
+      panels.forEach((panel) => panel.classList.toggle('active', panel.id === tab.getAttribute('aria-controls')));
+    }));
+  </script>
+</body>
+</html>
