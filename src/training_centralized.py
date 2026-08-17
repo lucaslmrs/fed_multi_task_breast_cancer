@@ -26,6 +26,7 @@ from src.dataset import paths
 from src.dataset.BUSI_dataset import BUSI
 from src.dataset.BUSI_dataloader import deterministic_oversampling
 from src.dataset.federated_dataloader import build_client_loader, list_clients
+from src.dataset.splitting import evaluation_metadata, evaluation_settings, validate_master_splits
 from src.federated import unified_eval
 from src.federated.client import _default_transforms, resolve_device
 from src.utils.criterions import apply_criterion_multitask_segmentation_classification
@@ -122,6 +123,8 @@ def run(config_path="./src/config.yaml"):
     with open(config_path) as cf:
         config = yaml.load(cf, Loader=yaml.FullLoader)
     fed, data_cfg, train_cfg = config["federated"], config["data"], config["training"]
+    evaluation_settings(train_cfg)
+    evaluation = evaluation_metadata(train_cfg)
 
     seed_everything(train_cfg["seed"], cuda_benchmark=train_cfg["cuda_benchmark"])
     dev_str = fed.get("device", "auto")
@@ -134,6 +137,7 @@ def run(config_path="./src/config.yaml"):
         yaml.safe_dump(config, f)
 
     partition_file = paths.require_partition_file(data_cfg)
+    validate_master_splits(pd.read_csv(partition_file, usecols=["fold", "split"]), train_cfg)
 
     roster = [(r.client_id, r.task) for r in list_clients(partition_file).itertuples()]
     n_classes = len(data_cfg["classes"])
@@ -150,8 +154,17 @@ def run(config_path="./src/config.yaml"):
             test_loader = build_client_loader(partition_file, fold, client_id, "test",
                                               batch_size=1, augmentations=data_cfg["augmentation"])
             metrics, preds = unified_eval.evaluate(model, test_loader, task, n_classes, device)
-            test_rows.append({"setup": setup, "fold": fold, "client_id": client_id, "task": task, **metrics})
+            test_rows.append({
+                **evaluation,
+                "setup": setup,
+                "fold": fold,
+                "client_id": client_id,
+                "task": task,
+                **metrics,
+            })
             if preds is not None:
+                for key, value in reversed(list(evaluation.items())):
+                    preds.insert(0, key, value)
                 preds.insert(0, "client_id", client_id)
                 preds.insert(0, "fold", fold)
                 preds.insert(0, "setup", setup)
@@ -163,7 +176,9 @@ def run(config_path="./src/config.yaml"):
         pd.concat(pred_frames, ignore_index=True).to_csv(f"{run_path}/centralized_cls_predictions.csv", index=False)
     for task in df["task"].unique():
         sub, col = df[df["task"] == task], {"seg": "dice", "cls": "acc"}.get(task, "dice")
-        logging.info(f"[centralized] task={task}: {col} {sub[col].mean():.4f} ± {sub[col].std():.4f} (n={len(sub)})")
+        mean_value, std_value = sub[col].mean(), sub[col].std()
+        estimate = f"{mean_value:.4f}" if pd.isna(std_value) else f"{mean_value:.4f} ± {std_value:.4f}"
+        logging.info(f"[centralized] task={task}: {col} {estimate} (n={len(sub)})")
     logging.info(f"Saved {run_path}/centralized_test_results.csv | total time {time.perf_counter() - init_time:.2f}s")
 
 

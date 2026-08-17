@@ -69,8 +69,8 @@ timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
 # loading config file
 config_model, config_opt, config_loss, config_training, config_data = load_config_file(path='./src/config.yaml')
-if config_training['CV'] < 2:
-    sys.exit("This code is prepared for receiving a CV greater than 1")
+if config_training['CV'] < 1:
+    sys.exit("training.CV must be at least 1 (CV=1 selects deterministic holdout)")
 
 # initializing seed and gpu if possible
 seed_everything(config_training['seed'], cuda_benchmark=config_training['cuda_benchmark'])
@@ -180,7 +180,7 @@ for n, (training_loader, test_loader) in enumerate(zip(train_loaders, test_loade
 
 
 # saving final results as a Excel file
-save_segmentation_results(run_path)
+save_segmentation_results(run_path, n_splits=config_training['CV'])
 
 # Measuring total time
 end_time = time.perf_counter()

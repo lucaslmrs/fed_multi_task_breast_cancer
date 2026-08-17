@@ -13,12 +13,21 @@ source .venv/bin/activate
 # 1. Testes unitários/integrados (sampler, agregação, loaders, losses e análise)
 python -m unittest discover -v
 
+# Testar somente o fluxo holdout (70/30, determinismo, loaders e análise)
+python -m unittest -v tests.test_holdout
+
 # 2. Resolver os oito braços sem treinar nem regenerar partições
 python -m src.experiments.study_runner --dry-run
 
 # 3. Smoke real dos oito braços: 2 rodadas, 1 fold, CPU e amostras limitadas
 python -m src.experiments.study_runner --smoke --seed-profile operational
+
+# 4. Smoke federado/local-only específico para CV=1, com partição temporária
+python -m scripts.smoke_federated --setup both --holdout --samples 2
 ```
+
+O smoke com `--holdout` cria e remove uma partição temporária. Ele não sobrescreve a partição
+congelada usada pelos estudos de cross-validation.
 
 Artefatos do smoke:
 
@@ -125,6 +134,111 @@ python -m src.experiments.analyze \
   --preds RUN_A/federated_cls_predictions.csv RUN_B/standalone_cls_predictions.csv \
   --out runs/comparison_manual
 ```
+
+## Holdout 70/30 (`CV = 1`)
+
+O bloco `datasets` não precisa ser alterado. Mantenha `Curated_BUSI` e `ISIC_2018` com suas
+estratégias, classes, canais e regras de oversampling atuais.
+
+No `src/config.yaml`, configure:
+
+```yaml
+training:
+  seed: 1993
+  CV: 1
+  holdout_test_size: 0.30
+```
+
+O resultado é um único `fold=0`: 70% ficam no pool de desenvolvimento e 30% no teste. Nos
+loaders clássicos, `data.train_size: 0.8` subdivide o desenvolvimento em aproximadamente 56% de
+treino e 14% de validação. Os scripts `*_prod` unem novamente esses 70% para treino.
+
+### Treinamento clássico
+
+```bash
+# Multitarefa
+python -m src.training_multitask
+
+# Alternativas
+python -m src.training_segmentation
+python -m src.training_classification
+
+# Produção: usa todos os 70% de desenvolvimento no treino
+python -m src.training_multitask_prod
+python -m src.training_segmentation_prod
+python -m src.training_classification_prod
+```
+
+### Treinamento federado multi-dataset
+
+Use um arquivo novo para o master holdout. **Não sobrescreva** o master congelado de CV:
+
+```yaml
+federated:
+  datasets: [Curated_BUSI, ISIC_2018]
+  partition_file: data/federated_multi/federated_mapping_holdout_70_30.csv
+  standalone: false
+```
+
+Para um teste curto, use temporariamente:
+
+```yaml
+federated:
+  rounds: 2
+  local_training:
+    mode: steps
+    steps_per_round: 2
+```
+
+Gere e inspecione a partição, depois treine:
+
+```bash
+python -m src.dataset.federated_partition --config src/config.yaml
+
+python - <<'PY'
+import pandas as pd
+
+path = "data/federated_multi/federated_mapping_holdout_70_30.csv"
+df = pd.read_csv(path)
+print("folds:", sorted(df["fold"].unique()))
+print("datasets:", sorted(df["dataset"].unique()))
+print(df.groupby(["dataset", "task", "split"]).size())
+PY
+
+# FedPer
+python -m src.training_federated --config src/config.yaml
+```
+
+A inspeção deve mostrar apenas `folds: [0]` e os datasets `Curated_BUSI` e `ISIC_2018`. O
+treinamento rejeita automaticamente um master antigo cujos folds não correspondam a `CV=1`.
+
+Para o baseline pareado, mantenha o mesmo `partition_file`, altere somente
+`federated.standalone: true` e execute novamente:
+
+```bash
+python -m src.training_federated --config src/config.yaml
+```
+
+Para o treinamento completo, restaure o orçamento desejado, por exemplo `rounds: 50` e
+`steps_per_round: 10`.
+
+### Analisar Federated versus Local-only
+
+```bash
+python -m src.experiments.analyze \
+  --results \
+    RUN_FEDERATED/federated_test_results.csv \
+    RUN_LOCAL/standalone_test_results.csv \
+  --preds \
+    RUN_FEDERATED/federated_cls_predictions.csv \
+    RUN_LOCAL/standalone_cls_predictions.csv \
+  --out runs/comparison_holdout
+```
+
+Nos CSVs, confirme `evaluation_scheme=holdout`, `n_splits=1` e
+`holdout_test_size=0.30`. No holdout, a inferência é marcada como
+`descriptive_only_single_holdout`; `wilcoxon_stat` e `wilcoxon_p` ficam ausentes/`NaN`, e a AUC é
+rotulada como AUC do teste holdout.
 
 ## Braços do manifesto
 

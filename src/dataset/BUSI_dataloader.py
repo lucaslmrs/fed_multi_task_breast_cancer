@@ -3,11 +3,12 @@ import warnings
 from pathlib import Path
 
 import pandas as pd
-from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader
 
 from src.dataset import paths
 from src.dataset.BUSI_dataset import BUSI
+from src.dataset.splitting import DEFAULT_HOLDOUT_TEST_SIZE, outer_split_indices
 
 warnings.filterwarnings("ignore")
 desired_width = 320
@@ -79,7 +80,8 @@ def BUSI_dataloader(seed, batch_size, transforms, remove_outliers=False, augment
 
 def BUSI_dataloader_CV(seed, batch_size, transforms, remove_outliers=False, augmentations=None, normalization=None,
                        train_size=0.8, classes=None, n_folds=5, oversampling=True, use_duplicated_to_train=False,
-                       path_images="./Datasets/Dataset_BUSI_with_GT_postprocessed_128/", semantic_segmentation=False):
+                       path_images="./Datasets/Dataset_BUSI_with_GT_postprocessed_128/", semantic_segmentation=False,
+                       holdout_test_size=DEFAULT_HOLDOUT_TEST_SIZE):
 
     # classes to use by default
     if classes is None:
@@ -102,9 +104,15 @@ def BUSI_dataloader_CV(seed, batch_size, transforms, remove_outliers=False, augm
 
     # splitting dataset into train-val-test CV
     fold_trainset, fold_valset, fold_testset = [], [], []
-    kfold = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=int(seed))
-    for n, (train_ix, test_ix) in enumerate(kfold.split(mapping, mapping['class'])):
-        train_val_mapping, test_mapping = mapping.iloc[train_ix], mapping.iloc[test_ix]
+    outer_splits = outer_split_indices(
+        mapping,
+        n_splits=n_folds,
+        seed=int(seed),
+        strategy="stratified",
+        holdout_test_size=holdout_test_size,
+    )
+    for n, (train_ix, test_ix) in enumerate(outer_splits):
+        train_val_mapping, test_mapping = mapping.iloc[train_ix], mapping.iloc[test_ix].copy()
         test_mapping['fold'] = [n] * len(test_mapping)
 
         # Splitting the mapping dataset into train_mapping, val_mapping and test_mapping
@@ -153,7 +161,8 @@ def BUSI_dataloader_CV(seed, batch_size, transforms, remove_outliers=False, augm
 
 def BUSI_dataloader_CV_prod(seed, batch_size, transforms, remove_outliers=False, augmentations=None, normalization=None,
                             train_size=0.8, classes=None, n_folds=5, oversampling=True, use_duplicated_to_train=False,
-                            path_images="./Datasets/Dataset_BUSI_with_GT_postprocessed_128/", semantic_segmentation=False):
+                            path_images="./Datasets/Dataset_BUSI_with_GT_postprocessed_128/", semantic_segmentation=False,
+                            holdout_test_size=DEFAULT_HOLDOUT_TEST_SIZE):
 
     # classes to use by default
     if classes is None:
@@ -176,9 +185,15 @@ def BUSI_dataloader_CV_prod(seed, batch_size, transforms, remove_outliers=False,
 
     # splitting dataset into train-val-test CV
     fold_trainset, fold_valset, fold_testset = [], [], []
-    kfold = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=int(seed))
-    for n, (train_ix, test_ix) in enumerate(kfold.split(mapping, mapping['class'])):
-        train_val_mapping, test_mapping = mapping.iloc[train_ix], mapping.iloc[test_ix]
+    outer_splits = outer_split_indices(
+        mapping,
+        n_splits=n_folds,
+        seed=int(seed),
+        strategy="stratified",
+        holdout_test_size=holdout_test_size,
+    )
+    for n, (train_ix, test_ix) in enumerate(outer_splits):
+        train_val_mapping, test_mapping = mapping.iloc[train_ix], mapping.iloc[test_ix].copy()
         test_mapping['fold'] = [n] * len(test_mapping)
 
         # Splitting the mapping dataset into train_mapping, val_mapping and test_mapping
@@ -354,7 +369,10 @@ def load_datasets(config_training, config_data, transforms, mode='CV'):
                                                                       classes=config_data['classes'],
                                                                       oversampling=config_data['oversampling'],
                                                                       use_duplicated_to_train=config_data['use_duplicated_to_train'],
-                                                                      path_images=paths.processed_dir(config_data))
+                                                                      path_images=paths.processed_dir(config_data),
+                                                                      holdout_test_size=config_training.get(
+                                                                          'holdout_test_size',
+                                                                          DEFAULT_HOLDOUT_TEST_SIZE))
         return train_loaders, val_loaders, test_loaders
     if mode == 'CV_PROD':
         train_loaders, test_loaders = BUSI_dataloader_CV_prod(seed=config_training['seed'],
@@ -367,7 +385,10 @@ def load_datasets(config_training, config_data, transforms, mode='CV'):
                                                               normalization=None,
                                                               classes=config_data['classes'],
                                                               oversampling=config_data['oversampling'],
-                                                              path_images=paths.processed_dir(config_data))
+                                                              path_images=paths.processed_dir(config_data),
+                                                              holdout_test_size=config_training.get(
+                                                                  'holdout_test_size',
+                                                                  DEFAULT_HOLDOUT_TEST_SIZE))
         return train_loaders, test_loaders
     if mode == 'UCLM':
         dataloader = UCLM_dataloader(batch_size=1,

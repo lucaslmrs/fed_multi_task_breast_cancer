@@ -8,9 +8,9 @@ default).
 
 Multi-dataset rules:
 
-* Curated BUSI uses one image-level ``StratifiedKFold`` shared by segmentation/classification.
-* ISIC segmentation uses all 3,694 Task 1 rows with a shuffled ``KFold``.
-* ISIC classification uses only the official train rows and a ``StratifiedGroupKFold`` keyed by
+* Curated BUSI uses one image-level stratified outer split shared by segmentation/classification.
+* ISIC segmentation uses all 3,694 Task 1 rows with a shuffled outer split.
+* ISIC classification uses only the official train rows and a grouped stratified outer split keyed by
   ``lesion_id``.  Lesions remain indivisible when assigning both train/test pools to clients and
   when carving validation from each client's training pool.
 
@@ -25,14 +25,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import yaml
-from sklearn.model_selection import (
-    KFold,
-    StratifiedGroupKFold,
-    StratifiedKFold,
-    train_test_split,
-)
+from sklearn.model_selection import train_test_split
 
 from src.dataset import paths
+from src.dataset.splitting import (
+    DEFAULT_HOLDOUT_TEST_SIZE,
+    evaluation_settings,
+    outer_split_indices,
+)
 
 CLASS_COL = "class"
 GROUP_COL = "lesion_id"
@@ -279,14 +279,11 @@ def build_federated_partition(
     dirichlet_alpha: float,
     val_size: float = 0.2,
     seg_exclude_classes: list = None,
+    holdout_test_size: float = DEFAULT_HOLDOUT_TEST_SIZE,
 ) -> pd.DataFrame:
     """Build the original single-dataset partition (backward-compatible API)."""
     seg_exclude_classes = seg_exclude_classes or []
-    if n_folds < 2:
-        raise ValueError(
-            f"This partitioning needs CV >= 2 folds, got {n_folds}. "
-            "Set 'training.CV' to 2 or more in config.yaml."
-        )
+    evaluation_settings({"CV": n_folds, "holdout_test_size": holdout_test_size})
 
     mapping_path = Path(mapping_path).resolve()
     if not mapping_path.exists():
@@ -295,8 +292,15 @@ def build_federated_partition(
     logging.info(f"Loaded {len(mapping)} images from {mapping_path}")
 
     rows = []
-    splitter = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
-    for fold, (train_ix, test_ix) in enumerate(splitter.split(mapping, mapping[CLASS_COL])):
+    outer_splits = outer_split_indices(
+        mapping,
+        n_splits=n_folds,
+        seed=seed,
+        strategy="stratified",
+        holdout_test_size=holdout_test_size,
+        label_col=CLASS_COL,
+    )
+    for fold, (train_ix, test_ix) in enumerate(outer_splits):
         train_pool = mapping.iloc[train_ix]
         test_pool = mapping.iloc[test_ix]
         fold_seed = seed + fold
@@ -341,11 +345,19 @@ def _build_shared_pool_dataset(
     seed: int,
     dirichlet_alpha: float,
     val_size: float,
+    holdout_test_size: float,
 ) -> pd.DataFrame:
     rows = []
-    splitter = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+    outer_splits = outer_split_indices(
+        mapping,
+        n_splits=n_folds,
+        seed=seed,
+        strategy="stratified",
+        holdout_test_size=holdout_test_size,
+        label_col=CLASS_COL,
+    )
     excluded = dataset_cfg.get("seg_exclude_classes", [])
-    for fold, (train_ix, test_ix) in enumerate(splitter.split(mapping, mapping[CLASS_COL])):
+    for fold, (train_ix, test_ix) in enumerate(outer_splits):
         train_pool, test_pool = mapping.iloc[train_ix], mapping.iloc[test_ix]
         for task in TASKS:
             train_task, test_task = train_pool.copy(), test_pool.copy()
@@ -377,6 +389,7 @@ def _build_per_task_dataset(
     seed: int,
     dirichlet_alpha: float,
     val_size: float,
+    holdout_test_size: float,
 ) -> pd.DataFrame:
     required = {"task", "official_split", GROUP_COL}
     missing = required.difference(mapping.columns)
@@ -387,8 +400,14 @@ def _build_per_task_dataset(
     seg_pool = mapping[mapping["task"] == "seg"].reset_index(drop=True)
     if seg_pool.empty:
         raise ValueError(f"Dataset '{dataset}' has no segmentation rows")
-    seg_splitter = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
-    for fold, (train_ix, test_ix) in enumerate(seg_splitter.split(seg_pool)):
+    seg_splits = outer_split_indices(
+        seg_pool,
+        n_splits=n_folds,
+        seed=seed,
+        strategy="random",
+        holdout_test_size=holdout_test_size,
+    )
+    for fold, (train_ix, test_ix) in enumerate(seg_splits):
         rows.extend(
             _partition_task_pool(
                 seg_pool.iloc[train_ix],
@@ -412,10 +431,16 @@ def _build_per_task_dataset(
             f"Dataset '{dataset}' has no classification rows in official split '{source_split}'"
         )
     _group_summary(cls_pool, GROUP_COL)  # fail before constructing any partial partition
-    cls_splitter = StratifiedGroupKFold(n_splits=n_folds, shuffle=True, random_state=seed)
-    for fold, (train_ix, test_ix) in enumerate(
-        cls_splitter.split(cls_pool, cls_pool[CLASS_COL], groups=cls_pool[GROUP_COL])
-    ):
+    cls_splits = outer_split_indices(
+        cls_pool,
+        n_splits=n_folds,
+        seed=seed,
+        strategy="stratified_group",
+        holdout_test_size=holdout_test_size,
+        label_col=CLASS_COL,
+        group_col=GROUP_COL,
+    )
+    for fold, (train_ix, test_ix) in enumerate(cls_splits):
         rows.extend(
             _partition_task_pool(
                 cls_pool.iloc[train_ix],
@@ -502,8 +527,8 @@ def build_multi_dataset_partition(
     if not active:
         raise ValueError("federated.datasets must select at least one registered dataset")
     n_folds = config["training"]["CV"]
-    if n_folds < 2:
-        raise ValueError(f"training.CV must be >= 2, got {n_folds}")
+    _, _, holdout_test_size = evaluation_settings(config["training"])
+    split_test_size = holdout_test_size or DEFAULT_HOLDOUT_TEST_SIZE
 
     output = _multi_output_path(config, output_path)
     frames = []
@@ -532,6 +557,7 @@ def build_multi_dataset_partition(
             seed=config["training"]["seed"],
             dirichlet_alpha=fed_cfg["dirichlet_alpha"],
             val_size=fed_cfg.get("val_size", 0.2),
+            holdout_test_size=split_test_size,
         )
         strategy = dataset_cfg.get("fold_strategy", "stratified")
         if strategy == "stratified":
@@ -597,6 +623,9 @@ def main() -> None:
             dirichlet_alpha=fed_cfg["dirichlet_alpha"],
             val_size=fed_cfg["val_size"],
             seg_exclude_classes=data_cfg.get("seg_exclude_classes", []),
+            holdout_test_size=train_cfg.get(
+                "holdout_test_size", DEFAULT_HOLDOUT_TEST_SIZE
+            ),
         )
     else:
         build_multi_dataset_partition(config, output_path=args.output)

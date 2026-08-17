@@ -38,6 +38,7 @@ SETUPS = {"federated", "standalone"}
 _PARTITION_EXACT_PATHS = {
     "training.seed",
     "training.CV",
+    "training.holdout_test_size",
     "data.root",
     "data.dataset",
     "data.variant",
@@ -196,8 +197,15 @@ def _partition_signature(config: dict) -> dict:
             for key in sorted(_PARTITION_DATASET_FIELDS)
             if key in entry
         }
+    training_signature = {
+        key: config["training"].get(key) for key in ("seed", "CV")
+    }
+    if config["training"].get("CV") == 1:
+        training_signature["holdout_test_size"] = config["training"].get(
+            "holdout_test_size", 0.30
+        )
     return {
-        "training": {key: config["training"].get(key) for key in ("seed", "CV")},
+        "training": training_signature,
         "data": {
             key: config["data"].get(key)
             for key in ("root", "dataset", "variant")
@@ -208,6 +216,14 @@ def _partition_signature(config: dict) -> dict:
             for key in ("datasets", "n_clients", "dirichlet_alpha", "val_size")
         },
     }
+
+
+def _config_signature(config: dict) -> dict:
+    """Hash only effective settings; holdout size is inert for CV with two or more folds."""
+    signature = copy.deepcopy(config)
+    if signature.get("training", {}).get("CV", 0) > 1:
+        signature["training"].pop("holdout_test_size", None)
+    return signature
 
 
 def _load_base_config(manifest: dict) -> tuple[dict, Path]:
@@ -323,7 +339,7 @@ def build_execution_plan(
                     "partition_path": str(partition_path),
                     "run_path": str(run_path),
                     "config": config,
-                    "config_sha256": _stable_hash(config),
+                    "config_sha256": _stable_hash(_config_signature(config)),
                     "status": "planned",
                 }
             )
