@@ -12,8 +12,9 @@ Execute tudo a partir da raiz do projeto, com o venv ativo.
 ```bash
 python -m unittest discover -v                                  # sampler, agregação, loaders, losses, análise
 python -m src.experiments.study_runner --dry-run                # resolve os braços sem treinar
-python -m src.experiments.study_runner --smoke --seed-profile operational   # 2 rodadas, 1 fold, CPU
+python -m src.experiments.study_runner --smoke --seed-profile operational   # 2 rodadas, só o fold 0, CPU
 python -m scripts.smoke_federated --setup both                  # validação ponta a ponta pareada
+python -m scripts.smoke_federated --setup both --holdout        # CV=1 com master 70/30 temporário
 ```
 
 O `--dry-run` resolve as configs de cada braço e escreve `execution_plan.csv` sem tocar em
@@ -31,6 +32,11 @@ python -m src.experiments.study_runner --analyze-only                     # só 
 O manifesto é `studies/multi_dataset_balance_v1.yaml`. `--rebuild-partitions` **regenera a
 partição congelada** — não use sem intenção explícita: braços já executados deixam de ser
 comparáveis com os novos.
+
+`training.CV=1` seleciona um holdout determinístico. A fração de teste vem de
+`training.holdout_test_size` (padrão `0.30`); os 70% restantes formam o pool de
+treino+validação. `CV>=2` mantém cross-validation. Alterar `CV` ou a fração do holdout exige uma
+partição separada/regenerada com intenção explícita.
 
 ## Como o estudo é montado
 
@@ -54,7 +60,7 @@ runs/studies/<study_id>/
 ├── runs/seed_<n>/<arm>/
 │   ├── config.yaml, execution.log
 │   ├── fold_<k>/                       # global_shared.pt, aggregation_history.json, clientes
-│   ├── {setup}_test_results.csv        # uma linha por cliente × fold
+│   ├── {setup}_test_results.csv        # uma linha por cliente × split externo
 │   └── {setup}_cls_predictions.csv     # uma linha por imagem de teste
 └── analysis/
     ├── summary_per_task_setup.csv, summary_by_seed.csv
@@ -76,11 +82,13 @@ da avaliação: as curvas rodada a rodada ainda estão no `execution.log`, mas n
   de perda com pesos de classe sob treino insuficiente.
 - **Compare só pares de orçamento igual.** O eixo de orçamento domina os demais; comparar um braço
   `steps` com um `epochs` mede o orçamento, não a federação.
-- **Os p-valores não são confirmatórios.** São Wilcoxon pareado sobre 8 pares cliente × fold de uma
+- **Os p-valores de CV não são confirmatórios.** São Wilcoxon pareado sobre pares cliente × fold de uma
   única semente, e o pipeline os marca `exploratory_only_non_independent_client_fold_pairs`. Folds
   compartilham imagens e clientes do mesmo fold foram agregados juntos — não são réplicas
   independentes. Com n = 8, o menor p bilateral possível é 0,0078, e atingi-lo significa apenas
   "os 8 pares foram na mesma direção". Para afirmação confirmatória, rode sementes independentes.
+- **Holdout é somente descritivo.** Com `CV=1`, o pipeline não calcula Wilcoxon, grava
+  `inference_scope=descriptive_only_single_holdout` e rotula a AUC como teste holdout, não OOF.
 - **Nunca misture probabilidades entre datasets.** BUSI tem 3 classes, ISIC tem 7; a análise é
   isolada por `dataset` de propósito.
 

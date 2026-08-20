@@ -96,7 +96,27 @@ def seed_everything(seed: int, cuda_benchmark: bool = False):
     torch.backends.cudnn.benchmark = cuda_benchmark
 
 
-def save_segmentation_results(path: str):
+def _add_evaluation_summary_columns(df_grouped, n_splits=None):
+    actual_splits = len([column for column in df_grouped.columns if str(column).startswith("fold ")])
+    configured_splits = int(n_splits) if n_splits is not None else actual_splits
+    if configured_splits == 1 and n_splits is not None:
+        scheme = "holdout"
+    elif configured_splits > 1:
+        scheme = "cross_validation"
+    else:
+        scheme = "unknown_single_split"
+
+    mean_text = round(df_grouped["mean"], 3).astype(str).str.ljust(5, '0')
+    std_text = round(df_grouped["std"], 3).astype(str).str.ljust(5, '0')
+    df_grouped["latex"] = np.where(
+        df_grouped["std"].notna(), mean_text + " $\\pm$ " + std_text, mean_text
+    )
+    df_grouped["evaluation_scheme"] = scheme
+    df_grouped["n_splits"] = configured_splits
+    return df_grouped
+
+
+def save_segmentation_results(path: str, n_splits=None):
     """
     This function combines the segmentation results obtained on each fold into a single file (segmentation_results.xlsx)
 
@@ -114,14 +134,14 @@ def save_segmentation_results(path: str):
     df = pd.concat(results)
     df_grouped = df.drop(columns="patient_id").groupby('fold').mean().reset_index().drop(columns='fold').T
     df_grouped.columns = [f"fold {c}" for c in df_grouped.columns]
-    df_grouped["mean"] = df_grouped.mean(axis=1)
-    df_grouped["std"] = df_grouped.std(axis=1)
-    df_grouped["latex"] = (round(df_grouped["mean"], 3).astype(str).str.ljust(5, '0') + " $\\pm$ " +
-                           round(df_grouped["std"], 3).astype(str).str.ljust(5, '0'))
+    fold_columns = list(df_grouped.columns)
+    df_grouped["mean"] = df_grouped[fold_columns].mean(axis=1)
+    df_grouped["std"] = df_grouped[fold_columns].std(axis=1)
+    df_grouped = _add_evaluation_summary_columns(df_grouped, n_splits=n_splits)
     df_grouped.to_excel(path + '/results_segmentation.xlsx', index=False)
 
 
-def save_classification_results(path: str, n_classes: int):
+def save_classification_results(path: str, n_classes: int, n_splits=None):
     """
     This function combines the segmentation results obtained on each fold into a single file (segmentation_results.xlsx)
 
@@ -144,10 +164,10 @@ def save_classification_results(path: str, n_classes: int):
 
     df_grouped = pd.concat(results).T
     df_grouped.columns = [f"fold {c}" for c in df_grouped.columns]
-    df_grouped["mean"] = df_grouped.mean(axis=1)
-    df_grouped["std"] = df_grouped.std(axis=1)
-    df_grouped["latex"] = (round(df_grouped["mean"], 3).astype(str).str.ljust(5, '0') + " $\\pm$ " +
-                           round(df_grouped["std"], 3).astype(str).str.ljust(5, '0'))
+    fold_columns = list(df_grouped.columns)
+    df_grouped["mean"] = df_grouped[fold_columns].mean(axis=1)
+    df_grouped["std"] = df_grouped[fold_columns].std(axis=1)
+    df_grouped = _add_evaluation_summary_columns(df_grouped, n_splits=n_splits)
 
     df_grouped.to_excel(path + '/classification_results.xlsx', index=True)
 

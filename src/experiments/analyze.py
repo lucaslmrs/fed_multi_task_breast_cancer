@@ -7,10 +7,11 @@ CSVs without a ``dataset`` column remain readable and are assigned the explicit 
 
 Outputs:
   - summary_per_task_setup.csv: mean/std per dataset x task x setup;
-  - federated_vs_local_wilcoxon.csv: exploratory paired Wilcoxon and deltas within each
-    dataset/task (client x CV-fold pairs are not independent inferential replicates);
+  - federated_vs_local_wilcoxon.csv: paired deltas within each evaluation design/dataset/task;
+    Wilcoxon is exploratory for CV and disabled for a single holdout;
   - per_client_deltas.csv: primary-metric delta for every matched dataset/fold/client/task;
-  - pooled_auc.csv: pooled OvR macro AUC within each dataset/setup/fold and across folds;
+  - pooled_auc.csv: pooled OvR macro AUC within each dataset/setup/split and overall, explicitly
+    tagged as out-of-fold or holdout-test scope;
   - report.html: charts split by dataset/task plus the summary tables.
 
 Run with ``python -m src.experiments.analyze`` or override paths with ``--results``, ``--preds``
@@ -31,6 +32,8 @@ import pandas as pd
 from scipy.stats import wilcoxon
 from sklearn.metrics import roc_auc_score
 import yaml
+
+from src.dataset.splitting import CROSS_VALIDATION, HOLDOUT, UNKNOWN_SINGLE_SPLIT
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402  (must follow the Agg backend selection)
@@ -102,7 +105,53 @@ def _with_study_metadata(df):
         out["seed"] = LEGACY_SEED
     else:
         out["seed"] = out["seed"].fillna(LEGACY_SEED).astype(str)
+    design_keys = ["study_id", "method_id", "setup", "seed"]
+    if "fold" in out:
+        observed_splits = out.groupby(design_keys, dropna=False)["fold"].transform("nunique")
+    else:
+        observed_splits = pd.Series(1, index=out.index)
+    inferred_scheme = np.where(
+        observed_splits > 1, CROSS_VALIDATION, UNKNOWN_SINGLE_SPLIT
+    )
+    if "evaluation_scheme" not in out:
+        out["evaluation_scheme"] = inferred_scheme
+    else:
+        missing_scheme = out["evaluation_scheme"].isna()
+        out.loc[missing_scheme, "evaluation_scheme"] = inferred_scheme[missing_scheme]
+        out["evaluation_scheme"] = out["evaluation_scheme"].astype(str)
+    if "n_splits" not in out:
+        out["n_splits"] = observed_splits.astype(int)
+    else:
+        configured_splits = pd.to_numeric(out["n_splits"], errors="coerce")
+        out["n_splits"] = configured_splits.fillna(observed_splits).astype(int)
+    if "holdout_test_size" not in out:
+        out["holdout_test_size"] = np.nan
     return out
+
+
+def _observation_unit(scheme):
+    if scheme == HOLDOUT:
+        return "client_holdout"
+    if scheme == CROSS_VALIDATION:
+        return "client_fold"
+    return "unknown_single_split"
+
+
+def _paired_inference(left, right, scheme):
+    if scheme != CROSS_VALIDATION:
+        scope = (
+            "descriptive_only_single_holdout"
+            if scheme == HOLDOUT
+            else "descriptive_only_unknown_single_split"
+        )
+        return np.nan, np.nan, scope
+    if np.all(left - right == 0):
+        return np.nan, np.nan, "exploratory_only_non_independent_client_fold_pairs"
+    try:
+        statistic, p_value = wilcoxon(left, right)
+    except ValueError:
+        statistic, p_value = np.nan, np.nan
+    return statistic, p_value, "exploratory_only_non_independent_client_fold_pairs"
 
 
 def _class_metric_sort_key(metric):
@@ -149,9 +198,11 @@ def _add_class_metadata(row, metric, group):
 def summary_table(df):
     df = _with_study_metadata(df)
     rows = []
-    group_keys = ["study_id", "dataset", "method_id", "setup", "task"]
+    group_keys = [
+        "study_id", "evaluation_scheme", "dataset", "method_id", "setup", "task"
+    ]
     for keys, group in df.groupby(group_keys):
-        study_id, dataset, method_id, setup, task = keys
+        study_id, scheme, dataset, method_id, setup, task = keys
         for metric in _metrics_for(task, group.columns):
             if metric not in group:
                 continue
@@ -162,6 +213,9 @@ def summary_table(df):
                 continue
             row = {
                 "study_id": study_id,
+                "evaluation_scheme": scheme,
+                "n_splits": int(group["n_splits"].max()),
+                "observation_unit": _observation_unit(scheme),
                 "dataset": dataset,
                 "method_id": method_id,
                 "setup": setup,
@@ -181,9 +235,11 @@ def summary_by_seed(df):
     """Mean/std across client-fold observations without hiding between-seed variation."""
     df = _with_study_metadata(df)
     rows = []
-    keys = ["study_id", "seed", "dataset", "method_id", "setup", "task"]
+    keys = [
+        "study_id", "seed", "evaluation_scheme", "dataset", "method_id", "setup", "task"
+    ]
     for values_key, group in df.groupby(keys):
-        study_id, seed, dataset, method_id, setup, task = values_key
+        study_id, seed, scheme, dataset, method_id, setup, task = values_key
         for metric in _metrics_for(task, group.columns):
             if metric not in group:
                 continue
@@ -193,6 +249,9 @@ def summary_by_seed(df):
             rows.append({
                 "study_id": study_id,
                 "seed": seed,
+                "evaluation_scheme": scheme,
+                "n_splits": int(group["n_splits"].max()),
+                "observation_unit": _observation_unit(scheme),
                 "dataset": dataset,
                 "method_id": method_id,
                 "setup": setup,
@@ -213,13 +272,23 @@ def paired_deltas(df, a="federated", b="standalone"):
     confirmatory significance tests. Multiple independent seeds or sample-level OOF inference are
     required for that claim.
     """
-    df = _with_dataset(df)
-    key = ["dataset", "fold", "client_id", "task"]
+    df = _with_study_metadata(df)
+    key = ["evaluation_scheme", "dataset", "fold", "client_id", "task"]
     left_setup, right_setup = df[df.setup == a], df[df.setup == b]
     rows = []
-    for (dataset, task), group in df.groupby(["dataset", "task"]):
-        left = left_setup[(left_setup.dataset == dataset) & (left_setup.task == task)]
-        right = right_setup[(right_setup.dataset == dataset) & (right_setup.task == task)]
+    for (scheme, dataset, task), group in df.groupby(
+        ["evaluation_scheme", "dataset", "task"]
+    ):
+        left = left_setup[
+            (left_setup.evaluation_scheme == scheme)
+            & (left_setup.dataset == dataset)
+            & (left_setup.task == task)
+        ]
+        right = right_setup[
+            (right_setup.evaluation_scheme == scheme)
+            & (right_setup.dataset == dataset)
+            & (right_setup.task == task)
+        ]
         for metric in _metrics_for(task, group.columns):
             if metric not in left or metric not in right:
                 continue
@@ -233,14 +302,9 @@ def paired_deltas(df, a="federated", b="standalone"):
             if len(va) == 0:
                 continue
             diff = va - vb
-            if np.all(diff == 0):
-                stat, p_value = np.nan, np.nan
-            else:
-                try:
-                    stat, p_value = wilcoxon(va, vb)
-                except ValueError:
-                    stat, p_value = np.nan, np.nan
+            stat, p_value, inference_scope = _paired_inference(va, vb, scheme)
             row = {
+                "evaluation_scheme": scheme,
                 "dataset": dataset,
                 "task": task,
                 "metric": metric,
@@ -251,7 +315,7 @@ def paired_deltas(df, a="federated", b="standalone"):
                 "median_delta": float(np.median(diff)),
                 "wilcoxon_stat": stat,
                 "wilcoxon_p": p_value,
-                "inference_scope": "exploratory_only_non_independent_client_fold_pairs",
+                "inference_scope": inference_scope,
             }
             _add_class_metadata(row, metric, group)
             rows.append(row)
@@ -260,8 +324,8 @@ def paired_deltas(df, a="federated", b="standalone"):
 
 def per_client_deltas(df, a="federated", b="standalone"):
     """Return setup ``a`` minus setup ``b`` for each task's primary metric."""
-    df = _with_dataset(df)
-    key = ["dataset", "fold", "client_id", "task"]
+    df = _with_study_metadata(df)
+    key = ["evaluation_scheme", "dataset", "fold", "client_id", "task"]
     left, right = df[df.setup == a], df[df.setup == b]
     rows = []
     for task, metric in PRIMARY.items():
@@ -275,6 +339,7 @@ def per_client_deltas(df, a="federated", b="standalone"):
             va = float(getattr(record, f"{metric}_a"))
             vb = float(getattr(record, f"{metric}_b"))
             rows.append({
+                "evaluation_scheme": record.evaluation_scheme,
                 "dataset": record.dataset,
                 "fold": record.fold,
                 "client_id": record.client_id,
@@ -300,7 +365,9 @@ def method_comparisons(df, comparisons):
     """Evaluate manifest-declared paired contrasts without pooling datasets or seeds."""
     df = _with_study_metadata(df)
     pair_rows, observation_rows = [], []
-    key = ["study_id", "seed", "dataset", "fold", "client_id", "task"]
+    key = [
+        "study_id", "seed", "evaluation_scheme", "dataset", "fold", "client_id", "task"
+    ]
     for comparison in comparisons:
         left_spec, right_spec = comparison["left"], comparison["right"]
         left = df[
@@ -311,10 +378,20 @@ def method_comparisons(df, comparisons):
             (df.method_id == str(right_spec["method_id"]))
             & (df.setup == right_spec["setup"])
         ]
-        for (dataset, task), group in df.groupby(["dataset", "task"]):
+        for (scheme, dataset, task), group in df.groupby(
+            ["evaluation_scheme", "dataset", "task"]
+        ):
             metrics = _metrics_for(task, group.columns)
-            task_left = left[(left.dataset == dataset) & (left.task == task)]
-            task_right = right[(right.dataset == dataset) & (right.task == task)]
+            task_left = left[
+                (left.evaluation_scheme == scheme)
+                & (left.dataset == dataset)
+                & (left.task == task)
+            ]
+            task_right = right[
+                (right.evaluation_scheme == scheme)
+                & (right.dataset == dataset)
+                & (right.task == task)
+            ]
             for metric in metrics:
                 if metric not in task_left or metric not in task_right:
                     continue
@@ -330,16 +407,13 @@ def method_comparisons(df, comparisons):
                 left_array = left_values.loc[valid].to_numpy(float)
                 right_array = right_values.loc[valid].to_numpy(float)
                 differences = left_array - right_array
-                if np.all(differences == 0):
-                    statistic, p_value = np.nan, np.nan
-                else:
-                    try:
-                        statistic, p_value = wilcoxon(left_array, right_array)
-                    except ValueError:
-                        statistic, p_value = np.nan, np.nan
+                statistic, p_value, inference_scope = _paired_inference(
+                    left_array, right_array, scheme
+                )
                 pair_rows.append({
                     "comparison_id": comparison["comparison_id"],
                     "interpretation": comparison.get("interpretation", ""),
+                    "evaluation_scheme": scheme,
                     "dataset": dataset,
                     "task": task,
                     "metric": metric,
@@ -355,7 +429,7 @@ def method_comparisons(df, comparisons):
                     "median_delta": float(np.median(differences)),
                     "wilcoxon_stat": statistic,
                     "wilcoxon_p": p_value,
-                    "inference_scope": "exploratory_only_non_independent_client_fold_pairs",
+                    "inference_scope": inference_scope,
                 })
                 if metric == PRIMARY.get(task):
                     for record, left_value, right_value, delta in zip(
@@ -365,6 +439,7 @@ def method_comparisons(df, comparisons):
                             "comparison_id": comparison["comparison_id"],
                             "study_id": record.study_id,
                             "seed": record.seed,
+                            "evaluation_scheme": record.evaluation_scheme,
                             "dataset": record.dataset,
                             "fold": record.fold,
                             "client_id": record.client_id,
@@ -425,11 +500,19 @@ def _pooled_group_auc(group, probability_columns):
         return np.nan
 
 
+def _auc_scope(scheme):
+    if scheme == HOLDOUT:
+        return "holdout_test"
+    if scheme == CROSS_VALIDATION:
+        return "out_of_fold"
+    return "unknown_single_split_test"
+
+
 def pooled_auc(pred_paths):
     if not pred_paths:
         return pd.DataFrame()
-    predictions = pd.concat(
-        [_with_study_metadata(pd.read_csv(path)) for path in pred_paths], ignore_index=True
+    predictions = _with_study_metadata(
+        pd.concat([_with_dataset(pd.read_csv(path)) for path in pred_paths], ignore_index=True)
     )
     rows = []
     for dataset, dataset_predictions in predictions.groupby("dataset"):
@@ -439,11 +522,16 @@ def pooled_auc(pred_paths):
             continue
         num_classes = len(probability_columns)
         class_names = _class_names_for(dataset_predictions, num_classes)
-        group_keys = ["study_id", "method_id", "setup", "seed", "fold"]
+        group_keys = [
+            "study_id", "evaluation_scheme", "method_id", "setup", "seed", "fold"
+        ]
         for values_key, group in dataset_predictions.groupby(group_keys):
-            study_id, method_id, setup, seed, fold = values_key
+            study_id, scheme, method_id, setup, seed, fold = values_key
             row = {
                 "study_id": study_id,
+                "evaluation_scheme": scheme,
+                "aggregation_scope": _auc_scope(scheme),
+                "n_splits": int(group["n_splits"].max()),
                 "dataset": dataset,
                 "method_id": method_id,
                 "setup": setup,
@@ -456,11 +544,14 @@ def pooled_auc(pred_paths):
             if class_names is not None:
                 row["class_names"] = class_names
             rows.append(row)
-        overall_keys = ["study_id", "method_id", "setup", "seed"]
+        overall_keys = ["study_id", "evaluation_scheme", "method_id", "setup", "seed"]
         for values_key, group in dataset_predictions.groupby(overall_keys):
-            study_id, method_id, setup, seed = values_key
+            study_id, scheme, method_id, setup, seed = values_key
             row = {
                 "study_id": study_id,
+                "evaluation_scheme": scheme,
+                "aggregation_scope": _auc_scope(scheme),
+                "n_splits": int(group["n_splits"].max()),
                 "dataset": dataset,
                 "method_id": method_id,
                 "setup": setup,
@@ -483,11 +574,13 @@ def _fig_to_b64(fig):
     return base64.b64encode(buffer.getvalue()).decode()
 
 
-def _metric_boxplot(df, task, metrics, dataset=None):
-    """Plot metric distributions across client-fold, optionally isolated to one dataset."""
+def _metric_boxplot(df, task, metrics, dataset=None, scheme=None):
+    """Plot metric distributions within one explicit evaluation design."""
     subset = df[df.task == task]
     if dataset is not None:
         subset = subset[subset.dataset == dataset]
+    if scheme is not None:
+        subset = subset[subset.evaluation_scheme == scheme]
     metrics = [metric for metric in metrics if metric in subset.columns]
     subset = subset.copy()
     subset["series"] = subset["method_id"].astype(str) + " (" + subset["setup"] + ")"
@@ -519,14 +612,17 @@ def _metric_boxplot(df, task, metrics, dataset=None):
     axis.set_xticklabels(metrics, rotation=20, ha="right")
     axis.set_ylim(0, 1)
     prefix = f"{dataset} / " if dataset is not None else ""
-    axis.set_title(f"{prefix}{task} - distribution across client-fold")
+    unit = "clients in holdout" if scheme == HOLDOUT else "client-fold observations"
+    if scheme == UNKNOWN_SINGLE_SPLIT:
+        unit = "clients in an unknown single split"
+    axis.set_title(f"{prefix}{task} - distribution across {unit}")
     if series:
         axis.legend(fontsize=8)
     return _fig_to_b64(fig)
 
 
 def _delta_bars(per_client, task, dataset=None):
-    """Plot federated minus local for every matching client-fold."""
+    """Plot a paired delta for every matching client observation."""
     subset = per_client[per_client.task == task].copy()
     if dataset is not None:
         subset = subset[subset.dataset == dataset]
@@ -538,7 +634,9 @@ def _delta_bars(per_client, task, dataset=None):
     axis.tick_params(axis="x", rotation=60)
     prefix = f"{dataset} / " if dataset is not None else ""
     comparison = subset["comparison_id"].iloc[0] if not subset.empty else "comparison"
-    axis.set_title(f"{prefix}{task} - {comparison} ({PRIMARY[task]}) per client-fold")
+    scheme = subset["evaluation_scheme"].iloc[0] if not subset.empty else UNKNOWN_SINGLE_SPLIT
+    unit = "client holdout" if scheme == HOLDOUT else "client-fold"
+    axis.set_title(f"{prefix}{task} - {comparison} ({PRIMARY[task]}) per {unit}")
     return _fig_to_b64(fig)
 
 
@@ -552,7 +650,10 @@ def _auc_bars(pooled, dataset=None):
     axis.tick_params(axis="x", rotation=55)
     axis.set_ylim(0, 1)
     prefix = f"{dataset} - " if dataset is not None else ""
-    axis.set_title(f"{prefix}pooled OvR-macro AUC (all folds)")
+    scopes = set(overall.get("aggregation_scope", pd.Series(dtype=str)).dropna())
+    scope = next(iter(scopes)) if len(scopes) == 1 else "combined_test"
+    label = "holdout test" if scope == "holdout_test" else "all folds"
+    axis.set_title(f"{prefix}pooled OvR-macro AUC ({label})")
     return _fig_to_b64(fig)
 
 
@@ -560,38 +661,49 @@ def build_html(df, summary, deltas, per_client, pooled, out):
     df = _with_study_metadata(df)
     charts = []
     dataset_tasks = (
-        df[["dataset", "task"]].drop_duplicates().sort_values(["dataset", "task"])
+        df[["evaluation_scheme", "dataset", "task"]]
+        .drop_duplicates()
+        .sort_values(["evaluation_scheme", "dataset", "task"])
     )
-    for dataset, task in dataset_tasks.itertuples(index=False, name=None):
+    for scheme, dataset, task in dataset_tasks.itertuples(index=False, name=None):
         overview_metrics = SEG_METRICS if task == "seg" else CLS_BASE_METRICS
         charts.append(
             (
-                f"{dataset} / {task} metrics by setup",
-                _metric_boxplot(df, task, overview_metrics, dataset=dataset),
+                f"{dataset} / {task} / {scheme} metrics by setup",
+                _metric_boxplot(
+                    df, task, overview_metrics, dataset=dataset, scheme=scheme
+                ),
             )
         )
     if not per_client.empty:
         client_dataset_tasks = (
-            per_client[["dataset", "task"]]
+            per_client[["evaluation_scheme", "dataset", "task"]]
             .drop_duplicates()
-            .sort_values(["dataset", "task"])
+            .sort_values(["evaluation_scheme", "dataset", "task"])
         )
         for comparison_id in sorted(per_client.comparison_id.unique()):
             comparison_rows = per_client[per_client.comparison_id == comparison_id]
-            for dataset, task in client_dataset_tasks.itertuples(index=False, name=None):
+            for scheme, dataset, task in client_dataset_tasks.itertuples(index=False, name=None):
                 selected = comparison_rows[
-                    (comparison_rows.dataset == dataset) & (comparison_rows.task == task)
+                    (comparison_rows.evaluation_scheme == scheme)
+                    & (comparison_rows.dataset == dataset)
+                    & (comparison_rows.task == task)
                 ]
                 if not selected.empty:
                     charts.append((
-                        f"{comparison_id}: {dataset} / {task}",
+                        f"{comparison_id}: {dataset} / {task} / {scheme}",
                         _delta_bars(selected, task, dataset=dataset),
                     ))
     if not pooled.empty:
-        charts.extend(
-            (f"{dataset} pooled AUC", _auc_bars(pooled, dataset=dataset))
-            for dataset in sorted(pooled.dataset.unique())
-        )
+        for scheme, dataset in pooled[["evaluation_scheme", "dataset"]].drop_duplicates().itertuples(
+            index=False, name=None
+        ):
+            selected = pooled[
+                (pooled.evaluation_scheme == scheme) & (pooled.dataset == dataset)
+            ]
+            charts.append(
+                (f"{dataset} / {scheme} pooled AUC", _auc_bars(selected, dataset=dataset))
+            )
 
     figures = "".join(
         f'<h2>{title}</h2><img alt="{title}" src="data:image/png;base64,{image}"/>'
@@ -599,12 +711,20 @@ def build_html(df, summary, deltas, per_client, pooled, out):
     )
     tables = ""
     if not deltas.empty:
+        schemes = set(deltas["evaluation_scheme"].dropna())
+        if schemes == {HOLDOUT}:
+            inference_text = (
+                "Single-holdout comparisons are descriptive only; Wilcoxon statistics and "
+                "p-values are not computed."
+            )
+        else:
+            inference_text = (
+                "Client × CV-fold pairs are not independent replicates. Available Wilcoxon "
+                "p-values are exploratory diagnostics, not confirmatory evidence."
+            )
         tables += (
-            "<h2>Manifest-declared exploratory paired deltas</h2>"
-            "<p><strong>Inference warning:</strong> client × CV-fold pairs are not independent "
-            "replicates. Wilcoxon p-values are descriptive diagnostics, not evidence of "
-            "confirmatory statistical significance. Use independent seeds or paired OOF "
-            "sample-level inference for such claims.</p>"
+            "<h2>Manifest-declared paired deltas</h2>"
+            f"<p><strong>Inference warning:</strong> {inference_text}</p>"
             + deltas.round(4).to_html(index=False)
         )
     tables += (
@@ -716,8 +836,8 @@ def partition_audits(result_paths):
 def run(results, preds, out, manifest=None):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    df = pd.concat(
-        [_with_study_metadata(pd.read_csv(path)) for path in results], ignore_index=True
+    df = _with_study_metadata(
+        pd.concat([_with_dataset(pd.read_csv(path)) for path in results], ignore_index=True)
     )
 
     summary = summary_table(df)
@@ -732,10 +852,15 @@ def run(results, preds, out, manifest=None):
         deltas.to_csv(out / "method_comparisons.csv", index=False)
         per_client.to_csv(out / "per_client_method_deltas.csv", index=False)
     elif {"federated", "standalone"}.issubset(set(df.setup.unique())):
-        logging.warning(
-            "Wilcoxon client x CV-fold pairs are non-independent; treating p-values as "
-            "exploratory diagnostics only"
-        )
+        if HOLDOUT in set(df.evaluation_scheme):
+            logging.warning(
+                "Single-holdout comparisons are descriptive; Wilcoxon is disabled"
+            )
+        else:
+            logging.warning(
+                "Wilcoxon client x CV-fold pairs are non-independent; treating p-values as "
+                "exploratory diagnostics only"
+            )
         deltas = paired_deltas(df)
         deltas.to_csv(out / "federated_vs_local_wilcoxon.csv", index=False)
         per_client = per_client_deltas(df)

@@ -51,7 +51,7 @@ After editing any skill under `.agents/skills/`, run `python -m scripts.sync_age
 python -m src.dataset.Curated_BUSI_preprocessing   # data.dataset: Curated_BUSI
 python -m src.dataset.ISIC_2018_preprocessing      # data.dataset: ISIC_2018
 
-# Train (CV must be ≥ 2 in config.yaml)
+# Train (CV=1 selects deterministic holdout; CV>=2 selects cross-validation)
 python -m src.training_multitask      # segmentation + classification
 python -m src.training_segmentation   # segmentation only
 python -m src.training_classification # classification only
@@ -193,7 +193,8 @@ runs/{timestamp}_{arch}_{width}_alpha_{α}_batch_{B}_{classes}/
 | Key | Effect |
 |---|---|
 | `model.architecture` | Which model class to instantiate |
-| `training.CV` | Number of folds (must be ≥ 2) |
+| `training.CV` | `1` = deterministic holdout; `>=2` = number of cross-validation folds |
+| `training.holdout_test_size` | Test fraction when `training.CV=1` (default `0.30`; ignored otherwise) |
 | `training.alpha` | Weight on seg loss (0=cls only, 1=seg only) |
 | `data.root` / `data.dataset` / `data.variant` | Select the dataset folder + preprocessed variant (see "Dataset layout") |
 | `data.classes` | Which classes to include; determines binary vs. multiclass mode |
@@ -215,8 +216,9 @@ ISIC 2018 (3-channel dermoscopy). `encoder1` is a personalized modality stem; th
 `encoder2..5 + bottleneck`. Set `share_stem: True` only for compatible single-dataset experiments.
 
 1. `src/dataset/federated_partition.py` — builds a separate multi-dataset master. BUSI uses the
-   historical image-level stratified folds. ISIC segmentation uses KFold; ISIC classification uses
-   grouped stratified folds, group-preserving client allocation, and group-preserving train/val, so
+   historical image-level stratified folds, or a stratified 70/30 holdout when `CV=1`. ISIC
+   segmentation uses a shuffled outer split; ISIC classification uses a grouped stratified outer
+   split, group-preserving client allocation, and group-preserving train/val, so
    a `lesion_id` never crosses a client or split. The `--legacy` CLI retains exact BUSI reproduction.
    The original single-dataset design splits the curated dataset at the image level with
    `StratifiedKFold`, then partitions each fold's train pool across the clients of each task using a
@@ -326,7 +328,8 @@ the signature of a class-weighted loss under an insufficient training budget.
 dataset-isolated summaries, per-client deltas, pooled AUC, exploratory paired Wilcoxon diagnostics,
 and `report.html`. Client × CV-fold pairs are not independent inferential replicates, so their
 p-values must not support confirmatory significance claims; use independent seeds or paired OOF
-sample-level inference for that purpose.
+sample-level inference for that purpose. With `CV=1`, Wilcoxon is disabled and comparisons are
+tagged `descriptive_only_single_holdout`.
 
 ## Multi-arm studies
 

@@ -24,7 +24,8 @@ training:
   seed: 1993
   epochs: 200
   max_patience: 50
-  CV: 4
+  CV: 1
+  holdout_test_size: 0.30  # used only when CV=1; remaining 70% is the train+validation pool
   cuda_benchmark: False
   alpha: 0.85
   threshold_postprocessing: 0
@@ -94,7 +95,7 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
   n_clients:
     Curated_BUSI: {seg: 2, cls: 2}
     ISIC_2018: {seg: 2, cls: 2}
-  partition_file: data/federated_multi/federated_mapping.csv
+  partition_file: data/federated_multi/federated_mapping_holdout_70_30.csv
   n_clients_seg: 2
   n_clients_cls: 2
   rounds: 50
@@ -121,7 +122,7 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
   oversampling:            # per-task override of data.oversampling
     seg: False
     cls: True
-  standalone: False        # True => local-only baseline (clients ignore the federated encoder)
+  standalone: True        # True => local-only baseline (clients ignore the federated encoder)
   device: cuda             # auto | cpu | cuda
   ray_num_cpus: 16          # caps the Ray cluster -> bounds how many clients run concurrently
   client_resources:        # resources reserved per client (num_cpus high => fewer in parallel)

@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Reconstrução dos modelos e inferência final para segmentação e classificação.">
+  <title>Inferência do modelo — reconstrução, predição e métricas</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="model_pipeline.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <div class="brand">Pipeline do modelo</div>
+      <nav class="docnav" aria-label="Documentos do pipeline">
+        <a href="preprocessamento_dados.html">Pré-processamento</a>
+        <a href="treinamento_modelo.html">Treinamento</a>
+        <a class="current" href="inferencia_modelo.html">Inferência</a>
+        <a href="analise_resultados.html">Análise</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="shell">
+      <div class="hero">
+        <div>
+          <div class="eyebrow">Última rodada · split externo · avaliação unificada</div>
+          <h1>Como uma imagem vira uma predição.</h1>
+          <p class="lead">A inferência começa reconstruindo o modelo correto para cada cliente. Em seguida carrega o teste externo sem augmentations, executa o forward e transforma logits em máscara ou probabilidades de classe.</p>
+        </div>
+        <aside class="hero-note">
+          <strong>Escopo atual</strong>
+          <p>A implementação existente é uma inferência de avaliação: ela percorre o split <code>test</code> da partição congelada ao final do treinamento.</p>
+          <div class="mono">checkpoint → modelo recomposto → test loader → forward → pós-processamento → CSV</div>
+        </aside>
+      </div>
+
+      <div class="journey" style="--steps:6" aria-label="Resumo da inferência">
+        <div class="journey-step"><div class="journey-n">01</div><b>Escolher o cliente</b><span>dataset, tarefa, fold e setup</span></div>
+        <div class="journey-step"><div class="journey-n">02</div><b>Recriar o modelo</b><span>canais e classes corretos</span></div>
+        <div class="journey-step"><div class="journey-n">03</div><b>Carregar pesos</b><span>global + personalizado ou local</span></div>
+        <div class="journey-step"><div class="journey-n">04</div><b>Ler o teste</b><span>batch 1, sem alterações aleatórias</span></div>
+        <div class="journey-step"><div class="journey-n">05</div><b>Predizer</b><span>sigmoid ou softmax</span></div>
+        <div class="journey-step"><div class="journey-n">06</div><b>Registrar</b><span>métricas e probabilidades</span></div>
+      </div>
+    </div>
+
+    <section id="momento">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">01 · Quando acontece</span><h2>Depois da última rodada</h2></div>
+          <p>O orquestrador só inicia a avaliação externa quando a simulação do fold terminou ou quando encontrou estado persistente completo. Todos os clientes são avaliados com o mesmo número configurado de rodadas.</p>
+        </div>
+        <div class="flow">
+          <div class="flow-row"><div class="flow-icon">✓</div><div><b>Verificar a rodada</b><p><code>state.pt</code> precisa declarar exatamente <code>federated.rounds</code>. Um estado intermediário é recusado.</p></div><span class="tag orange">trava</span></div>
+          <div class="flow-row"><div class="flow-icon">F</div><div><b>Verificar o fold</b><p>O histórico de agregação precisa existir e, no federado, <code>global_shared.pt</code> também deve ser da última rodada.</p></div><span class="tag">completo</span></div>
+          <div class="flow-row"><div class="flow-icon">T</div><div><b>Abrir somente test</b><p>A fatia é filtrada por fold, cliente, dataset e <code>split=test</code>. Nenhuma linha de treino ou validação entra.</p></div><span class="tag blue">externo</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="reconstrucao">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">02 · Reconstrução</span><h2>Qual checkpoint forma o modelo final?</h2></div>
+          <p>A resposta depende do setup. O modelo é instanciado novamente com a modalidade e o espaço de classes do dataset; só depois os pesos persistidos são carregados.</p>
+        </div>
+
+        <div class="decision">
+          <article class="decision-card green">
+            <h3>Setup federated</h3>
+            <p>O estado completo é montado com duas fontes:</p>
+            <div class="formula-main" style="border-radius:14px"><em>modelo_cliente</em> = global_shared.pt + state.pt[personalized]</div>
+            <ul><li>tronco: <code>encoder2..5 + bottleneck</code>;</li><li>personalizado: stem, decoder, saídas e cabeça;</li><li>ambos devem pertencer à última rodada.</li></ul>
+          </article>
+          <div class="decision-mid">ou</div>
+          <article class="decision-card blue">
+            <h3>Setup standalone</h3>
+            <p>Não existe tronco global utilizado na inferência:</p>
+            <div class="formula-main" style="border-radius:14px"><em>modelo_cliente</em> = state.pt[model]</div>
+            <ul><li>cada cliente guarda o modelo completo;</li><li>nenhum parâmetro agregado é injetado;</li><li>usa a última rodada do mesmo orçamento.</li></ul>
+          </article>
+        </div>
+        <div class="callout danger"><b>O arquivo <code>best.pt</code> não é carregado aqui.</b><p>Ele marca o melhor pós-fit local para diagnóstico. A comparação final usa a última rodada comum a todos, evitando budgets diferentes por cliente.</p></div>
+      </div>
+    </section>
+
+    <section id="entrada">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">03 · Entrada de inferência</span><h2>O teste não recebe augmentations</h2></div>
+          <p>O mesmo dataset lazy do treinamento abre a imagem sob demanda, mas o loader de teste é determinístico: sem oversampling, sem shuffle, sem flips, sem rotação e com batch igual a 1.</p>
+        </div>
+        <div class="cards four">
+          <article class="card"><div class="num">1</div><h3>Batch</h3><p>Uma imagem por iteração, preservando o vínculo entre predição e <code>patient_id</code>.</p></article>
+          <article class="card"><div class="num">1ch</div><h3>BUSI</h3><p>Imagem em escala de cinza, tensor float32 <code>1×128×128</code>.</p></article>
+          <article class="card"><div class="num">3ch</div><h3>ISIC</h3><p>Leitura OpenCV BGR → RGB e tensor float32 <code>3×128×128</code>.</p></article>
+          <article class="card"><div class="num">0×</div><h3>Aleatoriedade</h3><p>Sem transformações geométricas ou replicação de classes.</p></article>
+        </div>
+        <div class="callout info"><b>Escala numérica do loader federado.</b><p>A configuração atual passa <code>normalization=None</code>; portanto o loader não aplica min–max antes do forward. A inferência replica exatamente o tratamento usado no treinamento.</p></div>
+      </div>
+    </section>
+
+    <section id="forward">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">04 · Forward</span><h2>Uma rede, dois conjuntos de saídas</h2></div>
+          <p>O MTnnUNet sempre executa o forward completo e retorna dois elementos. A tarefa do cliente define qual deles será transformado em predição.</p>
+        </div>
+        <div class="architecture">
+          <div class="arch-stack"><div class="arch-node local"><b>Imagem</b><br><small>1×128×128 ou 3×128×128</small></div></div>
+          <div class="arch-core"><b>MTnnUNet recomposto</b><p style="color:#c9d3ce">stem personalizado → tronco → caminhos de saída</p><div class="layers"><span>encoders</span><span>bottleneck</span><span>decoder</span><span>seg outputs</span><span>cls logits</span></div></div>
+          <div class="arch-stack"><div class="arch-node local"><b>Retorno</b><br><small>([cls_logits], [seg4…seg1])</small></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="segmentacao">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">05 · Caminho seg</span><h2>Logits viram uma máscara binária</h2></div>
+          <p>A inferência escolhe a saída final de segmentação, converte logits em probabilidades e aplica um limiar fixo. Não há prediction-refining.</p>
+        </div>
+        <div class="flow">
+          <div class="flow-row"><div class="flow-icon">1</div><div><b>Selecionar a maior resolução</b><p>Se houver deep supervision, usa <code>outputs[-1]</code>; as escalas auxiliares serviram à perda de treinamento.</p></div><span class="tag">seg1</span></div>
+          <div class="flow-row"><div class="flow-icon">σ</div><div><b>Aplicar sigmoid</b><p>Converte cada logit de pixel em uma probabilidade entre 0 e 1.</p></div><span class="tag blue">inferência</span></div>
+          <div class="flow-row"><div class="flow-icon">½</div><div><b>Limiarizar</b><p>Pixel é tumor quando <code>sigmoid(logit) &gt; 0.5</code>; caso contrário, fundo.</p></div><span class="tag orange">binária</span></div>
+          <div class="flow-row"><div class="flow-icon">≍</div><div><b>Comparar com a máscara real</b><p>Conta TP, TN, FP e FN em pixels e calcula as métricas da imagem.</p></div><span class="tag">por amostra</span></div>
+        </div>
+
+        <div class="metric-grid" style="margin-top:24px">
+          <div class="metric"><b>Dice</b><span>sobreposição harmônica entre máscara e predição</span></div>
+          <div class="metric"><b>IoU</b><span>interseção dividida pela união</span></div>
+          <div class="metric"><b>Sensibilidade</b><span>fração do tumor real recuperada</span></div>
+          <div class="metric"><b>Especificidade</b><span>fração do fundo real preservada</span></div>
+          <div class="metric"><b>Precisão</b><span>fração da máscara prevista que é tumor</span></div>
+        </div>
+        <div class="callout"><b>As métricas são calculadas por imagem e depois agregadas no cliente.</b><p>Valores indefinidos são registrados como <code>NaN</code> e tratados com média que ignora esses casos. Hausdorff existe no módulo legado de métricas, mas é omitido pela avaliação unificada.</p></div>
+      </div>
+    </section>
+
+    <section id="classificacao">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">06 · Caminho cls</span><h2>Logits viram probabilidades de classe</h2></div>
+          <p>Quando há múltiplas saídas de classificação, seus logits são primeiro promediados. O softmax é aplicado uma única vez sobre esse resultado.</p>
+        </div>
+        <div class="formula">
+          <div class="formula-main"><em>logit_final</em> = média(cls_logits)<br><em>probabilidades</em> = softmax(logit_final)<br><em>classe_predita</em> = argmax(probabilidades)</div>
+          <div class="formula-note">A ordem numérica das classes vem da configuração do dataset. BUSI usa 3 posições; ISIC usa 7. Os nomes são gravados junto com as probabilidades.</div>
+        </div>
+        <div class="metric-grid" style="margin-top:24px">
+          <div class="metric"><b>Acurácia</b><span>proporção total de imagens corretas</span></div>
+          <div class="metric"><b>Macro-F1</b><span>F1 médio com igual voz por classe</span></div>
+          <div class="metric"><b>Acurácia balanceada</b><span>recall médio entre classes</span></div>
+          <div class="metric"><b>AUC OvR macro</b><span>capacidade de ordenação por classe</span></div>
+          <div class="metric"><b>Precisão/recall</b><span>valores individuais para cada classe</span></div>
+        </div>
+        <div class="callout info"><b>AUC por cliente pode ser indefinida.</b><p>Se a pequena fatia de teste de um cliente não contém todas as classes, a AUC multiclasses daquele cliente é salva como <code>NaN</code>. A análise posterior recalcula uma AUC pooled com mais amostras.</p></div>
+      </div>
+    </section>
+
+    <section id="sem-refino">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">07 · Controles de comparabilidade</span><h2>As previsões não são “melhoradas” depois</h2></div>
+          <p>A função <code>unified_eval.evaluate</code> é compartilhada pelos setups de comparação. Dessa forma, diferenças de resultado não vêm de pós-processamentos distintos.</p>
+        </div>
+        <div class="cards">
+          <article class="card"><div class="num">OFF</div><h3>Prediction-refining</h3><p>Segmentação não é corrigida a partir da classe e classificação não é corrigida a partir da máscara.</p></article>
+          <article class="card"><div class="num">0.5</div><h3>Limiar fixo</h3><p>O mesmo threshold é usado em todos os braços de segmentação.</p></article>
+          <article class="card"><div class="num">1×</div><h3>Avaliador comum</h3><p>Federado e local-only passam pela mesma implementação de métricas.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="saidas">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">08 · Saídas</span><h2>Dois CSVs com papéis diferentes</h2></div>
+          <p>As linhas são produzidas primeiro por fold e depois concatenadas na raiz do run. Metadados de desenho experimental acompanham os valores para que a análise não precise inferir se foi holdout ou CV.</p>
+        </div>
+        <div class="split-view">
+          <article class="panel"><div class="panel-head"><h3>&lt;setup&gt;_test_results.csv</h3><p>uma linha por cliente × fold</p></div><div class="panel-body"><ul><li>study, arm, method e seed;</li><li>evaluation_scheme e n_splits;</li><li>dataset, tarefa, cliente e fold;</li><li>métricas agregadas;</li><li><code>n_test</code>.</li></ul></div></article>
+          <article class="panel"><div class="panel-head blue"><h3>&lt;setup&gt;_cls_predictions.csv</h3><p>uma linha por imagem de classificação</p></div><div class="panel-body"><ul><li><code>patient_id</code>;</li><li>ground truth e classe predita;</li><li><code>prob_0 … prob_K-1</code>;</li><li>nome de cada classe;</li><li>identificadores do experimento.</li></ul></div></article>
+        </div>
+        <div class="callout danger"><b>Não existe CSV de predições por imagem para segmentação no caminho federado atual.</b><p>O avaliador retorna somente as métricas médias do cliente para seg. Para auditoria visual ou análise por imagem seria necessário estender o avaliador para salvar máscaras e métricas individuais.</p></div>
+      </div>
+    </section>
+
+    <section id="deploy">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">09 · Limite atual</span><h2>Avaliação não é ainda um serviço de produção</h2></div>
+          <p>O código recompõe clientes e avalia exemplos que já pertencem à partição. Ele não oferece um comando independente para receber um PNG arbitrário, escolher um cliente e devolver máscara + diagnóstico.</p>
+        </div>
+        <div class="cards two">
+          <article class="card green"><h3>O que já existe</h3><ul><li>reconstrução segura dos pesos;</li><li>tratamento correto de canais e classes;</li><li>forward em modo inference;</li><li>métricas e probabilidades;</li><li>identificação por cliente.</li></ul></article>
+          <article class="card orange"><h3>O que um CLI de produção precisaria</h3><ul><li>seleção explícita de dataset/cliente/fold;</li><li>validação e resize da imagem externa;</li><li>carregamento dos dois componentes FedPer;</li><li>exportação da máscara e probabilidades;</li><li>versionamento do checkpoint e da configuração.</li></ul></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="rastreio">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">10 · Rastreabilidade</span><h2>Como auditar uma predição</h2></div>
+          <p>Para reproduzir uma linha do CSV, é preciso conservar o run, o fold, o ID do cliente, a configuração resolvida e a partição usada.</p>
+        </div>
+        <div class="filetree"><pre>run/
+├── config.yaml                  <span class="dim"># arquitetura, canais, classes e rounds</span>
+├── study_run.yaml               <span class="dim"># hashes, seed, braço e partição</span>
+├── fold_&lt;k&gt;/
+│   ├── global_shared.pt         <span class="dim"># federado</span>
+│   └── client_&lt;id&gt;/state.pt    <span class="dim"># personalizado ou modelo local</span>
+├── <span class="accent">&lt;setup&gt;_test_results.csv</span>
+└── <span class="accent">&lt;setup&gt;_cls_predictions.csv</span></pre></div>
+      </div>
+    </section>
+
+    <section id="continuidade">
+      <div class="shell">
+        <div class="section-head"><div><span class="kicker">Próximos documentos</span><h2>Da predição à evidência</h2></div><p>Os CSVs gerados aqui são combinados por dataset, tarefa, método, setup e desenho de avaliação na etapa seguinte.</p></div>
+        <div class="related">
+          <a href="preprocessamento_dados.html"><b>Pré-processamento</b><small>Contrato das imagens e máscaras.</small></a>
+          <a href="treinamento_modelo.html"><b>Treinamento</b><small>Origem dos checkpoints carregados.</small></a>
+          <a href="analise_resultados.html"><b>Análise</b><small>Sumários, deltas, AUC pooled e auditorias.</small></a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer><div class="shell foot"><span>Documento técnico visual · fed_multi_task_breast_cancer</span><span>Código local verificado em 16 ago. 2026.</span></div></footer>
+</body>
+</html>

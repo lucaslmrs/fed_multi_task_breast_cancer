@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Etapas completas do treinamento federado FedPer com Curated BUSI e ISIC 2018.">
+  <title>Treinamento do modelo — pipeline completo</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="model_pipeline.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <div class="brand">Pipeline do modelo</div>
+      <nav class="docnav" aria-label="Documentos do pipeline">
+        <a href="preprocessamento_dados.html">Pré-processamento</a>
+        <a class="current" href="treinamento_modelo.html">Treinamento</a>
+        <a href="inferencia_modelo.html">Inferência</a>
+        <a href="analise_resultados.html">Análise</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <div class="shell">
+      <div class="hero">
+        <div>
+          <div class="eyebrow">MTnnUNet · FedPer · Flower</div>
+          <h1>Como o modelo é treinado.</h1>
+          <p class="lead">Da configuração de um braço experimental à última rodada: criação dos clientes, inicialização pareada, otimização local por tarefa, agregação do tronco compartilhado, validação e persistência dos checkpoints.</p>
+        </div>
+        <aside class="hero-note">
+          <strong>A unidade real do treinamento</strong>
+          <p>Cada cliente conhece um dataset e uma tarefa. Ele atualiza o modelo completo localmente, mas somente o tronco compatível viaja até o servidor.</p>
+          <div class="mono">cliente = dataset × tarefa × partição<br>artefato final = tronco global + parte personalizada</div>
+        </aside>
+      </div>
+
+      <div class="journey" style="--steps:6" aria-label="Resumo das etapas de treinamento">
+        <div class="journey-step"><div class="journey-n">01</div><b>Resolver o experimento</b><span>manifesto, seed, braço e partição</span></div>
+        <div class="journey-step"><div class="journey-n">02</div><b>Montar os clientes</b><span>modelo, tarefa, loaders e perdas</span></div>
+        <div class="journey-step"><div class="journey-n">03</div><b>Inicializar</b><span>pesos e aleatoriedade pareados</span></div>
+        <div class="journey-step"><div class="journey-n">04</div><b>Treinar localmente</b><span>steps ou epochs por rodada</span></div>
+        <div class="journey-step"><div class="journey-n">05</div><b>Agregar</b><span>flat ou hierárquica</span></div>
+        <div class="journey-step"><div class="journey-n">06</div><b>Persistir</b><span>última rodada e telemetria</span></div>
+      </div>
+    </div>
+
+    <section id="escopo">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">01 · Escopo</span><h2>Três formas de executar</h2></div>
+          <p>O repositório possui rotas clássicas para um único dataset e uma rota federada multi-dataset. O estudo principal usa a terceira rota e cria pares federado versus local-only sob o mesmo orçamento e a mesma partição.</p>
+        </div>
+        <div class="cards">
+          <article class="card orange"><div class="num">MTL</div><h3>Treino centralizado</h3><p><code>training_multitask.py</code> aprende segmentação e classificação quando cada linha possui as duas supervisões. É válido para BUSI, mas não para o ISIC multi-tarefa disjunto.</p></article>
+          <article class="card blue"><div class="num">1×</div><h3>Treinos por tarefa</h3><p><code>training_segmentation.py</code> e <code>training_classification.py</code> treinam uma tarefa por vez. As variantes <code>_prod</code> unem treino e validação.</p></article>
+          <article class="card green"><div class="num">FedPer</div><h3>Treino federado</h3><p><code>training_federated.py</code> atende BUSI + ISIC, com clientes de tarefa única, tronco compartilhado e partes personalizadas.</p></article>
+        </div>
+        <div class="callout info"><b>Este documento acompanha a rota FedPer.</b><p>Ela também implementa o baseline local-only: com <code>federated.standalone: true</code>, os clientes recebem a mesma inicialização, mas deixam de aceitar o tronco agregado nas rodadas seguintes.</p></div>
+      </div>
+    </section>
+
+    <section id="planejamento">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">02 · Planejamento reproduzível</span><h2>O estudo é resolvido antes de treinar</h2></div>
+          <p>O <code>study_runner</code> combina cada seed com cada braço do manifesto. Para cada combinação, grava uma configuração YAML imutável, calcula hashes e aponta todos os braços da mesma seed para uma única partição pareada.</p>
+        </div>
+        <div class="flow">
+          <div class="flow-row"><div class="flow-icon">1</div><div><b>Ler o manifesto</b><p>Valida IDs, setups, perfis de seed, braços, contrastes e impede que um braço sobrescreva parâmetros que definem a partição.</p></div><span class="tag">studies/*.yaml</span></div>
+          <div class="flow-row"><div class="flow-icon">2</div><div><b>Resolver seed × braço</b><p>Aplica overrides sobre a configuração base e grava <code>resolved/seed_&lt;n&gt;/&lt;arm&gt;.yaml</code>.</p></div><span class="tag blue">execution_plan.csv</span></div>
+          <div class="flow-row"><div class="flow-icon">3</div><div><b>Verificar a partição</b><p>Confere assinatura e SHA-256. Uma partição existente só é reutilizada quando metadados e conteúdo correspondem.</p></div><span class="tag orange">congelada</span></div>
+          <div class="flow-row"><div class="flow-icon">4</div><div><b>Executar sequencialmente</b><p>Roda cada braço, atualiza <code>run_index.csv</code> e preserva execuções incompletas para retomada explícita.</p></div><span class="tag">rastreável</span></div>
+        </div>
+
+        <h3 style="margin-top:32px">Desenho de avaliação suportado</h3>
+        <div class="split-view">
+          <article class="panel"><div class="panel-head"><h3>CV = 1 · holdout</h3><p>Configuração base atual</p></div><div class="panel-body"><p>Uma separação externa determinística. Com <code>holdout_test_size: 0.30</code>, 30% fica para teste e os 70% restantes formam o pool de treino + validação.</p><p>Os resultados são descritivos; não há Wilcoxon.</p></div></article>
+          <article class="panel"><div class="panel-head blue"><h3>CV ≥ 2 · cross-validation</h3><p>Alternativa suportada</p></div><div class="panel-body"><p>Cada fold usa uma fatia externa diferente como teste. A mesma configuração de fold é compartilhada entre braços pareados.</p><p>Diagnósticos Wilcoxon permanecem exploratórios porque cliente × fold não são réplicas independentes.</p></div></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="arquitetura">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">03 · Modelo e personalização</span><h2>O que é compartilhado — e o que não é</h2></div>
+          <p>O MTnnUNet é instanciado com o número de canais e classes do dataset. Para compatibilizar ultrassom em cinza e dermatoscopia RGB, o primeiro encoder fica local. O tronco comum começa em <code>encoder2</code>.</p>
+        </div>
+
+        <div class="architecture">
+          <div class="arch-stack">
+            <div class="arch-node local"><b>Stem local</b><br><small>encoder1 · 1 ou 3 canais</small></div>
+            <div class="arch-node local"><b>Cabeça local</b><br><small>classificador do cliente</small></div>
+          </div>
+          <div class="arch-core">
+            <b>Tronco compartilhado e federado</b>
+            <p style="color:#c9d3ce">Os tensores abaixo têm as mesmas formas para BUSI e ISIC e são os únicos enviados ao servidor.</p>
+            <div class="layers"><span>encoder2</span><span>encoder3</span><span>encoder4</span><span>encoder5</span><span>bottleneck</span></div>
+          </div>
+          <div class="arch-stack">
+            <div class="arch-node local"><b>Decoder local</b><br><small>upsamples e blocos seg</small></div>
+            <div class="arch-node local"><b>Saídas locais</b><br><small>deep supervision</small></div>
+          </div>
+        </div>
+        <div class="callout"><b>FedPer não produz um único modelo universal.</b><p>O artefato utilizável é um tronco global combinado com o stem, decoder e cabeça personalizados de um cliente específico.</p></div>
+      </div>
+    </section>
+
+    <section id="clientes">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">04 · Construção dos clientes</span><h2>Oito clientes, uma tarefa por cliente</h2></div>
+          <p>No roster completo há dois clientes de segmentação e dois de classificação por dataset. Cada worker recebe somente as linhas que pertencem ao seu dataset, fold, cliente e split.</p>
+        </div>
+        <div class="matrix" aria-label="Matriz de clientes e tarefas">
+          <div class="head">Dataset</div><div class="head">seg 0</div><div class="head">seg 1</div><div class="head">cls 0</div><div class="head">cls 1</div>
+          <div><strong>Curated BUSI</strong></div><div class="yes">Dice · 1 canal</div><div class="yes">Dice · 1 canal</div><div class="yes">CE · 3 classes</div><div class="yes">CE · 3 classes</div>
+          <div><strong>ISIC 2018</strong></div><div class="yes">Dice · 3 canais</div><div class="yes">Dice · 3 canais</div><div class="yes">CE ponderada · 7 classes</div><div class="yes">CE ponderada · 7 classes</div>
+        </div>
+
+        <div class="cards four" style="margin-top:24px">
+          <article class="card"><div class="num">Adam</div><h3>Otimizador</h3><p>Inicializado por cliente com learning rate base <code>1e-4</code>.</p></article>
+          <article class="card"><div class="num">Dice</div><h3>Perda seg</h3><p>A função aplica sigmoid internamente; logits entram diretamente no critério.</p></article>
+          <article class="card"><div class="num">CE/Focal</div><h3>Perda cls</h3><p>Escolhida por dataset e braço. O ISIC principal usa CE com pesos balanceados por fold.</p></article>
+          <article class="card"><div class="num">32</div><h3>Batch</h3><p>Treino e validação usam o batch configurado; o teste posterior usa batch 1.</p></article>
+        </div>
+
+        <div class="callout info"><b><code>training.alpha</code> não participa do caminho federado.</b><p>Um cliente possui somente segmentação ou classificação. Portanto ele otimiza a perda da própria tarefa, e não uma soma ponderada entre as duas.</p></div>
+      </div>
+    </section>
+
+    <section id="inicializacao">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">05 · Pareamento</span><h2>A aleatoriedade também é controlada</h2></div>
+          <p>Seeds estáveis são derivadas de seed base, fold, cliente, fase e rodada. Isso pareia inicialização, ordem dos dados e transformações entre o braço federado e seu baseline local-only.</p>
+        </div>
+        <div class="formula">
+          <div class="formula-main"><em>seed_cliente</em> = SHA-256(seed_base | fold | client_id | fase | rodada)</div>
+          <div class="formula-note">O orquestrador também reinicializa o tronco global por fold. Assim, a criação de modelos de um fold anterior não desloca o gerador aleatório do fold seguinte.</div>
+        </div>
+        <div class="cards" style="margin-top:22px">
+          <article class="card"><div class="num">A</div><h3>Inicialização local</h3><p>Stem, decoder e cabeça começam iguais entre braços pareados do mesmo cliente.</p></article>
+          <article class="card"><div class="num">B</div><h3>Ordem de dados</h3><p>Shuffling ou sampler rotativo recebe uma seed estável, independente da recriação do worker Ray.</p></article>
+          <article class="card"><div class="num">C</div><h3>Transformações</h3><p>Flips e rotações sorteiam a partir da seed de cliente, fase e rodada.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="rodada">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">06 · Rodada federada</span><h2>O ciclo completo de uma rodada</h2></div>
+          <p>Todos os clientes participam de fit e validação. Falhas não são aceitas silenciosamente: com <code>accept_failures=false</code>, uma falha impede a agregação daquela rodada.</p>
+        </div>
+        <div class="round-cycle">
+          <article class="cycle-step"><b>Servidor envia o tronco</b><p>Na primeira rodada, usa a inicialização global pareada. Depois, envia o resultado agregado anterior.</p></article>
+          <article class="cycle-step"><b>Cliente recompõe o estado</b><p>Carrega optimizer e parte personalizada de <code>state.pt</code>; no federado, injeta o tronco recebido.</p></article>
+          <article class="cycle-step"><b>Otimização local</b><p>Executa forward, calcula a perda da tarefa, faz backward e atualiza tronco + parte local.</p></article>
+          <article class="cycle-step"><b>Validação local</b><p>Mede loss e Dice ou acurácia no split val, sem transformações geométricas.</p></article>
+          <article class="cycle-step"><b>Persistência local</b><p>Salva o estado da rodada. Se a loss melhora, grava também um <code>best.pt</code> diagnóstico.</p></article>
+          <article class="cycle-step"><b>Agregação</b><p>Somente o tronco atualizado retorna. O servidor calcula os pesos, agrega e registra participação.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="orcamento">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">07 · Orçamento local</span><h2>Steps e epochs medem esforços diferentes</h2></div>
+          <p>Esse é um dos eixos mais importantes do estudo. Os dois modos usam o mesmo loop de otimização, mas definem de modo distinto quando o cliente encerra sua contribuição da rodada.</p>
+        </div>
+        <div class="decision">
+          <article class="decision-card green"><h3>Modo steps</h3><p>Cada cliente executa exatamente <code>steps_per_round</code> updates. O sampler rotativo percorre um fluxo determinístico de permutações e muda o ponto inicial a cada rodada.</p><p><strong>Efeito:</strong> trabalho computacional local igual, independentemente do tamanho do cliente.</p></article>
+          <div class="decision-mid">ou</div>
+          <article class="decision-card blue"><h3>Modo epochs</h3><p>Cada cliente percorre seu loader completo por <code>local_epochs</code>. Clientes maiores processam mais batches e mais imagens.</p><p><strong>Efeito:</strong> esforço proporcional ao tamanho efetivo da base local.</p></article>
+        </div>
+        <div class="callout danger"><b>Comparação válida exige orçamento pareado.</b><p>Federado em steps deve ser comparado ao local-only em steps; federado em epochs ao local-only em epochs. Caso contrário, a diferença mistura transferência federada com quantidade de treino.</p></div>
+      </div>
+    </section>
+
+    <section id="perdas">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">08 · Forward e perdas</span><h2>Cada tarefa usa uma saída diferente</h2></div>
+          <p>O forward retorna logits de classificação e uma lista de mapas de segmentação em múltiplas escalas. O cliente calcula somente a parte compatível com sua tarefa.</p>
+        </div>
+        <div class="split-view">
+          <article class="panel"><div class="panel-head"><h3>Cliente de segmentação</h3><p>máscara → deep supervision Dice</p></div><div class="panel-body"><div class="formula-main" style="border-radius:14px"><em>Lseg</em> = Σ Dice(output_n, mask) / (n + 1)</div><ul><li>usa todas as saídas de segmentação;</li><li>com pesos inversos se configurado;</li><li>não aplica sigmoid antes do critério;</li><li>classificação é ignorada.</li></ul></div></article>
+          <article class="panel"><div class="panel-head blue"><h3>Cliente de classificação</h3><p>classe → CE ou Focal</p></div><div class="panel-body"><div class="formula-main" style="border-radius:14px"><em>Lcls</em> = Σ critério(logits_n, label)</div><ul><li>rótulo vira one-hot no multiclasses;</li><li>pode usar pesos por classe;</li><li>Focal usa gamma configurável;</li><li>máscara é ignorada.</li></ul></div></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="agregacao">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">09 · Servidor</span><h2>Como os updates são combinados</h2></div>
+          <p>Antes de calcular a média, o servidor valida que todos os arrays compartilhados têm as mesmas formas. Depois aplica o modo de agregação configurado e registra o peso efetivo de cada cliente.</p>
+        </div>
+        <div class="weights">
+          <article class="weight-box"><h3>Hierárquica · principal</h3><p>Normaliza os clientes dentro de cada dataset e só então mistura datasets pelos pesos configurados.</p><div class="weight-bar"><span style="width:50%"></span><span style="width:50%"></span></div><div class="legend"><span>■ BUSI 50%</span><span>■ ISIC 50%</span></div></article>
+          <article class="weight-box"><h3>Flat · ablação</h3><p>Normaliza todos os clientes em um único nível. Com <code>num_examples</code> e pesos de tarefa 1, equivale ao FedAvg amostral.</p><div class="weight-bar"><span style="width:18%"></span><span style="width:12%"></span><span style="width:26%"></span><span style="width:44%"></span></div><div class="legend"><span>participação depende do peso base</span></div></article>
+        </div>
+        <div class="formula" style="margin-top:22px">
+          <div class="formula-main"><em>peso_base</em> = fator_cliente × peso_tarefa<br><em>fator_cliente</em> = 1 ou num_examples<br><em>peso_final_hierárquico</em> = peso_dataset × normalização_interna</div>
+          <div class="formula-note">Na configuração principal, <code>client_weighting=uniform</code>, tarefas seg:cls = 4:1 e datasets BUSI:ISIC = 1:1. Com dois clientes por tarefa, cada dataset recebe 50% e, dentro dele, seg recebe 80% e cls 20%.</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="checkpoints">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">10 · Checkpoints e retomada</span><h2>O que é salvo a cada fold</h2></div>
+          <p>Os workers Flower são efêmeros, então o estado local precisa sobreviver no disco. A retomada verifica se todos os clientes e o tronco global chegaram à rodada esperada antes de reutilizar o fold.</p>
+        </div>
+        <div class="filetree"><pre>fold_&lt;k&gt;/
+├── <span class="accent">global_shared.pt</span>          <span class="dim"># tronco global da última rodada; apenas federado</span>
+├── <span class="accent">aggregation_history.json</span> <span class="dim"># pesos, participação e exposição por rodada</span>
+├── client_&lt;id&gt;/
+│   ├── <span class="accent">state.pt</span>              <span class="dim"># optimizer + personalizado, ou modelo local completo</span>
+│   ├── best.pt               <span class="dim"># melhor validação local; diagnóstico</span>
+│   └── metadata.yaml         <span class="dim"># seeds, classes, orçamento e contagens</span>
+├── &lt;setup&gt;_test_results.csv
+└── &lt;setup&gt;_cls_predictions.csv</pre></div>
+        <div class="callout danger"><b><code>best.pt</code> não é o artefato final comparado.</b><p>A avaliação final usa a última rodada comum: tronco global final + personalizado mais recente no federado, ou modelo local completo da última rodada no standalone.</p></div>
+      </div>
+    </section>
+
+    <section id="comandos">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">11 · Execução segura</span><h2>Da validação ao estudo</h2></div>
+          <p>O fluxo começa com testes e resolução do plano, passa por smoke tests curtos e só então parte para as execuções completas.</p>
+        </div>
+        <div class="commands"><pre><span class="comment"># Testes do pipeline</span>
+<span class="cmd">python -m unittest discover -v</span>
+
+<span class="comment"># Resolve configurações; não treina e não recria partição</span>
+<span class="cmd">python -m src.experiments.study_runner --dry-run</span>
+
+<span class="comment"># Validação curta: 2 rodadas, fold 0, CPU</span>
+<span class="cmd">python -m src.experiments.study_runner --smoke --seed-profile operational</span>
+
+<span class="comment"># Estudo operacional</span>
+<span class="cmd">python -m src.experiments.study_runner --seed-profile operational</span>
+
+<span class="comment"># Retoma somente quando há execução incompleta</span>
+<span class="cmd">python -m src.experiments.study_runner --retry-incomplete</span></pre></div>
+        <div class="callout"><b>Não use <code>--rebuild-partitions</code> sem intenção explícita.</b><p>Esse argumento troca o artefato que garante o pareamento entre braços e pode tornar resultados antigos incomparáveis.</p></div>
+      </div>
+    </section>
+
+    <section id="continuidade">
+      <div class="shell">
+        <div class="section-head"><div><span class="kicker">Próximos documentos</span><h2>O pipeline continua</h2></div><p>Ao terminar a última rodada, o orquestrador recompõe cada modelo para o teste externo. Esses resultados alimentam a análise comparativa.</p></div>
+        <div class="related">
+          <a href="preprocessamento_dados.html"><b>Pré-processamento</b><small>Como os dados chegaram aos loaders.</small></a>
+          <a href="inferencia_modelo.html"><b>Inferência</b><small>Como os checkpoints viram previsões e métricas.</small></a>
+          <a href="analise_resultados.html"><b>Análise</b><small>Como métodos e braços são comparados.</small></a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer><div class="shell foot"><span>Documento técnico visual · fed_multi_task_breast_cancer</span><span>Código local verificado em 16 ago. 2026.</span></div></footer>
+</body>
+</html>

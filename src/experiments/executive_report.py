@@ -191,7 +191,7 @@ def _status_section(run_index: pd.DataFrame):
     return summary + _table(["Abordagem", "Setup", "Status", "Conclusão UTC"], rows), all_complete
 
 
-def _running_fold_progress(run_index: pd.DataFrame):
+def _running_fold_progress(run_index: pd.DataFrame, n_splits: int, scheme: str):
     """Show durable per-fold progress without treating partial folds as results."""
     if run_index.empty:
         return ""
@@ -208,8 +208,9 @@ def _running_fold_progress(run_index: pd.DataFrame):
         rows.append(
             [
                 _esc(METHOD_LABELS.get(row.method_id, row.method_id)),
-                f"{completed}/4 folds com resultados de teste persistidos",
-                "O fold em curso só entra nas tabelas após concluir e gravar seus artefatos.",
+                f"{completed}/{n_splits} "
+                + ("holdout com resultado de teste persistido" if scheme == "holdout" else "folds com resultados de teste persistidos"),
+                "O split em curso só entra nas tabelas após concluir e gravar seus artefatos.",
             ]
         )
     if not rows:
@@ -217,7 +218,7 @@ def _running_fold_progress(run_index: pd.DataFrame):
     return (
         '<div class="notice"><strong>Progresso em execução.</strong> '
         "O treinamento segue em processo independente; resultados parciais não são usados para "
-        "substituir folds incompletos.</div>"
+        "substituir splits incompletos.</div>"
         + _table(["Abordagem", "Progresso durável", "Regra de inclusão"], rows)
     )
 
@@ -290,13 +291,19 @@ def _primary_deltas(comparisons: pd.DataFrame):
     )
 
 
-def _interpretation_notice(all_complete: bool):
+def _interpretation_notice(all_complete: bool, scheme: str):
     if all_complete:
+        evidence = (
+            "os deltas entre clientes no único holdout são estritamente descritivos e não "
+            "possuem teste de Wilcoxon"
+            if scheme == "holdout"
+            else "os deltas por cliente × fold permanecem evidência exploratória"
+        )
         return (
             '<div class="notice"><strong>Leitura da matriz operacional:</strong> '
             "a tabela mostra o contraste principal sob orçamento fixo, enquanto a matriz abaixo "
             "inclui os contrastes de orçamento, cardinalidade, agregação flat e focal. Esta é uma "
-            "única seed operacional: os deltas por cliente × fold permanecem evidência exploratória "
+            f"única seed operacional: {evidence} "
             "e não sustentam alegação confirmatória de superioridade.</div>"
         )
     return (
@@ -354,7 +361,7 @@ def _effects_table(comparisons: pd.DataFrame):
             "Média 1",
             "Média 2",
             "Δ 1−2",
-            "p exploratório",
+            "p (quando aplicável)",
         ],
         rows,
         numeric={6, 7, 8, 9},
@@ -473,10 +480,15 @@ def _pooled_auc_table(pooled: pd.DataFrame):
             str(int(row.num_classes)),
             str(int(row.n)),
             _fmt(row.auc_pooled),
+            _esc(getattr(row, "aggregation_scope", "out_of_fold")),
         ]
         for row in subset.itertuples()
     ]
-    return _table(["Dataset", "Abordagem", "Setup", "Classes", "n", "AUC OOF agrupada"], rows, {3, 4, 5})
+    return _table(
+        ["Dataset", "Abordagem", "Setup", "Classes", "n", "AUC agregada", "Escopo"],
+        rows,
+        {3, 4, 5},
+    )
 
 
 def _comparison_delta(comparisons: pd.DataFrame, comparison_id, dataset, task, metric):
@@ -570,6 +582,32 @@ def _aggregation_audit(audit: pd.DataFrame):
     )
 
 
+def _report_design(run_index: pd.DataFrame, summary: pd.DataFrame):
+    scheme = "cross_validation"
+    n_splits = 4
+    rounds = 50
+    if not summary.empty and "evaluation_scheme" in summary:
+        schemes = summary["evaluation_scheme"].dropna().astype(str).unique()
+        if len(schemes) == 1:
+            scheme = schemes[0]
+        if "n_splits" in summary and summary["n_splits"].notna().any():
+            n_splits = int(summary["n_splits"].max())
+    if not run_index.empty and "resolved_config" in run_index:
+        for config_path in run_index["resolved_config"].dropna().astype(str):
+            path = Path(config_path)
+            if not path.exists():
+                continue
+            config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            n_splits = int(config.get("training", {}).get("CV", n_splits))
+            rounds = int(config.get("federated", {}).get("rounds", rounds))
+            if n_splits == 1:
+                scheme = "holdout"
+            break
+    seeds = sorted(run_index["seed"].dropna().astype(str).unique()) if "seed" in run_index else []
+    seed_label = ", ".join(seeds) if seeds else "não informada"
+    return scheme, n_splits, rounds, seed_label
+
+
 def build_report(study_root: Path, analysis_dir: Path, output: Path):
     summary = _read_csv(analysis_dir / "summary_per_task_setup.csv")
     comparisons = _read_csv(analysis_dir / "method_comparisons.csv")
@@ -578,8 +616,23 @@ def build_report(study_root: Path, analysis_dir: Path, output: Path):
     audit = _read_csv(analysis_dir / "aggregation_audit.csv")
     pooled = _read_csv(analysis_dir / "pooled_auc.csv")
     run_index = _read_csv(study_root / "run_index.csv")
+    scheme, n_splits, rounds, seed_label = _report_design(run_index, summary)
+    split_label = "holdout 70/30" if scheme == "holdout" else f"{n_splits} folds"
+    observation_label = "clientes no holdout" if scheme == "holdout" else "clientes/folds"
+    inference_unit = "seed × cliente no holdout" if scheme == "holdout" else "seed × fold × cliente"
+    inference_text = (
+        "No holdout único, os contrastes são descritivos e o Wilcoxon não é calculado."
+        if scheme == "holdout"
+        else "Com uma única seed, testes de Wilcoxon por cliente-fold são exploratórios: clientes e folds não devem ser tratados como repetições totalmente independentes."
+    )
+    auc_title = "AUC agregada no teste holdout" if scheme == "holdout" else "AUC OOF agrupada"
+    auc_text = (
+        "A AUC abaixo agrega as predições do teste holdout, mantendo separados os espaços BUSI de 3 classes e ISIC de 7 classes."
+        if scheme == "holdout"
+        else "A AUC abaixo agrega as predições out-of-fold de todas as imagens, mantendo separados os espaços BUSI de 3 classes e ISIC de 7 classes."
+    )
     status_html, all_complete = _status_section(run_index)
-    running_html = _running_fold_progress(run_index)
+    running_html = _running_fold_progress(run_index, n_splits, scheme)
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     label = "FINAL" if all_complete else "PROVISÓRIO"
 
@@ -596,14 +649,14 @@ main{{max-width:1120px;margin:auto;padding:42px 24px 80px}} h1{{font-size:34px;l
 <div class="eyebrow">Relatório {label} · estudo controlado</div>
 <h1>Federação multi-dataset BUSI + ISIC</h1>
 <p class="lead">Avaliação de transferência entre modalidades com stems e cabeças personalizados e trunk compartilhado (<code>encoder2..bottleneck</code>). O desfecho principal compara aprendizado federado e local-only dentro de cada dataset, sem alegar equivalência ao benchmark oficial do ISIC.</p>
-<p class="meta">Gerado em {generated} · seed operacional 1993 · 4 folds · 50 rodadas</p>
+<p class="meta">Gerado em {generated} · seed(s) {seed_label} · {split_label} · {rounds} rodadas</p>
     {'' if all_complete else '<div class="notice"><strong>Documento provisório, atualizado durante a execução.</strong> Houve uma interrupção anterior da GPU, mas o estudo foi retomado por fold. Os resultados abaixo incluem somente braços completos; ablações e folds pendentes não são inferidos nem substituídos por smoke tests.</div>'}
 
 <h2>1. Situação executiva</h2>{status_html}{running_html}
 
 <h2>2. Pergunta de pesquisa e desenho</h2>
-<div class="grid2"><div class="card"><h3>Pergunta principal</h3><p>Com o mesmo orçamento local, partições, transforms e pesos de classe, o compartilhamento de um trunk entre clientes BUSI e ISIC melhora o desempenho de teste de cada dataset em relação ao treinamento local?</p></div><div class="card"><h3>Unidade de inferência</h3><p>As comparações são pareadas por seed × fold × cliente. Com uma única seed, testes de Wilcoxon por cliente-fold são exploratórios: clientes e folds não devem ser tratados como repetições totalmente independentes.</p></div></div>
-<div class="flow"><div class="step">Partição externa em 4 folds<br><small>lesion_id indivisível no ISIC</small></div><div class="arrow">→</div><div class="step">Clientes por dataset × tarefa<br><small>train/val/test sem vazamento</small></div><div class="arrow">→</div><div class="step">Treino pareado<br><small>federado ou local-only</small></div><div class="arrow">→</div><div class="step">Teste por cliente<br><small>3 e 7 classes separadas</small></div><div class="arrow">→</div><div class="step">Deltas pareados e auditorias</div></div>
+<div class="grid2"><div class="card"><h3>Pergunta principal</h3><p>Com o mesmo orçamento local, partições, transforms e pesos de classe, o compartilhamento de um trunk entre clientes BUSI e ISIC melhora o desempenho de teste de cada dataset em relação ao treinamento local?</p></div><div class="card"><h3>Unidade de inferência</h3><p>As comparações são pareadas por {inference_unit}. {inference_text}</p></div></div>
+<div class="flow"><div class="step">Partição externa: {split_label}<br><small>lesion_id indivisível no ISIC</small></div><div class="arrow">→</div><div class="step">Clientes por dataset × tarefa<br><small>train/val/test sem vazamento</small></div><div class="arrow">→</div><div class="step">Treino pareado<br><small>federado ou local-only</small></div><div class="arrow">→</div><div class="step">Teste por cliente<br><small>3 e 7 classes separadas</small></div><div class="arrow">→</div><div class="step">Deltas pareados e auditorias</div></div>
 
 <h2>3. Dados e proteção contra vazamento</h2>
 <p>BUSI usa ultrassom em um canal; ISIC usa dermatoscopia RGB em três canais. O loader converte BGR→RGB, entrega tensores C×H×W e aplica transforms geométricas de modo conjunto a imagem e máscara. Placeholders de supervisão ausente não são consumidos pela tarefa oposta.</p>
@@ -623,13 +676,13 @@ main{{max-width:1120px;margin:auto;padding:42px 24px 80px}} h1{{font-size:34px;l
 
 <h2>6. Resultados disponíveis</h2>
 {_comparison_chart(summary)}
-<p class="meta"><span style="color:var(--fed)">■</span> federado principal &nbsp; <span style="color:var(--local)">■</span> local — passos/CE. Valores são médias dos clientes/folds; consulte a tabela para dispersão e n.</p>
+<p class="meta"><span style="color:var(--fed)">■</span> federado principal &nbsp; <span style="color:var(--local)">■</span> local — passos/CE. Valores são médias de {observation_label}; consulte a tabela para dispersão e n.</p>
 <h3>Maiores médias descritivas por desfecho</h3>
 <p class="meta">Ranking descritivo entre protocolos diferentes; não deve ser interpretado como contraste causal.</p>
 {_descriptive_rankings(summary)}
 
-<h3>AUC OOF agrupada</h3>
-<p>A AUC abaixo agrega as predições out-of-fold de todas as imagens, mantendo separados os espaços BUSI de 3 classes e ISIC de 7 classes.</p>
+<h3>{auc_title}</h3>
+<p>{auc_text}</p>
 {_pooled_auc_table(pooled)}
 
 <h3>Todas as métricas agregadas</h3>
@@ -637,10 +690,10 @@ main{{max-width:1120px;margin:auto;padding:42px 24px 80px}} h1{{font-size:34px;l
 
 <h3>Deltas pareados da comparação principal</h3>
 {_primary_deltas(comparisons)}
-{_interpretation_notice(all_complete)}
+{_interpretation_notice(all_complete, scheme)}
 
 <h2>7. Efeitos das ablações concluídas</h2>
-<p>Nos gráficos e tabelas desta seção, Δ = primeira condição − segunda condição. Os valores de p são diagnósticos exploratórios: os oito pares cliente × fold não são oito repetições independentes.</p>
+<p>Nos gráficos e tabelas desta seção, Δ = primeira condição − segunda condição. {inference_text}</p>
 {_effects_chart(comparisons)}
 <p class="meta">Barras à direita favorecem a primeira condição do contraste; barras à esquerda favorecem a segunda.</p>
 {_effects_table(comparisons)}
@@ -649,10 +702,10 @@ main{{max-width:1120px;margin:auto;padding:42px 24px 80px}} h1{{font-size:34px;l
 {_key_findings(comparisons)}
 
 <h2>9. Validação e rastreabilidade</h2>
-<ul><li>34 testes automatizados passaram após a retomada, incluindo a verificação CUDA depois do reinício do host.</li><li>Testes cobrem shapes compartilhados, canais, placeholders, lesion_id, class weights sem teste, CPU/CUDA, agregação flat/hierárquica, AUC dinâmica, orçamento por passos e retomada por fold.</li><li>A primeira falha real revelou especificidade indefinida em máscaras sem negativos; as métricas agora retornam valor indefinido somente quando o denominador inexiste e 0 quando há casos sem acerto.</li><li>O run é reprodutível por configs resolvidas, checksums de partição, seed, estado inicial pareado e histórico de agregação por rodada.</li></ul>
+<ul><li>A suíte automatizada cobre shapes compartilhados, canais, placeholders, lesion_id, class weights sem teste, CPU/CUDA, agregação flat/hierárquica, AUC dinâmica, orçamento por passos e retomada por split.</li><li>As métricas retornam valor indefinido somente quando o denominador inexiste e 0 quando há casos sem acerto.</li><li>O run é reprodutível por configs resolvidas, checksums de partição, seed, estado inicial pareado e histórico de agregação por rodada.</li></ul>
 
 <h2>10. Limitações e decisão</h2>
-<ul><li>Uma seed operacional não sustenta uma conclusão inferencial definitiva, mesmo com quatro folds.</li><li>Clientes e folds compartilham origem de dados e não são réplicas independentes; os p-valores são apenas diagnósticos descritivos.</li><li>O protocolo ISIC é CV interno; não é resultado oficial do challenge.</li><li>O baseline centralizado multi-dataset permanece fora do escopo.</li><li>A comparação de maiores médias entre braços com orçamentos diferentes é descritiva; inferências causais usam somente os contrastes pareados declarados.</li></ul>
+<ul><li>Uma única seed não sustenta uma conclusão inferencial definitiva, independentemente do desenho de avaliação.</li><li>{inference_text}</li><li>O protocolo ISIC é uma avaliação interna; não é resultado oficial do challenge.</li><li>O baseline centralizado multi-dataset permanece fora do escopo.</li><li>A comparação de maiores médias entre braços com orçamentos diferentes é descritiva.</li></ul>
 <p><strong>Decisão executiva:</strong> a federação multi-modal é tecnicamente viável, mas seu benefício é condicional. Para equilíbrio institucional entre modalidades, a agregação hierárquica 50/50 permanece a política cientificamente alinhada ao objetivo. Para maximizar classificação nesta seed, a combinação por épocas com cardinalidade/flat foi mais forte, ao custo de pior segmentação BUSI e de permitir dominância efetiva do ISIC. <code>balanced_fold</code> deve permanecer como política principal quando acurácia balanceada importa; focal sem pesos é uma ablação útil para AUC, não uma substituição equivalente. A próxima etapa necessária para alegações de desempenho é repetir a matriz em seeds independentes.</p>
 
 <h2>11. Artefatos</h2>

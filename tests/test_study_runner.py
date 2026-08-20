@@ -1,7 +1,10 @@
+import copy
 import unittest
 from pathlib import Path
 
 from src.experiments.study_runner import (
+    _config_signature,
+    _partition_signature,
     build_execution_plan,
     load_manifest,
     resolve_arm_config,
@@ -54,6 +57,27 @@ class StudyRunnerTests(unittest.TestCase):
         self.assertEqual(resolved["datasets"]["ISIC_2018"]["classification_criterion"], "Focal")
         self.assertEqual(resolved["datasets"]["ISIC_2018"]["class_weighting"], "none")
         self.assertEqual(resolved["datasets"]["Curated_BUSI"]["classification_criterion"], "CE")
+
+    def test_holdout_size_only_affects_effective_cv1_signatures(self):
+        full_rows, _, _ = build_execution_plan(
+            self.manifest, [1993], self.manifest["arms"][:1], smoke=False
+        )
+        cv_config = full_rows[0]["config"]
+        without_holdout = _config_signature(cv_config)
+        changed_cv = copy.deepcopy(cv_config)
+        changed_cv["training"]["holdout_test_size"] = 0.45
+        self.assertEqual(without_holdout, _config_signature(changed_cv))
+        self.assertNotIn("holdout_test_size", _partition_signature(cv_config)["training"])
+
+        holdout = copy.deepcopy(cv_config)
+        holdout["training"]["CV"] = 1
+        holdout["training"]["holdout_test_size"] = 0.30
+        changed_holdout = _config_signature(holdout)
+        changed_holdout["training"]["holdout_test_size"] = 0.40
+        self.assertNotEqual(holdout, changed_holdout)
+        self.assertEqual(
+            _partition_signature(holdout)["training"]["holdout_test_size"], 0.30
+        )
 
 
 if __name__ == "__main__":

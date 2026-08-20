@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 
 from src.dataset import paths
+from src.dataset.splitting import evaluation_settings
 
 
 def active_datasets(config: dict) -> list:
@@ -74,6 +75,8 @@ def partition_file(config: dict) -> Path:
 
 
 def validate_federated_config(config: dict) -> None:
+    if "training" in config:
+        evaluation_settings(config["training"])
     datasets = active_datasets(config)
     if not datasets or len(set(datasets)) != len(datasets):
         raise ValueError("federated.datasets must contain unique dataset names")

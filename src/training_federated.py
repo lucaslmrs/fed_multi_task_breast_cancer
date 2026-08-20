@@ -6,6 +6,7 @@ local-only baseline by setting ``federated.standalone``.
 """
 
 import argparse
+import copy
 import json
 import logging
 import time
@@ -20,6 +21,7 @@ from flwr.server import ServerConfig
 from flwr.simulation import start_simulation
 
 from src.dataset.federated_dataloader import build_client_loader, list_clients
+from src.dataset.splitting import evaluation_metadata, validate_master_splits
 from src.federated import unified_eval
 from src.federated.client import build_client_fn, stable_client_seed
 from src.federated.config import (
@@ -43,6 +45,13 @@ from src.utils.miscellany import init_log, seed_everything
 class _DropFlwrDeprecation(logging.Filter):
     def filter(self, record):
         return "DEPRECATED FEATURE" not in record.getMessage()
+
+
+def _resume_config_signature(config):
+    signature = copy.deepcopy(config)
+    if signature.get("training", {}).get("CV", 0) > 1:
+        signature["training"].pop("holdout_test_size", None)
+    return signature
 
 
 def _resolve_orchestrator_device(requested):
@@ -161,6 +170,7 @@ def _test_client(
         class_names=data_cfg["classes"],
     )
     experiment = config.get("experiment", {})
+    evaluation = evaluation_metadata(config["training"])
     identifiers = {
         key: experiment[key]
         for key in ("study_id", "arm_id", "method_id", "seed")
@@ -168,6 +178,7 @@ def _test_client(
     }
     row = {
         **identifiers,
+        **evaluation,
         "setup": setup,
         "fold": fold,
         "client_id": client_id,
@@ -176,6 +187,8 @@ def _test_client(
         **metrics,
     }
     if preds is not None:
+        for key, value in reversed(list(evaluation.items())):
+            preds.insert(0, key, value)
         for key, value in reversed(list(identifiers.items())):
             preds.insert(0, key, value)
         preds.insert(0, "dataset", dataset)
@@ -272,7 +285,7 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
     config_output = run_path / "config.yaml"
     if config_output.exists():
         existing = yaml.safe_load(config_output.read_text(encoding="utf-8"))
-        if existing != config:
+        if _resume_config_signature(existing) != _resume_config_signature(config):
             raise ValueError(
                 f"Refusing to resume '{run_path}' with a different resolved configuration"
             )
@@ -282,6 +295,8 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
         yaml.safe_dump(config, stream, sort_keys=False)
 
     master_file = partition_file(config)
+    master_frame = pd.read_csv(master_file, usecols=lambda column: column in {"fold", "split"})
+    validate_master_splits(master_frame, train_cfg)
     roster_df = list_clients(str(master_file))
     if "dataset" not in roster_df.columns:
         roster_df["dataset"] = config["data"]["dataset"]
@@ -335,9 +350,15 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
         fold_predictions_path = fold_dir / f"{setup}_cls_predictions.csv"
         if resume and fold_results_path.exists():
             logging.info("[fold %s] reusing durable test results", fold)
-            test_rows.extend(pd.read_csv(fold_results_path).to_dict("records"))
+            reused_results = pd.read_csv(fold_results_path)
+            for key, value in evaluation_metadata(train_cfg).items():
+                reused_results[key] = value
+            test_rows.extend(reused_results.to_dict("records"))
             if fold_predictions_path.exists():
-                pred_frames.append(pd.read_csv(fold_predictions_path))
+                reused_predictions = pd.read_csv(fold_predictions_path)
+                for key, value in evaluation_metadata(train_cfg).items():
+                    reused_predictions[key] = value
+                pred_frames.append(reused_predictions)
             continue
 
         expected_round = int(fed["rounds"])
@@ -453,9 +474,18 @@ def _save_results(df, pred_frames, run_path, setup):
     glance_col = {"seg": "dice", "cls": "acc"}
     for (dataset, task), group in df.groupby(["dataset", "task"]):
         metric = glance_col[task]
+        scheme = group["evaluation_scheme"].iloc[0]
+        unit = "clients in one holdout" if scheme == "holdout" else "client-fold observations"
+        mean_value = group[metric].mean()
+        std_value = group[metric].std()
+        estimate = (
+            f"{mean_value:.4f}"
+            if pd.isna(std_value)
+            else f"{mean_value:.4f} ± {std_value:.4f}"
+        )
         logging.info(
             f"[{setup}] dataset={dataset} task={task}: {metric} "
-            f"{group[metric].mean():.4f} ± {group[metric].std():.4f} (n={len(group)})"
+            f"{estimate} (n={len(group)} {unit})"
         )
     logging.info(f"Saved {results_csv}")
 
