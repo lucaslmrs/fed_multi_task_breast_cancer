@@ -56,11 +56,6 @@ python -m src.training_multitask      # segmentation + classification
 python -m src.training_segmentation   # segmentation only
 python -m src.training_classification # classification only
 
-# Production variants (merge train+val, no separate val set)
-python -m src.training_multitask_prod
-python -m src.training_segmentation_prod
-python -m src.training_classification_prod
-
 # Federated (FedPer) training — see "Federated training" section below
 python -m src.dataset.federated_partition   # build data/<dataset>/federated/federated_mapping.csv
 python -m src.dataset.federated_partition --legacy  # only to reproduce frozen single-dataset BUSI
@@ -172,8 +167,12 @@ Multi-task loss: `total = α * seg_loss + (1-α) * cls_loss`
 - Classification criterion: Focal loss for multiclass, BCE for binary.
 - Early stopping via `training.max_patience`; best checkpoint saved per fold.
 
-In the federated path `training.alpha` is not used: each client owns exactly one task, so the local
-trainer optimizes Dice **or** the classification criterion, never a weighted sum.
+In the federated path `training.alpha` is not used. A `single_task` client optimizes Dice **or** the
+classification criterion, never a weighted sum. A `multi_task` client optimizes
+`L = Σ_t λ_t · L_t` with `λ_t = aggregation.task_weights[t] / Σ task_weights`, evaluated only over
+the samples each task actually supervises (per-sample `has_mask` / `has_label` flags). A task with
+no supervised sample in a batch is **omitted, never contributed as zero** — an all-zero mask is a
+legitimate target for BUSI's `normal` class, so a zero term and an absent term differ.
 
 ### Output structure
 
@@ -206,8 +205,17 @@ runs/{timestamp}_{arch}_{width}_alpha_{α}_batch_{B}_{classes}/
 
 A federated variant trains the multi-task model across clients using **Flower** (`flwr[simulation]`)
 simulation + **FedAvg**, following the **FedPer** scheme: the encoder is shared/federated, while each
-client keeps a **personalized head** that is never aggregated. Each client owns **one task** (seg *or*
-cls); the same image may be used by clients of different tasks, but train/test stay disjoint per fold.
+client keeps a **personalized head** that is never aggregated.
+
+`datasets.<name>.client_topology` decides how tasks map to clients, and the default is
+`single_task` — every existing result was produced under it:
+
+- **`single_task`** (default) — each client owns **one task** (seg *or* cls). Each task's pool is
+  partitioned independently, so the same image ends up in a seg client **and** in a *different* cls
+  client. Train/test stay disjoint per fold, but one silo's data is duplicated across two silos.
+- **`multi_task`** — one client owns **several tasks over the same images**, so an image belongs to
+  exactly one silo. Requires `fold_strategy: stratified` and the same `n_clients` count for every
+  task. ISIC cannot use it: its seg and cls pools are disjoint image sets.
 
 ### Pipeline
 
@@ -237,9 +245,14 @@ ISIC 2018 (3-channel dermoscopy). `encoder1` is a personalized modality stem; th
    model initialization, shuffling, and transforms between federated and local-only runs. A
    `best.pt` local post-fit snapshot remains diagnostic and is not the final federated artifact.
    Resolves its device per worker (falls back to CPU if the worker has no GPU).
-6. `src/federated/server.py` — `hierarchical` mode normalizes
-   `num_examples × task_weight[task]` within each dataset and then applies `dataset_weights`;
-   `flat` mode is the sample-weighted ablation. Logs effective dataset/task participation.
+6. `src/federated/server.py` — client weight is `client_factor × Σ_t task_weight[t] · mass_t / n`,
+   where `mass_t` is how many of the client's samples supervise task `t`. A single-task client
+   reports its whole slice under its own task, so the sum collapses to `task_weight[task]` and
+   reproduces the historical weights exactly. `hierarchical` mode normalizes within each dataset and
+   then applies `dataset_weights`; `flat` mode is the sample-weighted ablation. Every round also
+   records the **pairwise cosine between client trunk deltas** (per block and overall) into
+   `aggregation_history.json` — no artifact persists a client's post-fit trunk, so that matrix
+   cannot be recovered after the run.
 7. `src/training_federated.py` — per-fold orchestrator: validates shared shapes before Flower, runs
    the simulation, persists `global_shared.pt`, and evaluates every federated client with the same
    final global trunk plus its latest personalized state. Local-only evaluates each latest full
@@ -268,6 +281,7 @@ the budget, not the federation.
 | Key | Effect |
 |---|---|
 | `datasets` / `n_clients.<dataset>` | Active datasets and clients per dataset/task |
+| `datasets.<name>.client_topology` | `single_task` (default) or `multi_task` (one client, several tasks, same images) |
 | `share_stem` | Federate the input stem; must be false for mixed 1ch/3ch runs |
 | `local_training.mode` | `steps` (fixed `steps_per_round`) or `epochs` (`local_epochs` passes) |
 | `aggregation.mode` | `hierarchical` (main) or `flat` (FedAvg-style ablation) |
@@ -291,6 +305,14 @@ the budget, not the federation.
 - Oversampling inflates a client's effective training set: BUSI classification clients go from
   120/148 raw rows to 371/453 effective. Reason about epochs from the effective count, which is
   what `metadata.yaml` records as `effective_train_examples`.
+- **Oversampling is refused on a `multi_task` client.** Replicating rows to balance classes would
+  also duplicate the segmentation targets of the boosted classes. Rebalance with
+  `datasets.<name>.class_weighting` instead.
+- A `multi_task` client emits **one result row per task**, so `analyze.py` (which keys on
+  `dataset/fold/client_id/task`) works unchanged. Those two rows share images and a model, so they
+  are even less independent than the single-task pairs — the `exploratory_only_*` tag still applies.
+- Test slices differ between the two topologies, so a topology comparison is an aggregate
+  dataset/task comparison, **not** a per-client paired delta.
 
 ## Comparison experiment
 
@@ -331,8 +353,16 @@ p-values must not support confirmatory significance claims; use independent seed
 sample-level inference for that purpose. With `CV=1`, Wilcoxon is disabled and comparisons are
 tagged `descriptive_only_single_holdout`.
 
+### Client topology arms
+
+`studies/multi_dataset_balance_v1.yaml` carries two arms (`multitask_primary`, `multitask_local`)
+that declare `partition_variant: multitask`. An arm may override partition-defining fields **only**
+when it declares a variant; the eight base arms keep the original guard and the original partition
+path, so adding a topology never invalidates completed runs. A variant's master is nested one
+directory deeper under the same `partition_template`.
+
 ## Multi-arm studies
 
-`src/experiments/study_runner.py` drives several arms over one frozen partition from a manifest in
-`studies/`. See the `federated-study` skill for the workflow, the artifact layout under
+`src/experiments/study_runner.py` drives several arms over one frozen partition per
+`(seed, partition_variant)` from a manifest in `studies/`. See the `federated-study` skill for the workflow, the artifact layout under
 `runs/studies/<study_id>/`, and the rules for reading the analysis tables.

@@ -50,12 +50,13 @@
       <div class="shell">
         <div class="section-head">
           <div><span class="kicker">01 · Entradas</span><h2>O analisador recebe dois níveis de evidência</h2></div>
-          <p>Os arquivos de resultado têm uma linha por cliente × fold; os arquivos de predição têm uma linha por imagem de classificação. Ambos são necessários porque algumas métricas podem ser agregadas diretamente, enquanto a AUC pooled exige probabilidades individuais.</p>
+          <p>Os arquivos de resultado têm uma linha por cliente × fold × <strong>tarefa</strong>; os arquivos de predição têm uma linha por imagem de classificação. Ambos são necessários porque algumas métricas podem ser agregadas diretamente, enquanto a AUC pooled exige probabilidades individuais.</p>
         </div>
         <div class="split-view">
           <article class="panel"><div class="panel-head"><h3>*_test_results.csv</h3><p>nível cliente × fold</p></div><div class="panel-body"><ul><li>métricas finais de seg ou cls;</li><li>dataset, tarefa, setup e método;</li><li>fold, cliente, seed e esquema;</li><li>tamanho da fatia de teste.</li></ul></div></article>
           <article class="panel"><div class="panel-head blue"><h3>*_cls_predictions.csv</h3><p>nível imagem</p></div><div class="panel-body"><ul><li>ground truth e classe prevista;</li><li>probabilidades por classe;</li><li>nomes das classes;</li><li>dataset e identificadores do run.</li></ul></div></article>
         </div>
+        <div class="callout info"><b>Um cliente pode emitir mais de uma linha.</b><p>Com <code>client_topology: multi_task</code>, um cliente possui várias tarefas sobre as mesmas imagens e é pontuado uma vez por tarefa, sobre a fatia que aquela tarefa supervisiona. O analisador já chaveia tudo por <code>dataset/fold/client_id/task</code>, então nada muda nele — mas essas duas linhas compartilham imagens <em>e</em> modelo, o que as torna ainda menos independentes que os pares monotarefa.</p></div>
         <div class="callout info"><b>Compatibilidade com arquivos antigos.</b><p>Se colunas como <code>dataset</code>, <code>study_id</code> ou <code>method_id</code> estiverem ausentes, o analisador preenche chaves explícitas <code>legacy</code>. Um único fold sem metadado vira <code>unknown_single_split</code>, não é presumido como holdout.</p></div>
       </div>
     </section>
@@ -182,11 +183,13 @@
           <p>A análise também lê a partição e os históricos de agregação. Isso permite conferir se o experimento executado corresponde ao experimento descrito.</p>
         </div>
         <div class="cards four">
-          <article class="card green"><div class="num">W</div><h3>aggregation_audit.csv</h3><p>Peso base/final, modo de agregação, exemplos, steps e participação por cliente e rodada.</p></article>
+          <article class="card green"><div class="num">W</div><h3>aggregation_audit.csv</h3><p>Peso base/final, modo de agregação, exemplos, steps, massa de supervisão por tarefa e participação por cliente e rodada.</p></article>
           <article class="card blue"><div class="num">N</div><h3>data_composition.csv</h3><p>Quantidade e fração de imagens únicas por dataset na partição pareada.</p></article>
           <article class="card orange"><div class="num">C</div><h3>class_balance_audit.csv</h3><p>Contagens de treino e peso balanceado calculado para cada classe, dataset e fold.</p></article>
           <article class="card purple"><div class="num">#</div><h3>study_run.yaml</h3><p>Relaciona método, seed, configuração resolvida e SHA-256 da partição usada.</p></article>
         </div>
+        <div class="callout info"><b>Conflito de gradiente.</b><p><code>aggregation_history.json</code> guarda, por rodada, o cosseno par a par entre os <strong>deltas</strong> do tronco de cada cliente, por bloco e no agregado. É o diagnóstico mecanicista do porquê de uma topologia funcionar melhor que a outra, e não depende de teste estatístico. Não é recuperável depois da execução: nenhum artefato persiste o tronco pós-fit de um cliente.</p></div>
+        <div class="callout"><b>Comparar topologias não é um delta pareado.</b><p>As fatias de teste por cliente mudam entre <code>single_task</code> e <code>multi_task</code>, então <code>per_client_deltas.csv</code> continua válido dentro de uma topologia (federado vs local), mas a comparação <em>entre</em> topologias deve ser lida como agregada por dataset e tarefa.</p></div>
         <div class="callout"><b>Diretórios <code>fold_N.incomplete_*</code> são forenses.</b><p>Se uma execução foi retomada, seus históricos antigos são preservados, mas o analisador exclui esses diretórios das auditorias de folds concluídos.</p></div>
       </div>
     </section>

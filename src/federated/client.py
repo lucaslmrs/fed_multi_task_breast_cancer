@@ -1,4 +1,8 @@
-"""Flower client for task- and dataset-personalized FedPer training."""
+"""Flower client for task- and dataset-personalized FedPer training.
+
+A client owns one or more tasks. The task set is read from the master partition -- never inferred
+from ``client_id`` -- so the partition stays the single source of truth for ownership.
+"""
 
 import hashlib
 import logging
@@ -9,9 +13,13 @@ import yaml
 from flwr.client import NumPyClient
 from flwr.common import Context
 
-from src.dataset.federated_dataloader import build_client_loader, resolve_class_weights
+from src.dataset.federated_dataloader import (
+    build_client_loader,
+    client_tasks,
+    resolve_class_weights,
+)
 from src.federated import local_trainer
-from src.federated.config import dataset_config, local_training_config
+from src.federated.config import aggregation_config, dataset_config, local_training_config
 from src.federated.model_split import (
     get_personalized_state,
     get_shared_state,
@@ -57,7 +65,11 @@ class FederatedClient(NumPyClient):
                  standalone=False):
         self.client_id = client_id
         self.dataset = dataset
-        self.task = task
+        # ``task`` is the roster hint; the partition decides the real ownership. A multi-task
+        # client reports the joined name so telemetry keeps one group per task topology.
+        self.tasks = client_tasks(partition_file, fold, client_id, dataset=dataset) or (task,)
+        self.task = "+".join(self.tasks) if len(self.tasks) > 1 else self.tasks[0]
+        self.multitask = len(self.tasks) > 1
         self.fold = fold
         self.standalone = standalone
         self.device = resolve_device(device)
@@ -106,7 +118,7 @@ class FederatedClient(NumPyClient):
             dataset=dataset,
             classes=self.data_cfg["classes"],
             mode=weighting_mode,
-        ) if task == "cls" else None
+        ) if "cls" in self.tasks else None
         self.classification_criterion_name = self.data_cfg.get(
             "classification_criterion", config["loss"]["classification_criterion"]
         )
@@ -129,7 +141,13 @@ class FederatedClient(NumPyClient):
             oversampling_cfg = config["federated"].get(
                 "oversampling", {"seg": bool(oversampling_cfg), "cls": bool(oversampling_cfg)}
             )
-        oversampling = bool(oversampling_cfg.get(task, False))
+        oversampling = any(bool(oversampling_cfg.get(name, False)) for name in self.tasks)
+        # Task weights live in TWO places on purpose: as lambda_t inside the local objective, where
+        # the gradients are separable and the weighting is real, and as a mass factor on the server
+        # (see FedPerStrategy._base_weight). A multi-task client's trunk update is one entangled
+        # object, so it cannot be decomposed per task at aggregation time.
+        aggregation = aggregation_config(config)
+        self.task_lambdas = _task_lambdas(aggregation["task_weights"], self.tasks)
         common = dict(
             partition_file=partition_file,
             fold=fold,
@@ -148,13 +166,15 @@ class FederatedClient(NumPyClient):
             local_training_mode=self.local_training_mode,
             steps_per_round=self.steps_per_round,
             sampling_seed=self.data_order_seed,
+            tasks=self.tasks,
             **common,
         )
         self.val_loader = build_client_loader(
-            split="val", augmentations=None, oversampling=False, **common
+            split="val", augmentations=None, oversampling=False, tasks=self.tasks, **common
         )
         self.n_train = self.train_loader.effective_num_samples
         self.n_train_raw = self.train_loader.raw_num_samples
+        self.task_mass = dict(getattr(self.train_loader, "task_mass", {}) or {})
 
         self.state_dir = Path(run_dir) / f"fold_{fold}" / f"client_{client_id}"
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -172,6 +192,10 @@ class FederatedClient(NumPyClient):
             "client_id": self.client_id,
             "dataset": self.dataset,
             "task": self.task,
+            "tasks": list(self.tasks),
+            "client_topology": "multi_task" if self.multitask else "single_task",
+            "task_lambdas": {name: float(v) for name, v in self.task_lambdas.items()},
+            "task_mass": {name: int(v) for name, v in self.task_mass.items()},
             "class_names": list(self.data_cfg["classes"]),
             "class_weighting": weighting_mode,
             "class_weights": weights,
@@ -257,6 +281,7 @@ class FederatedClient(NumPyClient):
             self.local_epochs, self.num_classes, self.seg_criterion, self.cls_criterion,
             self.inversely_weighted, training_mode=self.local_training_mode,
             steps_per_round=self.steps_per_round,
+            tasks=self.tasks, task_lambdas=self.task_lambdas,
         )
         logging.info(
             "[%s] round=%s local_training=%s optimizer_steps=%s examples_processed=%s",
@@ -266,6 +291,7 @@ class FederatedClient(NumPyClient):
         val = local_trainer.evaluate_local(
             self.model, self.val_loader, self.task, self.device, self.num_classes,
             self.seg_criterion, self.cls_criterion, self.inversely_weighted,
+            tasks=self.tasks, task_lambdas=self.task_lambdas,
         )
 
         if val["loss"] < best_val:
@@ -294,6 +320,14 @@ class FederatedClient(NumPyClient):
             "val_loss": float(val["loss"]),
             "val_metric": float(val["metric"]),
         }
+        # Supervision mass per task is what lets the server weight a client by what it actually
+        # contributes. A single-task client reports its whole slice under its own task and zero on
+        # the other, which reproduces the historical `num_examples * task_weight[task]` exactly.
+        metrics.update({f"task_mass_{name}": float(value) for name, value in self.task_mass.items()})
+        metrics.update({
+            f"task_batches_{name}": float(value)
+            for name, value in train_result.get("task_batches", {}).items()
+        })
         return get_shared_state(self.model, self.share_stem), self.n_train, metrics
 
     def evaluate(self, parameters, config):
@@ -303,6 +337,7 @@ class FederatedClient(NumPyClient):
         val = local_trainer.evaluate_local(
             self.model, self.val_loader, self.task, self.device, self.num_classes,
             self.seg_criterion, self.cls_criterion, self.inversely_weighted,
+            tasks=self.tasks, task_lambdas=self.task_lambdas,
         )
         metrics = {
             "dataset": self.dataset,
@@ -310,7 +345,22 @@ class FederatedClient(NumPyClient):
             "client_id": self.client_id,
             "val_metric": float(val["metric"]),
         }
+        metrics.update({
+            f"val_metric_{name}": float(val[f"metric_{name}"])
+            for name in self.tasks
+            if f"metric_{name}" in val
+        })
+        metrics.update({f"task_mass_{name}": float(value) for name, value in self.task_mass.items()})
         return float(val["loss"]), val["n"], metrics
+
+
+def _task_lambdas(task_weights, tasks):
+    """Normalise the configured task weights over the tasks this client actually owns."""
+    raw = {name: float(task_weights.get(name, 1.0)) for name in tasks}
+    total = sum(raw.values())
+    if total <= 0:
+        raise ValueError(f"Task weights for {list(tasks)} must sum to a positive value")
+    return {name: value / total for name, value in raw.items()}
 
 
 def _default_transforms(settings=None):
@@ -328,9 +378,12 @@ def build_client_fn(config, device, partition_file, run_dir, roster, fold, stand
     """Return a Flower ``client_fn`` mapping partition id to (client, dataset, task)."""
     def client_fn(context: Context):
         cid = int(context.node_config.get("partition-id", context.node_id))
-        client_id, dataset, task = roster[cid]
+        # Roster entries carry the client's task tuple; the client re-reads ownership from the
+        # partition, so the first task is only a hint for legacy single-task rosters.
+        client_id, dataset, tasks = roster[cid]
+        hint = tasks[0] if isinstance(tasks, (tuple, list)) else tasks
         client = FederatedClient(
-            client_id, dataset, task, fold, config, device, partition_file, run_dir, standalone
+            client_id, dataset, hint, fold, config, device, partition_file, run_dir, standalone
         )
         return client.to_client()
 

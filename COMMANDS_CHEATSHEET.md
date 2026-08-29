@@ -151,7 +151,7 @@ training:
 
 O resultado é um único `fold=0`: 70% ficam no pool de desenvolvimento e 30% no teste. Nos
 loaders clássicos, `data.train_size: 0.8` subdivide o desenvolvimento em aproximadamente 56% de
-treino e 14% de validação. Os scripts `*_prod` unem novamente esses 70% para treino.
+treino e 14% de validação.
 
 ### Treinamento clássico
 
@@ -162,11 +162,6 @@ python -m src.training_multitask
 # Alternativas
 python -m src.training_segmentation
 python -m src.training_classification
-
-# Produção: usa todos os 70% de desenvolvimento no treino
-python -m src.training_multitask_prod
-python -m src.training_segmentation_prod
-python -m src.training_classification_prod
 ```
 
 ### Treinamento federado multi-dataset

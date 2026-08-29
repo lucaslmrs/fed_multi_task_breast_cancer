@@ -1,6 +1,6 @@
 """Multi-dataset FedPer training orchestrator.
 
-Every client owns one dataset and one task. Dataset-specific stems and all decoders/heads remain
+Every client owns one dataset and one or more tasks. Dataset-specific stems and all decoders/heads remain
 local; only the configured shared trunk travels through Flower. The same runner implements the
 local-only baseline by setting ``federated.standalone``.
 """
@@ -163,6 +163,7 @@ def _test_client(
         channels=data_cfg["channels"],
         classes=data_cfg["classes"],
         augmentations=None,
+        tasks=[task],
         max_samples=config["federated"].get("max_samples_per_split"),
     )
     metrics, preds = unified_eval.evaluate(
@@ -324,8 +325,17 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
             .head(int(client_cap))
             .reset_index(drop=True)
         )
+    # ``list_clients`` returns one row per (client, task). Group them so a multi-task client is a
+    # SINGLE federated participant that owns several tasks, not several participants.
+    grouped = (
+        roster_df.groupby(["client_id", "dataset"], sort=False)["task"]
+        .apply(lambda values: tuple(
+            name for name in ("seg", "cls") if name in set(values)
+        ))
+        .reset_index()
+    )
     roster = [
-        (row.client_id, row.dataset, row.task) for row in roster_df.itertuples(index=False)
+        (row.client_id, row.dataset, row.task) for row in grouped.itertuples(index=False)
     ]
     if not roster:
         raise ValueError(f"Partition '{master_file}' contains no configured clients")
@@ -335,6 +345,11 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
     if device == "cpu" and client_resources.get("num_gpus", 0) > 0:
         logging.warning("GPU resources requested for a CPU run; setting client num_gpus=0")
         client_resources["num_gpus"] = 0.0
+
+    # Labels the per-block gradient-conflict matrices; also reused when persisting the trunk.
+    shared_key_names = shared_keys(
+        _build_model(config, datasets[0], "cpu"), fed.get("share_stem", True)
+    )
 
     fold_count = train_cfg["CV"]
     if fed.get("max_folds") is not None:
@@ -383,6 +398,7 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                 dataset_weights=aggregation["dataset_weights"],
                 aggregation_mode=aggregation["mode"],
                 client_weighting=aggregation["client_weighting"],
+                shared_key_names=shared_key_names,
                 initial_parameters=_initial_shared_parameters(config, datasets, device, fold),
                 fraction_fit=1.0,
                 fraction_evaluate=1.0,
@@ -419,10 +435,7 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                 torch.save(
                     {
                         "round": strategy.latest_round,
-                        "keys": shared_keys(
-                            _build_model(config, datasets[0], "cpu"),
-                            fed.get("share_stem", True),
-                        ),
+                        "keys": shared_key_names,
                         "arrays": [torch.as_tensor(array).cpu() for array in final_shared],
                     },
                     fold_dir / "global_shared.pt",
@@ -434,22 +447,25 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                 f"{'global trunk + personalized states' if not standalone else 'local models'}"
             )
         fold_rows, fold_pred_frames = [], []
-        for client_id, dataset, task in roster:
-            row, preds = _test_client(
-                config,
-                device,
-                str(master_file),
-                run_path,
-                fold,
-                client_id,
-                dataset,
-                task,
-                setup,
-                shared_arrays=final_shared,
-            )
-            fold_rows.append(row)
-            if preds is not None:
-                fold_pred_frames.append(preds)
+        for client_id, dataset, tasks in roster:
+            # One result row per (client, task): a multi-task client is scored once per task over
+            # the slice that task supervises. analyze.py already keys on (client_id, task).
+            for task in tasks:
+                row, preds = _test_client(
+                    config,
+                    device,
+                    str(master_file),
+                    run_path,
+                    fold,
+                    client_id,
+                    dataset,
+                    task,
+                    setup,
+                    shared_arrays=final_shared,
+                )
+                fold_rows.append(row)
+                if preds is not None:
+                    fold_pred_frames.append(preds)
         pd.DataFrame(fold_rows).to_csv(fold_results_path, index=False)
         if fold_pred_frames:
             pd.concat(fold_pred_frames, ignore_index=True, sort=False).to_csv(

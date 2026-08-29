@@ -70,6 +70,11 @@ datasets:
     classes: [benign, malignant, normal]
     seg_exclude_classes: [normal]
     fold_strategy: stratified       # one image-level fold shared by seg and cls
+    # single_task: one task per client (a task's images are re-partitioned independently, so the
+    # same image ends up in a seg client AND in a different cls client).
+    # multi_task: one client owns every task over the SAME images; requires fold_strategy
+    # stratified, and n_clients must declare the same count for every task.
+    client_topology: single_task
     class_weighting: none
     classification_criterion: CE
     oversampling:
@@ -81,6 +86,9 @@ datasets:
     classes: [AKIEC, BCC, BKL, DF, MEL, NV, VASC]
     seg_exclude_classes: []
     fold_strategy: per_task         # KFold for seg; grouped/stratified folds for cls
+    # ISIC's two tasks are disjoint image sets (zero ID overlap), so no image carries both a mask
+    # and a label and a multi-task client is structurally impossible here.
+    client_topology: single_task
     cls_source_split: train         # only this official split has complete lesion_id metadata
     class_weighting: balanced_fold
     classification_criterion: CE

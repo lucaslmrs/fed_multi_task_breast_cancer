@@ -22,6 +22,8 @@ METHOD_LABELS = {
     "ablation_flat": "Federado — flat",
     "ablation_focal": "Federado — focal",
     "local_steps_focal": "Local — focal",
+    "multitask_primary": "Federado — clientes multitarefa",
+    "multitask_local": "Local — clientes multitarefa",
 }
 METRIC_LABELS = {
     "dice": "Dice",
@@ -44,6 +46,8 @@ COMPARISON_LABELS = {
     "effect_uniform_weighting": "Clientes uniformes vs cardinalidade",
     "effect_hierarchy": "Hierárquica vs flat",
     "effect_ce_vs_focal": "CE balanced_fold vs focal sem pesos",
+    "multitask_vs_local": "Federado multitarefa vs local multitarefa",
+    "effect_client_topology": "Clientes multitarefa vs monotarefa",
 }
 
 

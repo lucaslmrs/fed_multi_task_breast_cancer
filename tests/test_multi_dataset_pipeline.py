@@ -6,7 +6,14 @@ import numpy as np
 import pandas as pd
 import torch
 
-from src.dataset.federated_dataloader import build_client_loader, resolve_class_weights
+import yaml
+
+from src.dataset.federated_dataloader import (
+    build_client_loader,
+    client_tasks,
+    resolve_class_weights,
+)
+from src.dataset.federated_partition import build_multi_dataset_partition
 from src.experiments.analyze import method_comparisons, pooled_auc, summary_by_seed, summary_table
 from src.utils.experiment_init import init_criterion_classification
 
@@ -183,3 +190,102 @@ class AnalysisTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+BUSI_CLASSES = ["benign", "malignant", "normal"]
+
+
+class MultiTaskClientTopologyTests(unittest.TestCase):
+    """One client owns every task over the SAME images -- no image lives in two silos."""
+
+    @classmethod
+    def setUpClass(cls):
+        config = yaml.safe_load((ROOT / "src/config.yaml").read_text(encoding="utf-8"))
+        # BUSI alone keeps the fixture fast; ISIC cannot host this topology anyway.
+        config["federated"]["datasets"] = ["Curated_BUSI"]
+        config["datasets"]["Curated_BUSI"]["client_topology"] = "multi_task"
+        config["federated"]["n_clients"] = {"Curated_BUSI": {"seg": 3, "cls": 3}}
+        cls._directory = tempfile.TemporaryDirectory()
+        cls.master = str(Path(cls._directory.name) / "multitask.csv")
+        cls.frame = build_multi_dataset_partition(config, output_path=cls.master)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._directory.cleanup()
+
+    def test_no_image_belongs_to_two_clients(self):
+        ownership = self.frame.groupby(["fold", "img_path"])["client_id"].nunique()
+        self.assertEqual(int((ownership > 1).sum()), 0)
+
+    def test_every_client_owns_both_tasks(self):
+        owned = self.frame.groupby("client_id")["task"].apply(lambda values: set(values))
+        self.assertEqual(len(owned), 3)
+        for tasks in owned:
+            self.assertEqual(tasks, {"seg", "cls"})
+        self.assertEqual(
+            client_tasks(self.master, 0, "Curated_BUSI_mt_0", dataset="Curated_BUSI"),
+            ("seg", "cls"),
+        )
+
+    def test_seg_rows_exclude_the_class_without_a_usable_mask(self):
+        seg = self.frame[self.frame.task == "seg"]
+        cls_rows = self.frame[self.frame.task == "cls"]
+        self.assertNotIn("normal", set(seg["class"]))
+        self.assertIn("normal", set(cls_rows["class"]))
+
+    def test_pivoted_loader_marks_normal_images_as_unsupervised_for_segmentation(self):
+        """``normal`` images DO carry a mask_path (an all-zero mask) in the source mapping.
+
+        Supervision therefore has to come from the partition; trusting the path would train the
+        Dice term against empty targets.
+        """
+        loader = build_client_loader(
+            self.master, 0, "Curated_BUSI_mt_0", "train", 256,
+            dataset="Curated_BUSI", channels=1, classes=BUSI_CLASSES, tasks=("seg", "cls"),
+        )
+        batch = next(iter(loader))
+        has_mask = batch["has_mask"].tolist()
+        is_normal = [name == "normal" for name in batch["class"]]
+        self.assertTrue(any(is_normal), "fixture needs at least one normal image")
+        for normal, masked in zip(is_normal, has_mask):
+            self.assertEqual(masked, not normal)
+        self.assertTrue(all(batch["has_label"].tolist()))
+
+    def test_task_mass_counts_supervision_not_rows(self):
+        loader = build_client_loader(
+            self.master, 0, "Curated_BUSI_mt_0", "train", 32,
+            dataset="Curated_BUSI", channels=1, classes=BUSI_CLASSES, tasks=("seg", "cls"),
+        )
+        mass = loader.task_mass
+        self.assertEqual(mass["cls"], loader.effective_num_samples)
+        self.assertLess(mass["seg"], mass["cls"])
+
+    def test_single_task_slice_reports_its_whole_mass_under_its_own_task(self):
+        loader = build_client_loader(
+            self.master, 0, "Curated_BUSI_mt_0", "train", 32,
+            dataset="Curated_BUSI", channels=1, classes=BUSI_CLASSES, tasks=("seg",),
+        )
+        self.assertEqual(loader.task_mass["cls"], 0)
+        self.assertEqual(loader.task_mass["seg"], loader.effective_num_samples)
+
+    def test_oversampling_is_refused_on_a_multitask_slice(self):
+        with self.assertRaises(ValueError) as context:
+            build_client_loader(
+                self.master, 0, "Curated_BUSI_mt_0", "train", 32,
+                dataset="Curated_BUSI", channels=1, classes=BUSI_CLASSES,
+                tasks=("seg", "cls"), oversampling=True,
+            )
+        self.assertIn("class_weighting", str(context.exception))
+
+    def test_a_dataset_with_disjoint_task_pools_cannot_be_multitask(self):
+        config = yaml.safe_load((ROOT / "src/config.yaml").read_text(encoding="utf-8"))
+        config["federated"]["datasets"] = ["ISIC_2018"]
+        config["datasets"]["ISIC_2018"]["client_topology"] = "multi_task"
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError) as context:
+                build_multi_dataset_partition(
+                    config, output_path=str(Path(directory) / "isic.csv")
+                )
+        self.assertIn("disjoint image sets", str(context.exception))
+
+

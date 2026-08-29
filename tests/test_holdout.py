@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import KFold, StratifiedGroupKFold, StratifiedKFold
 
-from src.dataset.BUSI_dataloader import BUSI_dataloader_CV, BUSI_dataloader_CV_prod
+from src.dataset.BUSI_dataloader import BUSI_dataloader_CV
 from src.dataset.federated_partition import build_federated_partition
 from src.dataset.splitting import (
     CROSS_VALIDATION,
@@ -125,11 +125,11 @@ class LoaderAndPartitionTests(unittest.TestCase):
             "id": np.arange(len(classes)),
         })
 
-    def test_classic_and_prod_loaders_use_the_same_holdout_test(self):
+    def test_classic_loader_splits_holdout_into_train_validation_and_test(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             self._mapping().to_csv(root / "mapping.csv", index=False)
-            common = dict(
+            train, validation, test = BUSI_dataloader_CV(
                 seed=1993,
                 batch_size=8,
                 transforms=None,
@@ -139,15 +139,12 @@ class LoaderAndPartitionTests(unittest.TestCase):
                 holdout_test_size=0.30,
                 oversampling=False,
             )
-            train, val, test = BUSI_dataloader_CV(**common)
-            prod_train, prod_test = BUSI_dataloader_CV_prod(**common)
+            self.assertEqual(len(train), 1)
+            self.assertEqual(len(validation), 1)
+            self.assertEqual(len(test), 1)
+            self.assertEqual(len(train[0].dataset), 33)
+            self.assertEqual(len(validation[0].dataset), 9)
             self.assertEqual(len(test[0].dataset), 18)
-            self.assertEqual(len(prod_test[0].dataset), 18)
-            self.assertEqual(len(train[0].dataset) + len(val[0].dataset), 42)
-            self.assertEqual(len(prod_train[0].dataset), 42)
-            self.assertEqual(
-                set(test[0].dataset.mapping_file.id), set(prod_test[0].dataset.mapping_file.id)
-            )
 
     def test_federated_holdout_writes_only_fold_zero(self):
         with tempfile.TemporaryDirectory() as directory:

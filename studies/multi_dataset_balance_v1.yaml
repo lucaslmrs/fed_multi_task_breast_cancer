@@ -98,6 +98,51 @@ arms:
           focal_gamma: 2.0
           class_weighting: none
 
+  # --- Client topology (HC-FMTL) -------------------------------------------------------------
+  # These two arms use their own frozen master (partition_variant: multitask), in which each BUSI
+  # client owns BOTH tasks over the SAME images. The single-task topology allocates each task
+  # independently, so today the same BUSI image lives in a seg client and in a *different* cls
+  # client -- one silo's data duplicated across two silos. ISIC stays single-task: its seg and cls
+  # pools are disjoint image sets. Four BUSI clients (not two) keep the `steps` budget and the
+  # number of observations identical to the single-task arms, so the topology is the only variable.
+  - arm_id: multitask_primary
+    method_id: multitask_primary
+    setup: federated
+    partition_variant: multitask
+    overrides:
+      federated:
+        local_training: {mode: steps, steps_per_round: 10}
+        aggregation: {mode: hierarchical, client_weighting: uniform}
+        n_clients:
+          Curated_BUSI: {seg: 4, cls: 4}
+          ISIC_2018: {seg: 2, cls: 2}
+      datasets:
+        Curated_BUSI:
+          client_topology: multi_task
+          # Oversampling replicates rows to balance classes; on a multi-task slice it would also
+          # duplicate the segmentation targets of the boosted classes. Rebalance via class weights.
+          class_weighting: balanced_fold
+          oversampling: {seg: false, cls: false}
+        ISIC_2018: {classification_criterion: CE, class_weighting: balanced_fold}
+
+  - arm_id: multitask_local
+    method_id: multitask_local
+    setup: standalone
+    partition_variant: multitask
+    overrides:
+      federated:
+        local_training: {mode: steps, steps_per_round: 10}
+        aggregation: {mode: hierarchical, client_weighting: uniform}
+        n_clients:
+          Curated_BUSI: {seg: 4, cls: 4}
+          ISIC_2018: {seg: 2, cls: 2}
+      datasets:
+        Curated_BUSI:
+          client_topology: multi_task
+          class_weighting: balanced_fold
+          oversampling: {seg: false, cls: false}
+        ISIC_2018: {classification_criterion: CE, class_weighting: balanced_fold}
+
 comparisons:
   - comparison_id: primary_vs_local
     left: {method_id: primary, setup: federated}
@@ -131,6 +176,16 @@ comparisons:
     left: {method_id: ablation_weighting, setup: federated}
     right: {method_id: ablation_flat, setup: federated}
     interpretation: hierarchical minus flat aggregation
+  - comparison_id: multitask_vs_local
+    left: {method_id: multitask_primary, setup: federated}
+    right: {method_id: multitask_local, setup: standalone}
+    interpretation: federated transfer under the multi-task client topology
+  - comparison_id: effect_client_topology
+    left: {method_id: multitask_primary, setup: federated}
+    right: {method_id: primary, setup: federated}
+    interpretation: >-
+      multi-task clients minus single-task clients; the test slices differ between topologies, so
+      read this as an aggregate dataset/task comparison, not a per-client paired delta
   - comparison_id: effect_ce_vs_focal
     left: {method_id: primary, setup: federated}
     right: {method_id: ablation_focal, setup: federated}

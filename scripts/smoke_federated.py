@@ -8,6 +8,7 @@ cross-setup analysis report.
 """
 
 import argparse
+import json
 import tempfile
 from pathlib import Path
 
@@ -35,6 +36,44 @@ def _verify_run(run_path, setup, datasets):
     if setup == "federated" and not (run_path / "fold_0" / "global_shared.pt").exists():
         raise RuntimeError("Federated smoke did not persist fold_0/global_shared.pt")
     return results, predictions
+
+
+def _verify_multitask(run_path, setup):
+    """Check what only a live run can show: two result rows per client and both loss terms."""
+    run_path = Path(run_path)
+    frame = pd.read_csv(run_path / f"{setup}_test_results.csv")
+    busi = frame[frame["dataset"] == "Curated_BUSI"]
+    per_client = busi.groupby("client_id")["task"].nunique()
+    if per_client.empty or not (per_client == 2).all():
+        raise RuntimeError(
+            f"Multi-task BUSI clients must emit one row per task, got {per_client.to_dict()}"
+        )
+
+    for metadata_file in (run_path / "fold_0").glob("client_Curated_BUSI_mt_*/metadata.yaml"):
+        metadata = yaml.safe_load(metadata_file.read_text(encoding="utf-8"))
+        if metadata.get("client_topology") != "multi_task":
+            raise RuntimeError(f"{metadata_file} is not recorded as a multi-task client")
+        if sorted(metadata.get("tasks", [])) != ["cls", "seg"]:
+            raise RuntimeError(f"{metadata_file} does not own both tasks")
+
+
+def _verify_gradient_conflict(run_path):
+    """The cosine matrix cannot be recovered after the run, so assert it was actually written."""
+    history = json.loads((Path(run_path) / "fold_0" / "aggregation_history.json").read_text())
+    fits = [entry for entry in history if entry.get("stage") == "fit"]
+    if not fits:
+        raise RuntimeError("No fit aggregation was recorded")
+    for entry in fits:
+        conflict = entry.get("gradient_conflict")
+        if not conflict or "shared_total" not in conflict.get("cosine", {}):
+            raise RuntimeError(f"Round {entry['round']} recorded no gradient-conflict matrix")
+        matrix = conflict["cosine"]["shared_total"]
+        size = len(conflict["clients"])
+        if len(matrix) != size or any(len(row) != size for row in matrix):
+            raise RuntimeError("Gradient-conflict matrix is not square over the client roster")
+        for index, row in enumerate(matrix):
+            if row[index] is not None and abs(row[index] - 1.0) > 1e-4:
+                raise RuntimeError(f"Cosine diagonal is {row[index]}, expected 1.0")
 
 
 def _verify_paired_controls(federated_path, standalone_path):
@@ -75,6 +114,12 @@ def main():
         action="store_true",
         help="exercise CV=1 with a temporary 70/30 master instead of the configured partition",
     )
+    parser.add_argument(
+        "--topology",
+        choices=("single_task", "multi_task"),
+        default="single_task",
+        help="BUSI client topology; multi_task builds its own temporary master",
+    )
     args = parser.parse_args()
     if args.samples < 1:
         raise SystemExit("--samples must be positive")
@@ -82,10 +127,17 @@ def main():
     with open(args.config, encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
     temporary_partition_dir = None
-    if args.holdout:
-        temporary_partition_dir = tempfile.TemporaryDirectory(prefix="fed_holdout_partition_")
-        config["training"]["CV"] = 1
-        config["training"].setdefault("holdout_test_size", 0.30)
+    if args.topology == "multi_task":
+        # A multi-task BUSI client owns both tasks over the same images, so it needs its own
+        # master. Four clients keep the per-round step budget equal to the single-task topology.
+        config["datasets"]["Curated_BUSI"]["client_topology"] = "multi_task"
+        config["datasets"]["Curated_BUSI"]["oversampling"] = {"seg": False, "cls": False}
+        config["federated"]["n_clients"]["Curated_BUSI"] = {"seg": 4, "cls": 4}
+    if args.holdout or args.topology == "multi_task":
+        temporary_partition_dir = tempfile.TemporaryDirectory(prefix="fed_smoke_partition_")
+        if args.holdout:
+            config["training"]["CV"] = 1
+            config["training"].setdefault("holdout_test_size", 0.30)
         partition_path = Path(temporary_partition_dir.name) / "federated_mapping.csv"
         config["federated"]["partition_file"] = str(partition_path)
         build_multi_dataset_partition(config, output_path=str(partition_path))
@@ -123,7 +175,11 @@ def main():
                 artifacts[setup] = _verify_run(
                     run_path, setup, arm_config["federated"]["datasets"]
                 )
-                print(f"SMOKE_OK setup={setup} run_path={run_path}")
+                if args.topology == "multi_task":
+                    _verify_multitask(run_path, setup)
+                if setup == "federated":
+                    _verify_gradient_conflict(run_path)
+                print(f"SMOKE_OK setup={setup} topology={args.topology} run_path={run_path}")
             finally:
                 Path(temporary.name).unlink(missing_ok=True)
 

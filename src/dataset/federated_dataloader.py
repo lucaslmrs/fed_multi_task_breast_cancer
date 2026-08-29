@@ -100,20 +100,75 @@ def list_clients(partition_file: str) -> pd.DataFrame:
     return df[columns].drop_duplicates().reset_index(drop=True)
 
 
+def client_tasks(
+    partition_file: str,
+    fold: int,
+    client_id: str,
+    dataset: Optional[str] = None,
+) -> tuple:
+    """Tasks a client owns in this fold, in canonical order, read from the master partition.
+
+    Ownership is a property of the partition, not of the client name, so a topology change never
+    requires parsing ``client_id``.
+    """
+    df = pd.read_csv(partition_file, low_memory=False)
+    keep = (df["fold"] == fold) & (df["client_id"] == client_id)
+    if dataset is not None and "dataset" in df.columns:
+        keep &= df["dataset"] == dataset
+    if "task" not in df.columns:
+        return ()
+    owned = set(df.loc[keep, "task"].dropna().unique())
+    return tuple(name for name in ("seg", "cls") if name in owned)
+
+
 def load_client_mapping(
     partition_file: str,
     fold: int,
     client_id: str,
     split: str,
     dataset: Optional[str] = None,
+    tasks: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
-    """Filter the master CSV down to one ``(dataset, fold, client, split)`` slice."""
+    """Filter the master CSV down to one ``(dataset, fold, client, split)`` slice.
+
+    ``tasks`` is optional.  Single-task clients encode their task in ``client_id``, so the legacy
+    callers never needed the filter; multi-task clients own several ``task`` rows over the same
+    images and evaluation has to address one task at a time.
+    """
     df = pd.read_csv(partition_file, low_memory=False)
     keep = (df["fold"] == fold) & (df["client_id"] == client_id) & (df["split"] == split)
     # ``dataset`` is optional to keep frozen BUSI partition files usable.
     if dataset is not None and "dataset" in df.columns:
         keep &= df["dataset"] == dataset
+    if tasks is not None and "task" in df.columns:
+        keep &= df["task"].isin(list(tasks))
     return df[keep].copy()
+
+
+def pivot_multitask_mapping(mapping: pd.DataFrame) -> pd.DataFrame:
+    """Collapse a multi-task client slice into exactly one row per image.
+
+    The master CSV stores one row per ``(image, task)``.  A multi-task client owns several tasks
+    over the SAME images, so its loader needs a single row carrying only the supervision the
+    partition actually granted.
+
+    Presence of supervision is decided by the partition, never by the file path: BUSI's ``normal``
+    images do carry a ``mask_path`` (an all-zero mask), so trusting the path would silently train
+    the Dice term against empty targets.  Blanking the column here makes the dataset emit its
+    documented placeholder and set ``has_mask``/``has_label`` correctly.
+    """
+    if mapping.empty or "task" not in mapping.columns:
+        return mapping.copy()
+
+    owned = mapping.groupby("img_path")["task"].agg(lambda values: frozenset(values))
+    collapsed = mapping.drop_duplicates(subset="img_path").copy().reset_index(drop=True)
+    granted = collapsed["img_path"].map(owned)
+    if "mask_path" in collapsed.columns:
+        collapsed.loc[[("seg" not in tasks) for tasks in granted], "mask_path"] = None
+    if "class" in collapsed.columns:
+        collapsed.loc[[("cls" not in tasks) for tasks in granted], "class"] = None
+    collapsed["task"] = ["+".join(sorted(tasks)) for tasks in granted]
+    return collapsed
 
 
 def _training_class_rows(
@@ -231,6 +286,7 @@ def build_client_loader(
     local_training_mode: str = "epochs",
     steps_per_round: int = 10,
     sampling_seed: int = 0,
+    tasks: Optional[Sequence[str]] = None,
 ) -> DataLoader:
     """Build the DataLoader for a single client/split.
 
@@ -244,8 +300,17 @@ def build_client_loader(
 
     In ``steps`` mode, the train loader yields exactly ``steps_per_round`` full batches from a
     deterministic rotating stream. Call ``loader.batch_sampler.set_round(round)`` before use.
+
+    ``tasks`` selects which task rows the client sees.  ``None`` keeps the historical behaviour
+    (single-task clients encode their task in ``client_id``).  More than one task collapses the
+    slice to one row per image via :func:`pivot_multitask_mapping`.
     """
-    mapping = load_client_mapping(partition_file, fold, client_id, split, dataset=dataset)
+    mapping = load_client_mapping(
+        partition_file, fold, client_id, split, dataset=dataset, tasks=tasks
+    )
+    multitask = tasks is not None and len(set(tasks)) > 1
+    if multitask:
+        mapping = pivot_multitask_mapping(mapping)
     raw_num_samples = len(mapping)
 
     local_training_mode = str(local_training_mode).lower()
@@ -253,6 +318,14 @@ def build_client_loader(
         raise ValueError("local_training_mode must be 'epochs' or 'steps'")
 
     is_train = split == "train"
+    if multitask and oversampling:
+        # Oversampling replicates rows to balance classes.  On a multi-task slice those replicas
+        # also duplicate the segmentation targets of the boosted classes, distorting the tumour
+        # distribution the Dice head sees.  Rebalance with ``class_weighting`` instead.
+        raise ValueError(
+            f"Client '{client_id}' owns tasks {sorted(set(tasks))}; oversampling would distort "
+            "the segmentation target distribution. Use datasets.<name>.class_weighting instead."
+        )
     if is_train and oversampling and len(mapping) > 0:
         mapping = deterministic_oversampling(mapping)
     if max_samples is not None:
@@ -303,4 +376,27 @@ def build_client_loader(
     loader.raw_num_samples = raw_num_samples
     loader.effective_num_samples = len(client_dataset)
     loader.local_training_mode = local_training_mode
+    loader.task_mass = _task_mass(mapping, tasks)
     return loader
+
+
+def _task_mass(mapping: pd.DataFrame, tasks: Optional[Sequence[str]]) -> dict:
+    """Samples in this slice that carry supervision of each task.
+
+    This is what the server needs to weight a client by the supervision it actually contributes.
+    For a single-task slice the whole slice supervises that task -- the column contents cannot be
+    trusted there, because BUSI's ``normal`` rows keep a ``mask_path`` even inside a ``cls`` client.
+    Only a pivoted multi-task slice has blanked the columns it does not own.
+    """
+    known = ("seg", "cls")
+    if tasks is None:
+        return {}
+    owned = list(dict.fromkeys(tasks))
+    if len(owned) == 1:
+        return {name: (len(mapping) if name == owned[0] else 0) for name in known}
+    counts = {name: 0 for name in known}
+    if "mask_path" in mapping.columns:
+        counts["seg"] = int(mapping["mask_path"].notna().sum())
+    if "class" in mapping.columns:
+        counts["cls"] = int(mapping["class"].notna().sum())
+    return counts

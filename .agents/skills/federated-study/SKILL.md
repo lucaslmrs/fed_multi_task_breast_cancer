@@ -40,7 +40,7 @@ partição separada/regenerada com intenção explícita.
 
 ## Como o estudo é montado
 
-Oito braços sobre a **mesma partição congelada** e a mesma semente. Eles variam em três eixos:
+Oito braços sobre a **mesma partição congelada** e a mesma semente, variando em três eixos:
 
 | Eixo | Valores |
 |---|---|
@@ -50,6 +50,16 @@ Oito braços sobre a **mesma partição congelada** e a mesma semente. Eles vari
 
 Cada braço federado tem um par local-only com **orçamento idêntico** — é o piso da comparação.
 `primary` (federado, steps, hierárquica/uniforme, CE ponderada) pareia com `local_steps_ce`.
+
+Mais **dois braços** (`multitask_primary`, `multitask_local`) variam um quarto eixo, a **topologia
+de cliente**, e por isso declaram `partition_variant: multitask`: cada cliente BUSI passa a possuir
+as duas tarefas sobre as mesmas imagens, o que exige uma partição própria. Um braço só pode
+sobrescrever campos que definem partição se declarar uma variante; os oito braços base mantêm a
+guarda original e o **caminho de partição original**, então acrescentar uma topologia nunca
+invalida execução já concluída. A partição de uma variante fica um diretório abaixo da base.
+
+Quatro clientes BUSI multitarefa (não dois) mantêm o orçamento em `steps` e o número de observações
+iguais aos dos braços monotarefa, de modo que a topologia seja a única variável.
 
 ## Onde caem os artefatos
 
@@ -107,4 +117,6 @@ Aceita dois ou três conjuntos. Sem `--manifest` ele não sabe quais braços for
 - **NÃO** use `--rebuild-partitions` sem confirmação explícita do usuário.
 - **NÃO** edite `federated_mapping.csv` à mão — a comparabilidade dos braços depende dele.
 - **NÃO** compare braços de orçamentos diferentes como se medissem o efeito da federação.
+- **NÃO** leia `per_client_deltas.csv` entre topologias diferentes como delta pareado: as fatias de
+  teste por cliente mudam. Dentro de uma topologia (federado vs local) ele continua válido.
 - **NÃO** descreva um p-valor deste estudo como "estatisticamente significativo".
