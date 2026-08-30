@@ -173,7 +173,11 @@ class AggregationTests(unittest.TestCase):
         results = [
             (None, SimpleNamespace(
                 num_examples=1, loss=0.0,
-                metrics={"dataset": "BUSI", "task": "cls", "client_id": "b", "val_metric": 1.0},
+                metrics={
+                    "dataset": "BUSI", "task": "cls", "client_id": "b",
+                    "val_metric": 1.0, "val_balanced_accuracy_cls": 0.75,
+                    "val_macro_f1_cls": 0.6,
+                },
             )),
             (None, SimpleNamespace(
                 num_examples=10000, loss=2.0,
@@ -184,6 +188,10 @@ class AggregationTests(unittest.TestCase):
         self.assertAlmostEqual(loss, 1.0)
         self.assertAlmostEqual(metrics["participation/dataset/BUSI"], 0.5)
         self.assertAlmostEqual(metrics["participation/dataset/ISIC"], 0.5)
+        busi = strategy.aggregation_history[-1]["clients"][0]
+        self.assertEqual(busi["val_loss"], 0.0)
+        self.assertEqual(busi["val_balanced_accuracy_cls"], 0.75)
+        self.assertEqual(busi["val_macro_f1_cls"], 0.6)
 
     def test_new_config_defaults_preserve_legacy_behavior(self):
         config = {"federated": {"local_epochs": 2}}
@@ -266,5 +274,4 @@ class GradientConflictTests(unittest.TestCase):
         self.assertAlmostEqual(cosine["bottleneck"][0][1], -1.0, places=5)
         # The blocks cancel exactly, which the aggregate view must show.
         self.assertAlmostEqual(cosine["shared_total"][0][1], 0.0, places=5)
-
 

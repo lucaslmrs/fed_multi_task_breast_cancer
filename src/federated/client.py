@@ -5,9 +5,12 @@ from ``client_id`` -- so the partition stays the single source of truth for owne
 """
 
 import hashlib
+import csv
 import logging
+import random
 from pathlib import Path
 
+import numpy as np
 import torch
 import yaml
 from flwr.client import NumPyClient
@@ -19,7 +22,12 @@ from src.dataset.federated_dataloader import (
     resolve_class_weights,
 )
 from src.federated import local_trainer
-from src.federated.config import aggregation_config, dataset_config, local_training_config
+from src.federated.config import (
+    aggregation_config,
+    dataset_config,
+    local_training_config,
+    training_telemetry_config,
+)
 from src.federated.model_split import (
     get_personalized_state,
     get_shared_state,
@@ -60,6 +68,22 @@ def resolve_device(requested):
     return "cpu"
 
 
+def _preserve_rng_state(function):
+    """Run observational validation without perturbing later stochastic training."""
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_state = torch.get_rng_state()
+    cuda_states = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    try:
+        return function()
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+        torch.set_rng_state(torch_state)
+        if cuda_states is not None:
+            torch.cuda.set_rng_state_all(cuda_states)
+
+
 class FederatedClient(NumPyClient):
     def __init__(self, client_id, dataset, task, fold, config, device, partition_file, run_dir,
                  standalone=False):
@@ -72,6 +96,7 @@ class FederatedClient(NumPyClient):
         self.multitask = len(self.tasks) > 1
         self.fold = fold
         self.standalone = standalone
+        self.setup = "standalone" if standalone else "federated"
         self.device = resolve_device(device)
         self.config = config
         self.data_cfg = dataset_config(config, dataset)
@@ -84,6 +109,7 @@ class FederatedClient(NumPyClient):
             local_training["local_epochs"]
         )
         self.steps_per_round = int(local_training.get("steps_per_round", 10))
+        self.telemetry = training_telemetry_config(config)
         self.base_seed = int(config["training"]["seed"])
         self.data_order_seed = stable_client_seed(
             self.base_seed, fold, client_id, phase="data_order"
@@ -180,6 +206,7 @@ class FederatedClient(NumPyClient):
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.state_path = self.state_dir / "state.pt"
         self.best_path = self.state_dir / "best.pt"
+        self.history_path = self.state_dir / "training_history.csv"
         self._write_metadata(weighting_mode)
 
     def _write_metadata(self, weighting_mode):
@@ -217,9 +244,131 @@ class FederatedClient(NumPyClient):
                 else "last_round_global_shared_plus_latest_personalized"
             ),
             "best_checkpoint_scope": "local_post_fit_diagnostic_not_final",
+            "training_telemetry": self.telemetry,
         }
         with (self.state_dir / "metadata.yaml").open("w", encoding="utf-8") as stream:
             yaml.safe_dump(metadata, stream, sort_keys=False)
+
+    def _decorate_history(self, rows, server_round, phase, split):
+        decorated = []
+        for row in rows:
+            decorated.append({
+                "setup": self.setup,
+                "fold": int(self.fold),
+                "round": int(server_round),
+                "dataset": self.dataset,
+                "client_id": self.client_id,
+                "task": row["task"],
+                "phase": phase,
+                "split": split,
+                "unit_type": row["unit_type"],
+                "unit_index": int(row["unit_index"]),
+                "metric_name": row["metric_name"],
+                "value": float(row["value"]),
+                "n_samples": int(row.get("n_samples", 0)),
+                "optimizer_steps": int(row.get("optimizer_steps", 0)),
+                "examples_processed": int(row.get("examples_processed", 0)),
+            })
+        return decorated
+
+    def _evaluation_history(self, result, unit_type, unit_index):
+        rows = []
+        task_losses = result.get("task_losses", {})
+        if self.multitask:
+            rows.append({
+                "task": "combined", "metric_name": "loss", "value": result["loss"],
+                "n_samples": result.get("n", 0),
+            })
+        for task in self.tasks:
+            if task in task_losses:
+                rows.append({
+                    "task": task, "metric_name": "loss", "value": task_losses[task],
+                    "n_samples": result.get("n", 0),
+                })
+            for metric_name, value in result.get("metrics", {}).get(task, {}).items():
+                rows.append({
+                    "task": task, "metric_name": metric_name, "value": value,
+                    "n_samples": result.get("n", 0),
+                })
+        for row in rows:
+            row.update({
+                "unit_type": unit_type,
+                "unit_index": int(unit_index),
+                "optimizer_steps": 0,
+                "examples_processed": 0,
+            })
+        return rows
+
+    def _training_round_history(self, result, server_round):
+        rows = []
+        if self.multitask:
+            rows.append({
+                "task": "combined", "metric_name": "loss", "value": result["loss"],
+                "n_samples": self.n_train,
+            })
+        for task in self.tasks:
+            rows.append({
+                "task": task, "metric_name": "loss",
+                "value": result["task_losses"][task], "n_samples": self.task_mass.get(task, 0),
+            })
+            for metric_name, value in result["task_metrics"].get(task, {}).items():
+                rows.append({
+                    "task": task, "metric_name": metric_name, "value": value,
+                    "n_samples": self.task_mass.get(task, 0),
+                })
+        for row in rows:
+            row.update({
+                "unit_type": "round", "unit_index": int(server_round),
+                "optimizer_steps": int(result["optimizer_steps"]),
+                "examples_processed": int(result["examples_processed"]),
+            })
+        return rows
+
+    def _append_history(self, rows):
+        """Atomically replace duplicate measurement keys for this client's durable history."""
+        if not self.telemetry["enabled"] or not rows:
+            return
+        fieldnames = [
+            "setup", "fold", "round", "dataset", "client_id", "task", "phase", "split",
+            "unit_type", "unit_index", "metric_name", "value", "n_samples",
+            "optimizer_steps", "examples_processed",
+        ]
+        existing = []
+        if self.history_path.exists():
+            with self.history_path.open(newline="", encoding="utf-8") as stream:
+                existing = list(csv.DictReader(stream))
+        key_fields = (
+            "fold", "round", "dataset", "client_id", "task", "phase", "split",
+            "unit_type", "unit_index", "metric_name",
+        )
+        replacement_keys = {
+            tuple(str(row[field]) for field in key_fields) for row in rows
+        }
+        kept = [
+            row for row in existing
+            if tuple(str(row[field]) for field in key_fields) not in replacement_keys
+        ]
+        combined = kept + rows
+        combined.sort(key=lambda row: (
+            int(row["fold"]), int(row["round"]), str(row["phase"]), str(row["split"]),
+            int(row["unit_index"]), str(row["task"]), str(row["metric_name"]),
+        ))
+        temporary = self.history_path.with_suffix(".csv.tmp")
+        with temporary.open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(combined)
+        temporary.replace(self.history_path)
+
+    @staticmethod
+    def _scalar_metrics(prefix, result):
+        metrics = {f"{prefix}_loss": float(result["loss"])}
+        for task, value in result.get("task_losses", {}).items():
+            metrics[f"{prefix}_loss_{task}"] = float(value)
+        for task, task_metrics in result.get("metrics", {}).items():
+            for metric_name, value in task_metrics.items():
+                metrics[f"{prefix}_{metric_name}_{task}"] = float(value)
+        return metrics
 
     # ---- local state persistence ----------------------------------------------------------
     def _load_state(self):
@@ -276,23 +425,43 @@ class FederatedClient(NumPyClient):
                 raise RuntimeError("steps mode requires a round-addressable train batch sampler")
             batch_sampler.set_round(max(server_round, 1))
 
+        record_detail = (
+            self.telemetry["enabled"]
+            and self.telemetry["granularity"] == "epoch_and_round"
+        )
+
+        def evaluate_epoch(_epoch):
+            return _preserve_rng_state(
+                lambda: local_trainer.evaluate_local(
+                    self.model, self.val_loader, self.task, self.device, self.num_classes,
+                    self.seg_criterion, self.cls_criterion, self.inversely_weighted,
+                    tasks=self.tasks, task_lambdas=self.task_lambdas,
+                )
+            )
+
         train_result = local_trainer.train_local(
             self.model, self.train_loader, self.optimizer, self.task, self.device,
             self.local_epochs, self.num_classes, self.seg_criterion, self.cls_criterion,
             self.inversely_weighted, training_mode=self.local_training_mode,
             steps_per_round=self.steps_per_round,
             tasks=self.tasks, task_lambdas=self.task_lambdas,
+            epoch_end_callback=(
+                evaluate_epoch
+                if record_detail and self.local_training_mode == "epochs"
+                else None
+            ),
+            record_step_history=record_detail and self.local_training_mode == "steps",
         )
         logging.info(
             "[%s] round=%s local_training=%s optimizer_steps=%s examples_processed=%s",
             self.client_id, server_round, self.local_training_mode,
             train_result["optimizer_steps"], train_result["examples_processed"],
         )
-        val = local_trainer.evaluate_local(
-            self.model, self.val_loader, self.task, self.device, self.num_classes,
-            self.seg_criterion, self.cls_criterion, self.inversely_weighted,
-            tasks=self.tasks, task_lambdas=self.task_lambdas,
-        )
+        validation_history = train_result.get("validation_history", [])
+        if validation_history:
+            val = validation_history[-1]["result"]
+        else:
+            val = evaluate_epoch(None)
 
         if val["loss"] < best_val:
             best_val = val["loss"]
@@ -307,6 +476,34 @@ class FederatedClient(NumPyClient):
             )
 
         self._save_state(best_val, server_round)
+        history_rows = []
+        if record_detail:
+            phase = "local_epoch" if self.local_training_mode == "epochs" else "local_step"
+            history_rows.extend(self._decorate_history(
+                train_result.get("history", []), server_round, phase, "train"
+            ))
+            for entry in validation_history:
+                history_rows.extend(self._decorate_history(
+                    self._evaluation_history(
+                        entry["result"], entry["unit_type"], entry["unit_index"]
+                    ),
+                    server_round,
+                    "local_epoch",
+                    "val",
+                ))
+        history_rows.extend(self._decorate_history(
+            self._training_round_history(train_result, server_round),
+            server_round,
+            "post_local_round",
+            "train",
+        ))
+        history_rows.extend(self._decorate_history(
+            self._evaluation_history(val, "round", server_round),
+            server_round,
+            "post_local_round",
+            "val",
+        ))
+        self._append_history(history_rows)
         metrics = {
             "dataset": self.dataset,
             "task": self.task,
@@ -320,6 +517,12 @@ class FederatedClient(NumPyClient):
             "val_loss": float(val["loss"]),
             "val_metric": float(val["metric"]),
         }
+        metrics.update(self._scalar_metrics("train", {
+            "loss": train_result["loss"],
+            "task_losses": train_result["task_losses"],
+            "metrics": train_result["task_metrics"],
+        }))
+        metrics.update(self._scalar_metrics("val", val))
         # Supervision mass per task is what lets the server weight a client by what it actually
         # contributes. A single-task client reports its whole slice under its own task and zero on
         # the other, which reproduces the historical `num_examples * task_weight[task]` exactly.
@@ -339,12 +542,20 @@ class FederatedClient(NumPyClient):
             self.seg_criterion, self.cls_criterion, self.inversely_weighted,
             tasks=self.tasks, task_lambdas=self.task_lambdas,
         )
+        server_round = int(config.get("server_round", 0))
+        self._append_history(self._decorate_history(
+            self._evaluation_history(val, "round", server_round),
+            server_round,
+            "post_aggregation_round",
+            "val",
+        ))
         metrics = {
             "dataset": self.dataset,
             "task": self.task,
             "client_id": self.client_id,
             "val_metric": float(val["metric"]),
         }
+        metrics.update(self._scalar_metrics("val", val))
         metrics.update({
             f"val_metric_{name}": float(val[f"metric_{name}"])
             for name in self.tasks

@@ -175,6 +175,14 @@ class MultiTaskLocalTrainingTests(unittest.TestCase):
         result = self._train(_PartiallySupervisedDataset(4, unmasked=(0,)))
         self.assertEqual(result["optimizer_steps"], 2)
         self.assertEqual(result["task_batches"], {"seg": 2, "cls": 2})
+        tasks = {row["task"] for row in result["history"]}
+        metrics = {(row["task"], row["metric_name"]) for row in result["history"]}
+        self.assertEqual(tasks, {"combined", "seg", "cls"})
+        self.assertIn(("combined", "loss"), metrics)
+        self.assertIn(("seg", "dice"), metrics)
+        self.assertIn(("seg", "iou"), metrics)
+        self.assertIn(("cls", "balanced_accuracy"), metrics)
+        self.assertIn(("cls", "macro_f1"), metrics)
 
     def test_a_task_with_no_supervised_sample_in_a_batch_is_omitted(self):
         # Rows 0 and 1 carry no mask, so the first batch has no seg term at all -- but the round
@@ -216,5 +224,4 @@ class MultiTaskLocalTrainingTests(unittest.TestCase):
         self.assertIn("metric_seg", result)
         self.assertIn("metric_cls", result)
         self.assertEqual(result["n"], 4)
-
 

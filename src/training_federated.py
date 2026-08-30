@@ -49,6 +49,7 @@ class _DropFlwrDeprecation(logging.Filter):
 
 def _resume_config_signature(config):
     signature = copy.deepcopy(config)
+    signature.get("federated", {}).pop("training_telemetry", None)
     if signature.get("training", {}).get("CV", 0) > 1:
         signature["training"].pop("holdout_test_size", None)
     return signature
@@ -475,6 +476,9 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
         pred_frames.extend(fold_pred_frames)
 
     _save_results(pd.DataFrame(test_rows), pred_frames, run_path, setup)
+    from src.experiments.training_curves import build_run_artifacts
+
+    build_run_artifacts(run_path)
     logging.info(f"Total {setup} time: {time.perf_counter() - init_time:.2f}s")
     return run_path
 

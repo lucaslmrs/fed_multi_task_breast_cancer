@@ -1,8 +1,17 @@
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import seaborn as sns
 
-import pandas as pd
+from src.utils.plot_style import (
+    EXPORT_DPI,
+    categorical_color,
+    style_axis,
+    with_plot_style,
+)
+
 pd.options.display.float_format = '{:.4f}'.format
 
 
@@ -60,54 +69,45 @@ def plot_overlapping(image: np.array, mask: np.array, segmentation: np.array):
     plt.show()
 
 
+@with_plot_style
 def plot_evolution(df_melted, columns, path, title='Evolucion de la metrica DICE', ylabel='DICE', xlabel='Epoch'):
 
     # subset to plot
     df_tmp = df_melted.copy()
     df_tmp = df_tmp[['epoch'] + columns].melt(id_vars='epoch', var_name='linea', value_name='y')
 
-    # Configuraciones adicionales para hacer el gráfico más atractivo
-    sns.set_style("whitegrid")
-
-    # Personaliza el tamaño del gráfico
-    plt.figure(figsize=(16, 8))
-
-    # Trazar las líneas con colores y estilo personalizados
-    sns.lineplot(data=df_tmp, x='epoch', y='y', hue='linea', palette='husl', style='linea', markers=False, dashes=True)
-
-    # Agrega título y etiquetas
-    plt.title(title)
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-
-    # Ajusta la leyenda
-    plt.legend(title='')
-
-    # Muestra el gráfico
-#     plt.show()
-    plt.savefig(f'{path}')
+    palette = {line: categorical_color(index) for index, line in enumerate(columns)}
+    fig, axis = plt.subplots(figsize=(10, 5.2), constrained_layout=True)
+    sns.lineplot(
+        data=df_tmp, x='epoch', y='y', hue='linea', style='linea',
+        palette=palette, markers=True, dashes=True, linewidth=2, ax=axis,
+    )
+    axis.set(title=title, xlabel=xlabel, ylabel=ylabel)
+    axis.legend(title='')
+    style_axis(axis)
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=EXPORT_DPI, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
 
 
+@with_plot_style
 def plot_loss_evolution(df_melted, path):
 
-    # Configuraciones adicionales para hacer el gráfico más atractivo
-    sns.set_style("whitegrid")
-
-    # Personaliza el tamaño del gráfico
-    plt.figure(figsize=(16, 8))
-
-    # Trazar las líneas con colores y estilo personalizados
-    sns.lineplot(data=df_melted, x='epoch', y='y', hue='linea', palette='husl',
-                 style='linea', markers=False, dashes=True)
-
-    # Agrega título y etiquetas
-    plt.title('Evolucion de la funcion de perdida DICE')
-    plt.xlabel('Epoch')
-    plt.ylabel('DICE loss')
-
-    # Ajusta la leyenda
-    plt.legend(title='')
-
-    # Muestra el gráfico
-#     plt.show()
-    plt.savefig(f'{path}')
+    lines = list(pd.unique(df_melted['linea']))
+    palette = {line: categorical_color(index) for index, line in enumerate(lines)}
+    fig, axis = plt.subplots(figsize=(10, 5.2), constrained_layout=True)
+    sns.lineplot(
+        data=df_melted, x='epoch', y='y', hue='linea', style='linea',
+        palette=palette, markers=True, dashes=True, linewidth=2, ax=axis,
+    )
+    axis.set(
+        title='Evolucion de la funcion de perdida DICE',
+        xlabel='Epoch', ylabel='DICE loss',
+    )
+    axis.legend(title='')
+    style_axis(axis)
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=EXPORT_DPI, bbox_inches='tight', facecolor='white')
+    plt.close(fig)

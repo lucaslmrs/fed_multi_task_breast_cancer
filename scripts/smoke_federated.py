@@ -35,6 +35,16 @@ def _verify_run(run_path, setup, datasets):
         )
     if setup == "federated" and not (run_path / "fold_0" / "global_shared.pt").exists():
         raise RuntimeError("Federated smoke did not persist fold_0/global_shared.pt")
+    curves = run_path / "training_curves"
+    for artifact in ("history.csv", "dashboard.html"):
+        if not (curves / artifact).exists():
+            raise RuntimeError(f"{setup} smoke did not persist training_curves/{artifact}")
+    history = pd.read_csv(curves / "history.csv")
+    if history.empty or set(history["dataset"]) != set(datasets):
+        raise RuntimeError(f"{setup} smoke training history is empty or dataset-incomplete")
+    for level in ("overview", "clients", "datasets"):
+        if not list((curves / "plots" / level).rglob("*.png")):
+            raise RuntimeError(f"{setup} smoke produced no {level} training plot")
     return results, predictions
 
 

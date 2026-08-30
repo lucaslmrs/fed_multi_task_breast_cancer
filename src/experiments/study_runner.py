@@ -260,6 +260,8 @@ def _partition_signature(config: dict) -> dict:
 def _config_signature(config: dict) -> dict:
     """Hash only effective settings; holdout size is inert for CV with two or more folds."""
     signature = copy.deepcopy(config)
+    # Curve settings are observational and must not invalidate completed scientific arms.
+    signature.get("federated", {}).pop("training_telemetry", None)
     if signature.get("training", {}).get("CV", 0) > 1:
         signature["training"].pop("holdout_test_size", None)
     return signature

@@ -97,6 +97,17 @@ python -m src.experiments.study_runner \
   --analyze-only
 ```
 
+Esse modo também reconstrói `training_curves/history.csv`, `dashboard.html` e os PNGs de cada
+braço que possui telemetria. Para reconstruir apenas uma run:
+
+```bash
+python -m src.experiments.training_curves \
+  runs/<diretorio_da_run>
+```
+
+Runs antigas sem histórico por cliente aparecem como `telemetria indisponível`; métricas não são
+inferidas retrospectivamente do `execution.log`.
+
 Para gerar ou atualizar o relatório executivo autossuficiente na raiz:
 
 ```bash

@@ -121,12 +121,16 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
   partition_file: data/federated_multi/busi_mt2_isic_st8/federated_mapping_holdout_70_30.csv
   n_clients_seg: 2
   n_clients_cls: 2
-  rounds: 50
+  rounds: 10
   local_epochs: 2
   local_training:
     mode: steps             # steps | epochs; steps controls equal local optimizer work
     steps_per_round: 10     # public default; rotating sampler avoids a permanent subset
     local_epochs: 2         # used only when mode=epochs
+  training_telemetry:       # observational only; excluded from scientific run signatures
+    enabled: true
+    granularity: epoch_and_round  # epochs: train+val per epoch; steps: train per step, val per round
+    formats: [csv, html, png]
   dirichlet_alpha: 100.0   # high alpha ~ IID; lower it to simulate non-IID
   val_size: 0.2            # carved from each client's train pool for early stopping
   patience: 10             # reservado; avaliação final usa a última rodada em ambos os braços

@@ -27,6 +27,7 @@ python -m src.experiments.study_runner --seed-profile operational
 python -m src.experiments.study_runner --arms primary local_steps_ce      # subconjunto
 python -m src.experiments.study_runner --retry-incomplete                 # retoma folds truncados
 python -m src.experiments.study_runner --analyze-only                     # só re-roda a análise
+python -m src.experiments.training_curves <diretorio_da_run>              # reconstrói CSV/HTML/PNG
 ```
 
 O manifesto é `studies/multi_dataset_balance_v1.yaml`. `--rebuild-partitions` **regenera a
@@ -70,6 +71,9 @@ runs/studies/<study_id>/
 ├── runs/seed_<n>/<arm>/
 │   ├── config.yaml, execution.log
 │   ├── fold_<k>/                       # global_shared.pt, aggregation_history.json, clientes
+│   ├── training_curves/
+│   │   ├── history.csv, dashboard.html
+│   │   └── plots/{clients,datasets,overview}/
 │   ├── {setup}_test_results.csv        # uma linha por cliente × split externo
 │   └── {setup}_cls_predictions.csv     # uma linha por imagem de teste
 └── analysis/
@@ -77,12 +81,15 @@ runs/studies/<study_id>/
     ├── method_comparisons.csv, per_client_method_deltas.csv
     ├── pooled_auc.csv, aggregation_audit.csv
     ├── data_composition.csv, class_balance_audit.csv
-    └── report.html
+    ├── training_history.csv, training_dashboard.html
+    └── report.html                      # aponta para os dashboards de cada braço
 ```
 
 Um diretório `fold_<k>.incomplete_<timestamp>` marca fold abortado e retomado — não é lixo, é
 rastro de `--retry-incomplete`. Um run **sem** `{setup}_test_results.csv` foi interrompido antes
-da avaliação: as curvas rodada a rodada ainda estão no `execution.log`, mas não há métrica final.
+da avaliação: o `training_curves/history.csv` mantém a telemetria já persistida por clientes, mas
+não há métrica final. Runs antigas sem CSV por cliente são marcadas como `telemetria indisponível`;
+o analisador não inventa curvas a partir do log.
 
 ## Como ler os resultados sem se enganar
 

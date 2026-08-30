@@ -272,9 +272,18 @@ class FedPerStrategy(FedAvg):
                 "final_weight": float(weight),
             }
             metrics = record.get("metrics", {})
+            if "loss" in record:
+                client["val_loss"] = float(record["loss"])
             for key in optional_metrics:
                 if key in metrics:
                     client[key] = float(metrics[key])
+            # Preserve every scalar performance value returned by the client. Older histories
+            # remain readable because these keys are additive and optional.
+            for key, value in metrics.items():
+                if key.startswith(("train_", "val_")) and isinstance(
+                    value, (int, float, np.integer, np.floating)
+                ):
+                    client[key] = float(value)
             clients.append(client)
 
         telemetry = {

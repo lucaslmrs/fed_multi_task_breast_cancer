@@ -61,6 +61,16 @@ def local_training_config(config: dict) -> dict:
     return local_training
 
 
+def training_telemetry_config(config: dict) -> dict:
+    """Resolve observational training-curve settings without affecting experiment design."""
+    telemetry = dict(config["federated"].get("training_telemetry", {}))
+    telemetry.setdefault("enabled", True)
+    telemetry.setdefault("granularity", "epoch_and_round")
+    telemetry.setdefault("formats", ["csv", "html", "png"])
+    telemetry["formats"] = list(telemetry["formats"])
+    return telemetry
+
+
 def partition_file(config: dict) -> Path:
     configured = config["federated"].get("partition_file")
     if configured:
@@ -116,6 +126,21 @@ def validate_federated_config(config: dict) -> None:
         value = local_training[field]
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f"federated.local_training.{field} must be a positive integer")
+
+    telemetry = training_telemetry_config(config)
+    if not isinstance(telemetry["enabled"], bool):
+        raise ValueError("federated.training_telemetry.enabled must be a boolean")
+    if telemetry["granularity"] not in {"epoch_and_round", "round_only"}:
+        raise ValueError(
+            "federated.training_telemetry.granularity must be epoch_and_round or round_only"
+        )
+    allowed_formats = {"csv", "html", "png"}
+    formats = telemetry["formats"]
+    if not formats or len(formats) != len(set(formats)) or set(formats) - allowed_formats:
+        raise ValueError(
+            "federated.training_telemetry.formats must be a non-empty unique subset of "
+            "csv, html, png"
+        )
 
     aggregation = aggregation_config(config)
     if aggregation["mode"] not in {"flat", "hierarchical"}:
