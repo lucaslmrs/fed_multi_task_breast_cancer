@@ -7,8 +7,9 @@ Both tools read the SAME skill format -- `<skill>/SKILL.md` with YAML frontmatte
     .claude/skills/<name>/SKILL.md    Claude Code
     .codex/skills/<name>/SKILL.md     Codex
 
-So the skills are authored once under `.agents/skills/` and mirrored into both. The mirrors are
-generated artifacts; edit the canonical copy.
+So the skills are authored once under `.agents/skills/`. Each discovery directory contains
+relative symlinks to those canonical skill directories, avoiding duplicated instructions while
+also exposing future `scripts/`, `references/`, `assets/`, and `agents/` resources to both tools.
 
 Instructions follow the other half of the same split: `AGENTS.md` is the canonical project brief
 (Codex reads it natively, hierarchically) and `CLAUDE.md` pulls it in with an `@AGENTS.md` import.
@@ -43,11 +44,6 @@ IMPORT_LINE = "@AGENTS.md"
 # Duplication is only safe because this script proves the two copies are identical.
 GUARD_START = "<!-- GUARD-RAILS:START -->"
 GUARD_END = "<!-- GUARD-RAILS:END -->"
-
-GENERATED_BANNER = (
-    "<!-- GERADO por scripts/sync_agent_assets.py a partir de "
-    "{source} — não edite este arquivo. -->"
-)
 
 # Frontmatter rules enforced by BOTH tools. Codex's validator rejects any key outside this set
 # (a Copilot-style `tools:` key, for instance, fails), so the mirrors must stay within it.
@@ -145,13 +141,9 @@ def canonical_skills() -> list[Path]:
     return found
 
 
-def rendered(skill_md: Path) -> str:
-    """The mirror's content: canonical text with a banner injected after the frontmatter."""
-    text = skill_md.read_text(encoding="utf-8")
-    end = FRONTMATTER_RE.match(text).end()
-    source = skill_md.relative_to(REPO_ROOT).as_posix()
-    banner = GENERATED_BANNER.format(source=source)
-    return f"{text[:end]}\n{banner}\n{text[end:].lstrip(chr(10))}"
+def expected_link(mirror_root: Path, name: str) -> Path:
+    """Return the relative link stored at `<mirror_root>/<name>`."""
+    return Path("../..") / CANONICAL_SKILLS.relative_to(REPO_ROOT) / name
 
 
 # --------------------------------------------------------------------------- instructions
@@ -214,32 +206,41 @@ def sync(check_only: bool) -> list[str]:
 
     for mirror_root in SKILL_MIRRORS:
         label = mirror_root.relative_to(REPO_ROOT).as_posix()
-        expected = {name: rendered(CANONICAL_SKILLS / name / "SKILL.md") for name in names}
-
-        present = {p.parent.name for p in mirror_root.glob("*/SKILL.md")} if mirror_root.is_dir() else set()
+        mirror_root.mkdir(parents=True, exist_ok=True)
+        present = {p.name for p in mirror_root.iterdir()}
         stale = present - set(names)
 
         if check_only:
-            for name, content in expected.items():
-                target = mirror_root / name / "SKILL.md"
-                if not target.exists():
-                    raise Problem(f"{label}/{name}/SKILL.md ausente — rode sync_agent_assets")
-                if target.read_text(encoding="utf-8") != content:
+            for name in names:
+                target = mirror_root / name
+                link = expected_link(mirror_root, name)
+                if not target.is_symlink():
                     raise Problem(
-                        f"{label}/{name}/SKILL.md divergiu do canônico — rode sync_agent_assets")
+                        f"{label}/{name} não é link para a skill canônica — rode sync_agent_assets")
+                if Path(target.readlink()) != link:
+                    raise Problem(
+                        f"{label}/{name} aponta para '{target.readlink()}', esperado '{link}'")
+                if not (target / "SKILL.md").is_file():
+                    raise Problem(f"{label}/{name} é um link quebrado ou não contém SKILL.md")
             if stale:
                 raise Problem(f"{label}: skills órfãs {sorted(stale)} — rode sync_agent_assets")
             notes.append(f"{label}: em dia")
         else:
             for name in sorted(stale):
-                shutil.rmtree(mirror_root / name)
+                target = mirror_root / name
+                target.unlink() if target.is_symlink() or target.is_file() else shutil.rmtree(target)
                 notes.append(f"{label}: removida skill órfã '{name}'")
-            for name, content in expected.items():
-                target = mirror_root / name / "SKILL.md"
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if not target.exists() or target.read_text(encoding="utf-8") != content:
-                    target.write_text(content, encoding="utf-8")
-                    notes.append(f"{label}: escrita '{name}'")
+            for name in names:
+                target = mirror_root / name
+                link = expected_link(mirror_root, name)
+                if target.is_symlink() and Path(target.readlink()) == link:
+                    continue
+                if target.is_symlink() or target.is_file():
+                    target.unlink()
+                elif target.exists():
+                    shutil.rmtree(target)
+                target.symlink_to(link, target_is_directory=True)
+                notes.append(f"{label}: vinculado '{name}' -> {link}")
             notes.append(f"{label}: sincronizado")
 
     notes.extend(check_instructions())

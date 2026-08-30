@@ -28,9 +28,10 @@ Violating any of these silently invalidates frozen artifacts or already-publishe
 
 ## Skills
 
-Task-specific playbooks live in `.agents/skills/` and are mirrored into `.claude/skills/`
-(Claude Code) and `.codex/skills/` (Codex) by `scripts/sync_agent_assets.py`. Load the one that
-matches the task instead of re-deriving its content:
+Task-specific playbooks have a **single canonical copy** under `.agents/skills/`. Claude Code
+discovers them through `.claude/skills/` and Codex through `.codex/skills/`; both discovery trees
+contain relative symlinks to the canonical directories, maintained by `scripts/sync_agent_assets.py`.
+Never edit a discovery link: edit `.agents/skills/<name>/` and load the skill matching the task:
 
 | Skill | Use it when |
 |---|---|
@@ -40,7 +41,9 @@ matches the task instead of re-deriving its content:
 | `error-investigator` | A traceback, crash, failing test, or unexplained numeric result |
 | `grill-me` | Stress-testing a plan or design before building it |
 
-After editing any skill under `.agents/skills/`, run `python -m scripts.sync_agent_assets`.
+After adding, renaming, or removing a skill, run `python -m scripts.sync_agent_assets`. Content
+edits inside an existing canonical skill are visible immediately through both links; run
+`python -m scripts.sync_agent_assets --check` to validate the complete discovery structure.
 
 ## Commands
 

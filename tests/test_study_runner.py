@@ -66,7 +66,8 @@ class StudyRunnerTests(unittest.TestCase):
         full_rows, _, _ = build_execution_plan(
             self.manifest, [1993], self.manifest["arms"][:1], smoke=False
         )
-        cv_config = full_rows[0]["config"]
+        cv_config = copy.deepcopy(full_rows[0]["config"])
+        cv_config["training"]["CV"] = 5
         without_holdout = _config_signature(cv_config)
         changed_cv = copy.deepcopy(cv_config)
         changed_cv["training"]["holdout_test_size"] = 0.45
@@ -145,5 +146,4 @@ class PartitionVariantTests(unittest.TestCase):
             _validate_arm_overrides(overrides, "rogue")
         # Declaring a variant is the opt-in that makes the same override legitimate.
         _validate_arm_overrides(overrides, "declared", partition_variant="multitask")
-
 
