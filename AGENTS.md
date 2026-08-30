@@ -75,6 +75,7 @@ python -m src.experiments.analyze --results <3 *_test_results.csv> --preds <3 *_
 # Multi-arm study driver (see the `federated-study` skill)
 python -m src.experiments.study_runner --dry-run
 python -m src.experiments.study_runner --smoke --seed-profile operational
+python -m scripts.benchmark_training_runtime  # paired FP32-sequential vs BF16-dual GPU gate
 python -m src.experiments.study_runner --seed-profile operational
 
 # Tests, and the agent-asset consistency check
@@ -297,8 +298,10 @@ the budget, not the federation.
 | `aggregation.task_weights.{seg,cls}` | Per-task weight inside each dataset aggregate |
 | `oversampling.{seg,cls}` | Per-task override of `data.oversampling` |
 | `device` | `auto` / `cpu` / `cuda` (resolved per worker) |
-| `client_resources.num_gpus` | `>0` lets a client use the GPU; `1.0` = 1 client/GPU (sequential) |
-| `ray_num_cpus` | Caps Ray concurrency to bound memory use |
+| `runtime.federated.client_resources.num_gpus` | `0.5` = 2 clients/GPU; `1.0` = sequential |
+| `runtime.federated.ray_num_cpus` | Caps Ray concurrency to bound memory use |
+| `training.precision` | `bf16` for new CUDA runs; missing field preserves legacy FP32 |
+| `runtime.inference_batch_size` | Batched final evaluation without changing per-sample rows |
 
 ### Notes / gotchas
 
@@ -359,7 +362,9 @@ tagged `descriptive_only_single_holdout`.
 
 ### Client topology arms
 
-`studies/multi_dataset_balance_v1.yaml` carries two arms (`multitask_primary`, `multitask_local`)
+`studies/multi_dataset_balance_v1.yaml` (historical FP32) and
+`studies/multi_dataset_balance_v2_bf16.yaml` (default BF16) carry two arms
+(`multitask_primary`, `multitask_local`)
 that declare `partition_variant: multitask`. An arm may override partition-defining fields **only**
 when it declares a variant; the eight base arms keep the original guard and the original partition
 path, so adding a topology never invalidates completed runs. A variant's master is nested one
@@ -370,3 +375,7 @@ directory deeper under the same `partition_template`.
 `src/experiments/study_runner.py` drives several arms over one frozen partition per
 `(seed, partition_variant)` from a manifest in `studies/`. See the `federated-study` skill for the workflow, the artifact layout under
 `runs/studies/<study_id>/`, and the rules for reading the analysis tables.
+
+The v2 manifest reuses the v1 partition paths byte-for-byte. Precision and `cuda_benchmark` are
+scientific hash inputs; `runtime` and NVML telemetry are operational and excluded. See
+`docs/TRAINING_ACCELERATION.md`.

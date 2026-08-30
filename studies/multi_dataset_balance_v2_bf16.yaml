@@ -1,14 +1,12 @@
 schema_version: 1
-study_id: multi_dataset_balance_v1
+study_id: multi_dataset_balance_v2_bf16
 base_config: src/config.yaml
 
-# Freeze the completed study's original numerical protocol even though the repository default is
-# now BF16. Runtime-only settings remain free to change because they are excluded from its hash.
 config_overrides:
   training:
     CV: 4
-    precision: fp32
-    cuda_benchmark: false
+    precision: bf16
+    cuda_benchmark: true
 
 seed_profiles:
   operational: [1993]
@@ -16,7 +14,8 @@ seed_profiles:
 default_seed_profile: operational
 
 output_root: runs/studies/{study_id}
-partition_template: data/federated_studies/{study_id}/seed_{seed}/federated_mapping.csv
+# Reuse the byte-identical frozen v1 masters; numerical precision does not define a partition.
+partition_template: data/federated_studies/multi_dataset_balance_v1/seed_{seed}/federated_mapping.csv
 
 # Each arm is explicit so the execution index is an unambiguous record of the eight-run matrix.
 arms:

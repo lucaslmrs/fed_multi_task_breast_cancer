@@ -29,7 +29,7 @@ import pandas as pd
 import yaml
 
 
-DEFAULT_MANIFEST = "studies/multi_dataset_balance_v1.yaml"
+DEFAULT_MANIFEST = "studies/multi_dataset_balance_v2_bf16.yaml"
 SUPPORTED_SCHEMA_VERSION = 1
 SETUPS = {"federated", "standalone"}
 
@@ -260,6 +260,7 @@ def _partition_signature(config: dict) -> dict:
 def _config_signature(config: dict) -> dict:
     """Hash only effective settings; holdout size is inert for CV with two or more folds."""
     signature = copy.deepcopy(config)
+    signature.pop("runtime", None)
     # Curve settings are observational and must not invalidate completed scientific arms.
     signature.get("federated", {}).pop("training_telemetry", None)
     if signature.get("training", {}).get("CV", 0) > 1:
@@ -311,7 +312,8 @@ def resolve_arm_config(
     *,
     smoke: bool = False,
 ) -> dict:
-    config = _deep_merge(base, arm.get("overrides", {}))
+    config = _deep_merge(base, manifest.get("config_overrides", {}))
+    config = _deep_merge(config, arm.get("overrides", {}))
     config["training"]["seed"] = int(seed)
     config["federated"]["partition_file"] = str(partition_path)
     config["federated"]["standalone"] = arm["setup"] == "standalone"
@@ -327,13 +329,22 @@ def resolve_arm_config(
             {
                 "rounds": 2,
                 "device": "cpu",
-                "ray_num_cpus": 1,
-                "client_resources": {"num_cpus": 1, "num_gpus": 0.0},
                 "max_samples_per_split": 2,
                 "max_clients_per_dataset_task": 1,
                 "max_folds": 1,
             }
         )
+        config["training"]["precision"] = "fp32"
+        config.setdefault("runtime", {}).setdefault("federated", {}).update(
+            {
+                "ray_num_cpus": 1,
+                "client_resources": {"num_cpus": 1, "num_gpus": 0.0},
+            }
+        )
+        config["runtime"]["telemetry"] = {
+            "enabled": False,
+            "gpu_interval_seconds": 1.0,
+        }
         local_training = config["federated"].setdefault("local_training", {})
         if local_training.get("mode") == "steps":
             local_training["steps_per_round"] = 1

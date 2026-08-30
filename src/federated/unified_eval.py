@@ -23,6 +23,7 @@ import torch
 from sklearn.metrics import balanced_accuracy_score, roc_auc_score
 
 from src.utils.metrics import calculate_metrics, multiclass_classification_metrics
+from src.utils.training_runtime import PrecisionPolicy
 
 # metrics.py key -> short column name kept for segmentation (Hausdorff/pixel-accuracy dropped)
 _SEG_KEYS = {"DICE": "dice", "Jaccard index": "iou", "Sensitivity": "sensitivity",
@@ -30,7 +31,7 @@ _SEG_KEYS = {"DICE": "dice", "Jaccard index": "iou", "Sensitivity": "sensitivity
 
 
 @torch.inference_mode()
-def evaluate(model, loader, task, num_classes, device, class_names=None):
+def evaluate(model, loader, task, num_classes, device, class_names=None, precision=None):
     """Evaluate one task slice.
 
     ``class_names`` is optional for backwards compatibility.  When supplied it must describe the
@@ -38,6 +39,7 @@ def evaluate(model, loader, task, num_classes, device, class_names=None):
     rather than embedded in metric keys, keeping CSV schemas stable across renamed classes.
     """
     class_names = _validate_class_names(class_names, num_classes)
+    precision = precision or PrecisionPolicy("fp32", device)
     model.eval()
     n = len(loader.dataset)
     if n == 0:
@@ -46,10 +48,10 @@ def evaluate(model, loader, task, num_classes, device, class_names=None):
             _add_class_name_metadata(out, class_names)
         return out, None
     if task == "seg":
-        return _evaluate_seg(model, loader, device, n), None
+        return _evaluate_seg(model, loader, device, n, precision), None
     if task != "cls":
         raise ValueError(f"Unknown task {task!r}; expected 'seg' or 'cls'")
-    return _evaluate_cls(model, loader, device, num_classes, n, class_names)
+    return _evaluate_cls(model, loader, device, num_classes, n, class_names, precision)
 
 
 def _validate_class_names(class_names, num_classes):
@@ -70,27 +72,31 @@ def _add_class_name_metadata(target, class_names):
         target.update({f"class_name_{index}": name for index, name in enumerate(class_names)})
 
 
-def _evaluate_seg(model, loader, device, n):
+def _evaluate_seg(model, loader, device, n, precision):
     acc = {short: [] for short in _SEG_KEYS.values()}
     for data in loader:
-        _, outputs = model(data["image"].to(device))
+        with precision.autocast():
+            _, outputs = model(precision.move(data["image"]))
         seg = outputs[-1] if isinstance(outputs, list) else outputs
-        seg = (torch.sigmoid(seg) > 0.5).float().cpu().numpy()
+        seg = (torch.sigmoid(seg.float()) > 0.5).float().cpu().numpy()
         mask = data["mask"].cpu().numpy()
-        m = calculate_metrics(mask, seg, str(data["patient_id"].item()))
-        for key, short in _SEG_KEYS.items():
-            acc[short].append(m[key])
+        patient_ids = data["patient_id"].reshape(-1).cpu().tolist()
+        for index, patient_id in enumerate(patient_ids):
+            m = calculate_metrics(mask[index:index + 1], seg[index:index + 1], str(patient_id))
+            for key, short in _SEG_KEYS.items():
+                acc[short].append(m[key])
     out = {short: float(np.nanmean(v)) for short, v in acc.items()}
     out["n_test"] = n
     return out
 
 
-def _evaluate_cls(model, loader, device, num_classes, n, class_names=None):
+def _evaluate_cls(model, loader, device, num_classes, n, class_names, precision):
     patients, gt, pred, probs = [], [], [], []
     for data in loader:
-        logits, _ = model(data["image"].to(device))
+        with precision.autocast():
+            logits, _ = model(precision.move(data["image"]))
         pl = torch.mean(torch.stack(logits, dim=0), dim=0) if isinstance(logits, list) else logits
-        p = torch.softmax(pl, dim=1).cpu().numpy()
+        p = torch.softmax(pl.float(), dim=1).cpu().numpy()
         label = data["label"].flatten().to(torch.int64).cpu().numpy()
         patients.extend(data["patient_id"].cpu().numpy().tolist())
         gt.extend(label.tolist())

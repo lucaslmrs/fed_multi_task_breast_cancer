@@ -81,7 +81,8 @@ def BUSI_dataloader(seed, batch_size, transforms, remove_outliers=False, augment
 def BUSI_dataloader_CV(seed, batch_size, transforms, remove_outliers=False, augmentations=None, normalization=None,
                        train_size=0.8, classes=None, n_folds=5, oversampling=True, use_duplicated_to_train=False,
                        path_images="./Datasets/Dataset_BUSI_with_GT_postprocessed_128/", semantic_segmentation=False,
-                       holdout_test_size=DEFAULT_HOLDOUT_TEST_SIZE):
+                       holdout_test_size=DEFAULT_HOLDOUT_TEST_SIZE, loader_options=None,
+                       inference_batch_size=1):
 
     # classes to use by default
     if classes is None:
@@ -152,9 +153,19 @@ def BUSI_dataloader_CV(seed, batch_size, transforms, remove_outliers=False, augm
                                  normalization=normalization, semantic_segmentation=semantic_segmentation))
 
     # Creating a list of dataloaders. Each component of the list corresponds to a CV fold
-    train_loader = [DataLoader(fold, batch_size=batch_size, shuffle=True) for fold in fold_trainset]
-    val_loader = [DataLoader(fold, batch_size=batch_size, shuffle=True) for fold in fold_valset]
-    test_loader = [DataLoader(fold, batch_size=1) for fold in fold_testset]
+    loader_options = dict(loader_options or {})
+    train_loader = [
+        DataLoader(fold, batch_size=batch_size, shuffle=True, **loader_options)
+        for fold in fold_trainset
+    ]
+    val_loader = [
+        DataLoader(fold, batch_size=batch_size, shuffle=False, **loader_options)
+        for fold in fold_valset
+    ]
+    test_loader = [
+        DataLoader(fold, batch_size=inference_batch_size, **loader_options)
+        for fold in fold_testset
+    ]
 
     return train_loader, val_loader, test_loader
 
@@ -281,8 +292,9 @@ def deterministic_oversampling(mapping_df):
     return mapping_df
 
 
-def load_datasets(config_training, config_data, transforms, mode='CV'):
+def load_datasets(config_training, config_data, transforms, mode='CV', runtime=None):
     if mode == 'CV':
+        runtime = dict(runtime or {})
         train_loaders, val_loaders, test_loaders = BUSI_dataloader_CV(seed=config_training['seed'],
                                                                       batch_size=config_data['batch_size'],
                                                                       transforms=transforms,
@@ -297,7 +309,11 @@ def load_datasets(config_training, config_data, transforms, mode='CV'):
                                                                       path_images=paths.processed_dir(config_data),
                                                                       holdout_test_size=config_training.get(
                                                                           'holdout_test_size',
-                                                                          DEFAULT_HOLDOUT_TEST_SIZE))
+                                                                          DEFAULT_HOLDOUT_TEST_SIZE),
+                                                                      loader_options=runtime.get("loader_options"),
+                                                                      inference_batch_size=runtime.get(
+                                                                          "inference_batch_size", 1
+                                                                      ))
         return train_loaders, val_loaders, test_loaders
     if mode == 'UCLM':
         dataloader = UCLM_dataloader(batch_size=1,

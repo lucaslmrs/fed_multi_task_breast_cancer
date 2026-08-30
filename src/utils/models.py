@@ -13,6 +13,18 @@ from src.utils.images import count_pixels
 from src.utils.images import postprocess_semantic_segmentation
 from src.utils.images import postprocess_binary_segmentation
 from scipy.ndimage import binary_fill_holes
+from src.utils.training_runtime import move_to_device
+
+
+def _batch_values(value):
+    """Return collated metadata as a Python list without assuming batch size one."""
+    if torch.is_tensor(value):
+        return value.detach().cpu().reshape(-1).tolist()
+    if isinstance(value, np.ndarray):
+        return value.reshape(-1).tolist()
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
 
 
 def load_pretrained_model(model: nn.Module, ckpt_path: str):
@@ -58,40 +70,39 @@ def inference_binary_segmentation(
     results = pd.DataFrame(columns=['patient_id', 'Haussdorf distance', 'DICE', 'Sensitivity', 'Specificity',
                                     'Accuracy', 'Jaccard index', 'Precision', 'class'])
 
-    for i, test_data in enumerate(test_loader):
-
-        # load information from patient
-        patient_id = test_data['patient_id'].item()
-        label = test_data['class'][0]
-        test_images = test_data['image'].to(device)
-        test_masks = test_data['mask'].to(device)
+    for test_data in test_loader:
+        patient_ids = _batch_values(test_data['patient_id'])
+        labels = _batch_values(test_data['class'])
+        test_images = move_to_device(test_data['image'], device)
+        test_masks = move_to_device(test_data['mask'], device)
 
         # generating segmentation
         features_map = model(test_images)
-        if isinstance(features_map, list):
-            for n, ds in enumerate(reversed(features_map)):
-                save_features_map(seg=torch.sigmoid(ds), path=f"{path}/features_map/{label}_{patient_id}_ds_{n}.png")
-            features_map = features_map[-1]  # in case that deep supervision is being used we got the last output
-        else:
-            save_features_map(seg=features_map, path=f"{path}/features_map/{label}_{patient_id}_seg.png")
-        test_outputs = (torch.sigmoid(features_map) > .5).float()
+        final_map = features_map[-1] if isinstance(features_map, list) else features_map
+        test_outputs = (torch.sigmoid(final_map) > .5).float()
 
         # converting tensors to numpy arrays
-        test_masks = test_masks.detach().cpu().numpy()
-        test_outputs = test_outputs.detach().cpu().numpy()
+        test_masks = test_masks.float().detach().cpu().numpy()
+        test_outputs = test_outputs.float().detach().cpu().numpy()
 
-        if fill_holes:
-            test_outputs = test_outputs.astype(np.uint8)[0, 0, :, :]
-            test_masks = test_masks.astype(np.uint8)[0, 0, :, :]
-            test_outputs = binary_fill_holes(test_outputs).astype(int)
-
-        # getting metrics
-        metrics = calculate_metrics(test_masks, test_outputs, patient_id)
-        metrics['class'] = label
-        results = results.append(metrics, ignore_index=True)
-
-        # saving segmentation
-        save_binary_segmentation(seg=test_outputs, path=f"{path}/segs/{label}_{patient_id}_seg.png")
+        for index, (patient_id, label) in enumerate(zip(patient_ids, labels)):
+            maps = features_map if isinstance(features_map, list) else [features_map]
+            for n, ds in enumerate(reversed(maps)):
+                save_features_map(
+                    seg=ds[index:index + 1],
+                    path=f"{path}/features_map/{label}_{patient_id}_ds_{n}.png",
+                )
+            sample_mask = test_masks[index, 0]
+            sample_output = test_outputs[index, 0]
+            if fill_holes:
+                sample_mask = sample_mask.astype(np.uint8)
+                sample_output = binary_fill_holes(sample_output.astype(np.uint8)).astype(int)
+            metrics = calculate_metrics(sample_mask, sample_output, patient_id)
+            metrics['class'] = label
+            results = results.append(metrics, ignore_index=True)
+            save_binary_segmentation(
+                seg=sample_output, path=f"{path}/segs/{label}_{patient_id}_seg.png"
+            )
 
     # saving metrics results
     results.to_csv(f'{path}/results_segmentation.csv', index=False)
@@ -122,52 +133,51 @@ def inference_multilabel_segmentation(
     results = pd.DataFrame(columns=['patient_id', 'Haussdorf distance', 'DICE', 'Sensitivity', 'Specificity',
                                     'Accuracy', 'Jaccard index', 'Precision', 'class', 'predicted_class'])
 
-    for i, test_data in enumerate(test_loader):
-
-        # load information from patient
-        patient_id = test_data['patient_id'].item()
-        label = test_data['class'][0]
-        test_images = test_data['image'].to(device)
-        test_masks = test_data['mask'].to(device)
+    for test_data in test_loader:
+        patient_ids = _batch_values(test_data['patient_id'])
+        labels = _batch_values(test_data['class'])
+        test_images = move_to_device(test_data['image'], device)
+        test_masks = move_to_device(test_data['mask'], device)
 
         # generating segmentation
         features_map = model(test_images)
-        if isinstance(features_map, list):
-            for n, ds in enumerate(reversed(features_map)):
-                save_features_map(seg=ds, path=f"{path}/features_map/{label}_{patient_id}_ds_{n}.png")
-            features_map = features_map[-1]  # in case that deep supervision is being used we got the last output
-        else:
-            save_features_map(seg=features_map, path=f"{path}/features_map/{label}_{patient_id}_seg.png")
-        test_outputs = torch.nn.functional.softmax(features_map)
+        final_map = features_map[-1] if isinstance(features_map, list) else features_map
+        test_outputs = torch.nn.functional.softmax(final_map, dim=1)
 
         # converting tensors to numpy arrays
-        test_masks = torch.argmax(test_masks, dim=1, keepdim=True).float().detach().cpu().numpy()
-        test_outputs = torch.argmax(test_outputs, dim=1, keepdim=True).float().detach().cpu().numpy()
-        if postprocessing:
-            test_outputs_postprocessed = postprocess_semantic_segmentation(test_outputs)
-
-        # getting predicted class
-        counter = count_pixels(test_outputs)
-        benign_pixels, malignant_pixels = counter.get(1, 0), counter.get(2, 0)
-        if benign_pixels >= malignant_pixels:
-            predicted_class = 'benign'
-        else:
-            predicted_class = 'malignant'
-
-        # getting segmentation metrics
-        if postprocessing:
-            metrics = calculate_metrics_multiclass_segmentation(test_masks, test_outputs_postprocessed, patient_id)
-        else:
-            metrics = calculate_metrics_multiclass_segmentation(test_masks, test_outputs, patient_id)
-        metrics['class'] = label
-        metrics['predicted_class'] = predicted_class
-        results = results.append(metrics, ignore_index=True)
-
-        # saving segmentation
-        save_multilabel_segmentation(seg=test_outputs, path=f"{path}/segs/{label}_{patient_id}_seg.png")
-        if postprocessing:
-            save_multilabel_segmentation(seg=test_outputs_postprocessed,
-                                         path=f"{path}/segs/{label}_{patient_id}_seg_postprocessed.png")
+        test_masks = torch.argmax(test_masks, dim=1, keepdim=True).float().float().detach().cpu().numpy()
+        test_outputs = torch.argmax(test_outputs, dim=1, keepdim=True).float().float().detach().cpu().numpy()
+        for index, (patient_id, label) in enumerate(zip(patient_ids, labels)):
+            maps = features_map if isinstance(features_map, list) else [features_map]
+            for n, ds in enumerate(reversed(maps)):
+                save_features_map(
+                    seg=ds[index:index + 1],
+                    path=f"{path}/features_map/{label}_{patient_id}_ds_{n}.png",
+                )
+            sample_mask = test_masks[index:index + 1]
+            sample_output = test_outputs[index:index + 1]
+            processed = (
+                postprocess_semantic_segmentation(sample_output)
+                if postprocessing else sample_output
+            )
+            counter = count_pixels(sample_output)
+            predicted_class = (
+                'benign' if counter.get(1, 0) >= counter.get(2, 0) else 'malignant'
+            )
+            metrics = calculate_metrics_multiclass_segmentation(
+                sample_mask, processed, patient_id
+            )
+            metrics['class'] = label
+            metrics['predicted_class'] = predicted_class
+            results = results.append(metrics, ignore_index=True)
+            save_multilabel_segmentation(
+                seg=sample_output, path=f"{path}/segs/{label}_{patient_id}_seg.png"
+            )
+            if postprocessing:
+                save_multilabel_segmentation(
+                    seg=processed,
+                    path=f"{path}/segs/{label}_{patient_id}_seg_postprocessed.png",
+                )
 
     # applying mapping for classification
     mapping_class = {
@@ -203,35 +213,36 @@ def inference_multitask_binary_classification_segmentation(
     results = pd.DataFrame(columns=['patient_id', 'Haussdorf distance', 'DICE', 'Sensitivity', 'Specificity',
                                     'Accuracy', 'Jaccard index', 'Precision', 'class'])
 
-    for i, test_data in enumerate(test_loader):
-
-        # load information from patient
-        patient_id = test_data['patient_id'].item()
-        label = test_data['class'][0]
-        test_images = test_data['image'].to(device)
-        test_masks = test_data['mask'].to(device)
+    for test_data in test_loader:
+        patient_ids = _batch_values(test_data['patient_id'])
+        labels = _batch_values(test_data['class'])
+        test_images = move_to_device(test_data['image'], device)
+        test_masks = move_to_device(test_data['mask'], device)
 
         # generating segmentation
         pred_class, features_map = model(test_images)
-        if isinstance(features_map, list):
-            for n, ds in enumerate(reversed(features_map)):
-                save_features_map(seg=ds, path=f"{path}/features_map/{label}_{patient_id}_ds_{n}.png")
-            features_map = features_map[-1]  # in case that deep supervision is being used we got the last output
-        else:
-            save_features_map(seg=features_map, path=f"{path}/features_map/{label}_{patient_id}_seg.png")
-        test_outputs = (torch.sigmoid(features_map) > .5).float()
+        final_map = features_map[-1] if isinstance(features_map, list) else features_map
+        test_outputs = (torch.sigmoid(final_map) > .5).float()
 
         # converting tensors to numpy arrays
-        test_masks = test_masks.detach().cpu().numpy()
-        test_outputs = test_outputs.detach().cpu().numpy()
+        test_masks = test_masks.float().detach().cpu().numpy()
+        test_outputs = test_outputs.float().detach().cpu().numpy()
 
-        # getting metrics
-        metrics = calculate_metrics(test_masks, test_outputs, patient_id)
-        metrics['class'] = label
-        results = results.append(metrics, ignore_index=True)
-
-        # saving segmentation
-        save_binary_segmentation(seg=test_outputs, path=f"{path}/segs/{label}_{patient_id}_seg.png")
+        for index, (patient_id, label) in enumerate(zip(patient_ids, labels)):
+            maps = features_map if isinstance(features_map, list) else [features_map]
+            for n, ds in enumerate(reversed(maps)):
+                save_features_map(
+                    seg=ds[index:index + 1],
+                    path=f"{path}/features_map/{label}_{patient_id}_ds_{n}.png",
+                )
+            sample_mask = test_masks[index:index + 1]
+            sample_output = test_outputs[index:index + 1]
+            metrics = calculate_metrics(sample_mask, sample_output, patient_id)
+            metrics['class'] = label
+            results = results.append(metrics, ignore_index=True)
+            save_binary_segmentation(
+                seg=sample_output, path=f"{path}/segs/{label}_{patient_id}_seg.png"
+            )
 
     results.to_csv(f'{path}/results_segmentation.csv', index=False)
 
@@ -239,12 +250,10 @@ def inference_multitask_binary_classification_segmentation(
     patients = []
     ground_truth_label = []
     predicted_label = []
-    for i, test_data in enumerate(test_loader):
-
-        # load information from patient
-        patient_id = test_data['patient_id'].item()
-        label = test_data['label'][0]
-        test_images = test_data['image'].to(device)
+    for test_data in test_loader:
+        patient_ids = _batch_values(test_data['patient_id'])
+        labels = test_data['label'].float().detach().cpu().reshape(-1).tolist()
+        test_images = move_to_device(test_data['image'], device)
 
         # generating segmentation
         test_outputs, segs = model(test_images)
@@ -252,10 +261,9 @@ def inference_multitask_binary_classification_segmentation(
             test_outputs = torch.mean(torch.stack(test_outputs, dim=0), dim=0)
         test_outputs = (torch.sigmoid(test_outputs) > .5).double()
 
-        # converting tensors to numpy arrays
-        patients.append(patient_id)
-        ground_truth_label.append(label.detach().cpu().numpy()[0])
-        predicted_label.append(test_outputs.detach().cpu().numpy()[0][0])
+        patients.extend(patient_ids)
+        ground_truth_label.extend(labels)
+        predicted_label.extend(test_outputs.float().detach().cpu().reshape(-1).tolist())
 
     # getting metrics
     metrics = pd.DataFrame({
@@ -296,47 +304,42 @@ def inference_multitask_multiclass_classification_segmentation(
     results = pd.DataFrame(columns=['patient_id', 'Haussdorf distance', 'DICE', 'Sensitivity', 'Specificity',
                                     'Accuracy', 'Jaccard index', 'Precision', 'class'])
 
-    for i, test_data in enumerate(test_loader):
-
-        # load information from patient
-        patient_id = test_data['patient_id'].item()
-        label = test_data['class'][0]
-        test_images = test_data['image'].to(device)
-        test_masks = test_data['mask'].to(device)
+    for test_data in test_loader:
+        patient_ids = _batch_values(test_data['patient_id'])
+        labels = _batch_values(test_data['class'])
+        test_images = move_to_device(test_data['image'], device)
+        test_masks = move_to_device(test_data['mask'], device)
 
         # generating segmentation
         pred_class, features_map = model(test_images)
-        if isinstance(features_map, list):
-            for n, ds in enumerate(reversed(features_map)):
-                save_features_map(seg=ds, path=f"{path}/features_map/{label}_{patient_id}_ds_{n}.png")
-            features_map = features_map[-1]  # in case that deep supervision is being used we got the last output
-        else:
-            save_features_map(seg=features_map, path=f"{path}/features_map/{label}_{patient_id}_seg.png")
-        test_outputs = (torch.sigmoid(features_map) > .5).float()
+        final_map = features_map[-1] if isinstance(features_map, list) else features_map
+        logits = torch.mean(torch.stack(pred_class), dim=0) if isinstance(pred_class, list) else pred_class
+        test_outputs = (torch.sigmoid(final_map) > .5).float()
 
         # converting tensors to numpy arrays
-        test_masks = test_masks.detach().cpu().numpy()
-        test_outputs = test_outputs.detach().cpu().numpy()
+        test_masks = test_masks.float().detach().cpu().numpy()
+        test_outputs = test_outputs.float().detach().cpu().numpy()
 
-        if threshold > 0:
-            test_outputs = postprocess_binary_segmentation(test_outputs, threshold)
-
-        if overlap_seg_based_on_class:
-            if isinstance(features_map, list):
-                pred_class = torch.mean(torch.stack(pred_class, dim=0), dim=0)
-            # prob_pred_normal = pred_class[0][0][2].item()
-            pred_class = [pl.argmax() for pl in pred_class]
-            if pred_class[0].item() == 2:
-            # if prob_pred_normal > .85:
-                test_outputs[test_outputs > 0] = 0
-
-        # getting metrics
-        metrics = calculate_metrics(test_masks, test_outputs, patient_id)
-        metrics['class'] = label
-        results = results.append(metrics, ignore_index=True)
-
-        # saving segmentation
-        save_binary_segmentation(seg=test_outputs, path=f"{path}/segs/{label}_{patient_id}_seg.png")
+        predicted_classes = logits.argmax(dim=1)
+        for index, (patient_id, label) in enumerate(zip(patient_ids, labels)):
+            maps = features_map if isinstance(features_map, list) else [features_map]
+            for n, ds in enumerate(reversed(maps)):
+                save_features_map(
+                    seg=ds[index:index + 1],
+                    path=f"{path}/features_map/{label}_{patient_id}_ds_{n}.png",
+                )
+            sample_mask = test_masks[index:index + 1]
+            sample_output = test_outputs[index:index + 1]
+            if threshold > 0:
+                sample_output = postprocess_binary_segmentation(sample_output, threshold)
+            if overlap_seg_based_on_class and predicted_classes[index].item() == 2:
+                sample_output[sample_output > 0] = 0
+            metrics = calculate_metrics(sample_mask, sample_output, patient_id)
+            metrics['class'] = label
+            results = results.append(metrics, ignore_index=True)
+            save_binary_segmentation(
+                seg=sample_output, path=f"{path}/segs/{label}_{patient_id}_seg.png"
+            )
 
     results.to_csv(f'{path}/results_segmentation.csv', index=False)
 
@@ -345,44 +348,29 @@ def inference_multitask_multiclass_classification_segmentation(
     ground_truth_label = []
     predicted_label = []
     predicted_probabilities = []
-    for i, test_data in enumerate(test_loader):
-
-        # load information from patient
-        patient_id = test_data['patient_id'].item()
-        # label = test_data['label'][0]
-        test_label = test_data['label'].to(device)
+    for test_data in test_loader:
+        patient_ids = _batch_values(test_data['patient_id'])
+        test_label = move_to_device(test_data['label'], device)
         test_label = torch.nn.functional.one_hot(test_label.flatten().to(torch.int64), num_classes=3).to(torch.float)
-        test_images = test_data['image'].to(device)
+        test_images = move_to_device(test_data['image'], device)
 
         # generating segmentation
         test_outputs, segs = model(test_images)
-        if isinstance(segs, list):
+        if isinstance(test_outputs, list):
             test_outputs = torch.mean(torch.stack(test_outputs, dim=0), dim=0)
-        test_label = [l.argmax() for l in test_label]
-        predicted_probabilities.append(test_outputs.detach().cpu().numpy().tolist()[0])
-        test_outputs = [pl.argmax() for pl in test_outputs]
-
-        # counting tumor pixels
-        segs = (torch.sigmoid(segs[-1]) > .5).float()
-        counter_tumor_pixels = count_pixels(segs.detach().cpu().numpy()).get(1, 0)
-
-        # converting tensors to numpy arrays
-        patients.append(patient_id)
-        if len(test_outputs) > 1:
-            for r, p in zip(test_label, test_outputs):
-                if overlap_class_based_on_seg and counter_tumor_pixels == 0:
-                    ground_truth_label.append(int(r.detach().cpu().numpy()[0]))
-                    predicted_label.append(2)
-                else:
-                    ground_truth_label.append(int(r.detach().cpu().numpy()[0]))
-                    predicted_label.append(int(p.detach().cpu().numpy()[0]))
-        else:
-            if overlap_class_based_on_seg and counter_tumor_pixels == 0:
-                ground_truth_label.append(int(test_label[0].detach().cpu().numpy()))
-                predicted_label.append(2)
-            else:
-                ground_truth_label.append(int(test_label[0].detach().cpu().numpy()))
-                predicted_label.append(int(test_outputs[0].detach().cpu().numpy()))
+        labels = test_label.argmax(dim=1).detach().cpu().tolist()
+        probabilities = test_outputs.float().detach().cpu().tolist()
+        predictions = test_outputs.argmax(dim=1).detach().cpu().tolist()
+        final_segs = segs[-1] if isinstance(segs, list) else segs
+        final_segs = (torch.sigmoid(final_segs) > .5).float().detach().cpu().numpy()
+        for index, patient_id in enumerate(patient_ids):
+            predicted = predictions[index]
+            if overlap_class_based_on_seg and count_pixels(final_segs[index]).get(1, 0) == 0:
+                predicted = 2
+            patients.append(patient_id)
+            ground_truth_label.append(int(labels[index]))
+            predicted_label.append(int(predicted))
+            predicted_probabilities.append(probabilities[index])
 
     # getting metrics
     metrics = pd.DataFrame({
@@ -418,30 +406,19 @@ def inference_multiclass_classification(
     patients = []
     ground_truth_label = []
     predicted_label = []
-    for i, test_data in enumerate(test_loader):
-
-        # load information from patient
-        patient_id = test_data['patient_id'].item()
-        test_label = test_data['label'].to(device)
+    for test_data in test_loader:
+        patient_ids = _batch_values(test_data['patient_id'])
+        test_label = move_to_device(test_data['label'], device)
         test_label = torch.nn.functional.one_hot(test_label.flatten().to(torch.int64), num_classes=3).to(torch.float)
-        test_images = test_data['image'].to(device)
+        test_images = move_to_device(test_data['image'], device)
 
         # generating segmentation
         test_outputs = model(test_images)
         if isinstance(test_outputs, list):
             test_outputs = torch.mean(torch.stack(test_outputs, dim=0), dim=0)
-        test_label = [l.argmax() for l in test_label]
-        test_outputs = [pl.argmax() for pl in test_outputs]
-
-        # converting tensors to numpy arrays
-        patients.append(patient_id)
-        if len(test_outputs) > 1:
-            for r, p in zip(test_label, test_outputs):
-                ground_truth_label.append(int(r.detach().cpu().numpy()[0]))
-                predicted_label.append(int(p.detach().cpu().numpy()[0]))
-        else:
-            ground_truth_label.append(int(test_label[0].detach().cpu().numpy()))
-            predicted_label.append(int(test_outputs[0].detach().cpu().numpy()))
+        patients.extend(patient_ids)
+        ground_truth_label.extend(test_label.argmax(dim=1).detach().cpu().tolist())
+        predicted_label.extend(test_outputs.argmax(dim=1).detach().cpu().tolist())
 
     # getting metrics
     metrics = pd.DataFrame({
@@ -476,21 +453,18 @@ def inference_binary_classification(
     patients = []
     ground_truth_label = []
     predicted_label = []
-    for i, test_data in enumerate(test_loader):
-
-        # load information from patient
-        patient_id = test_data['patient_id'].item()
-        label = test_data['label'][0]
-        test_images = test_data['image'].to(device)
+    for test_data in test_loader:
+        patient_ids = _batch_values(test_data['patient_id'])
+        labels = test_data['label'].float().detach().cpu().reshape(-1).tolist()
+        test_images = move_to_device(test_data['image'], device)
 
         # generating segmentation
         test_outputs = model(test_images)
         test_outputs = (torch.sigmoid(test_outputs) > .5).double()
 
-        # converting tensors to numpy arrays
-        patients.append(patient_id)
-        ground_truth_label.append(label.detach().cpu().numpy()[0])
-        predicted_label.append(test_outputs.detach().cpu().numpy()[0][0])
+        patients.extend(patient_ids)
+        ground_truth_label.extend(labels)
+        predicted_label.extend(test_outputs.float().detach().cpu().reshape(-1).tolist())
 
         # getting metrics
     metrics = pd.DataFrame({
@@ -552,7 +526,7 @@ def save_multilabel_segmentation(seg: np.array, path: str):
 
 
 def save_features_map(seg: np.array, path: str):
-    seg = seg.detach().cpu().numpy()
+    seg = seg.float().detach().cpu().numpy()
     seg = seg[0, 0, :, :].astype(float)
     cv2.imwrite(path, seg)
 

@@ -40,6 +40,13 @@ from src.federated.model_split import (
 from src.federated.server import FedPerStrategy
 from src.utils.experiment_init import device_setup, init_multitask_model
 from src.utils.miscellany import init_log, seed_everything
+from src.utils.training_runtime import (
+    RuntimeEvents,
+    dataloader_kwargs,
+    precision_policy,
+    runtime_config,
+    start_gpu_telemetry,
+)
 
 
 class _DropFlwrDeprecation(logging.Filter):
@@ -49,6 +56,7 @@ class _DropFlwrDeprecation(logging.Filter):
 
 def _resume_config_signature(config):
     signature = copy.deepcopy(config)
+    signature.pop("runtime", None)
     signature.get("federated", {}).pop("training_telemetry", None)
     if signature.get("training", {}).get("CV", 0) > 1:
         signature["training"].pop("holdout_test_size", None)
@@ -154,22 +162,26 @@ def _test_client(
         model.load_state_dict(state["model"])
 
     data_cfg = dataset_config(config, dataset)
+    runtime = runtime_config(config)
+    precision = precision_policy(config, device)
     test_loader = build_client_loader(
         partition_file=master_file,
         fold=fold,
         client_id=client_id,
         dataset=dataset,
         split="test",
-        batch_size=1,
+        batch_size=runtime["inference_batch_size"],
         channels=data_cfg["channels"],
         classes=data_cfg["classes"],
         augmentations=None,
         tasks=[task],
         max_samples=config["federated"].get("max_samples_per_split"),
+        loader_options=dataloader_kwargs(config, federated=True),
     )
     metrics, preds = unified_eval.evaluate(
         model, test_loader, task, len(data_cfg["classes"]), device,
         class_names=data_cfg["classes"],
+        precision=precision,
     )
     experiment = config.get("experiment", {})
     evaluation = evaluation_metadata(config["training"])
@@ -269,6 +281,7 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
 
     seed_everything(train_cfg["seed"], cuda_benchmark=train_cfg["cuda_benchmark"])
     device = _resolve_orchestrator_device(fed.get("device", "auto"))
+    precision_policy(config, device)  # fail before creating run artifacts on unsupported BF16
     standalone = fed.get("standalone", False)
     setup = "standalone" if standalone else "federated"
 
@@ -295,6 +308,8 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
     logging.getLogger("flwr").addFilter(_DropFlwrDeprecation())
     with config_output.open("w", encoding="utf-8") as stream:
         yaml.safe_dump(config, stream, sort_keys=False)
+    gpu_telemetry = start_gpu_telemetry(config, run_path)
+    runtime_events = RuntimeEvents(run_path / "runtime_events.csv", device)
 
     master_file = partition_file(config)
     master_frame = pd.read_csv(master_file, usecols=lambda column: column in {"fold", "split"})
@@ -342,7 +357,9 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
         raise ValueError(f"Partition '{master_file}' contains no configured clients")
     num_clients = len(roster)
 
-    client_resources = dict(fed.get("client_resources", {"num_cpus": 1, "num_gpus": 0.0}))
+    runtime = runtime_config(config)
+    runtime_federated = runtime["federated"]
+    client_resources = dict(runtime_federated["client_resources"])
     if device == "cpu" and client_resources.get("num_gpus", 0) > 0:
         logging.warning("GPU resources requested for a CPU run; setting client num_gpus=0")
         client_resources["num_gpus"] = 0.0
@@ -411,20 +428,25 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                 on_evaluate_config_fn=_round_config,
             )
 
-            start_simulation(
-                client_fn=build_client_fn(
-                    config, device, str(master_file), str(run_path), roster, fold, standalone
-                ),
-                num_clients=num_clients,
-                config=ServerConfig(num_rounds=fed["rounds"]),
-                strategy=strategy,
-                client_resources=client_resources,
-                ray_init_args={
-                    "include_dashboard": False,
-                    "ignore_reinit_error": True,
-                    "num_cpus": fed.get("ray_num_cpus", 2),
-                },
-            )
+            with runtime_events.measure(
+                "flower_simulation", setup=setup, fold=fold
+            ) as event:
+                start_simulation(
+                    client_fn=build_client_fn(
+                        config, device, str(master_file), str(run_path), roster, fold, standalone
+                    ),
+                    num_clients=num_clients,
+                    config=ServerConfig(num_rounds=fed["rounds"]),
+                    strategy=strategy,
+                    client_resources=client_resources,
+                    ray_init_args={
+                        "include_dashboard": False,
+                        "ignore_reinit_error": True,
+                        "num_cpus": runtime_federated["ray_num_cpus"],
+                    },
+                )
+                event["examples"] = 0
+                event["batches"] = 0
 
             with (fold_dir / "aggregation_history.json").open("w") as stream:
                 json.dump(strategy.aggregation_history, stream, indent=2)
@@ -452,18 +474,22 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
             # One result row per (client, task): a multi-task client is scored once per task over
             # the slice that task supervises. analyze.py already keys on (client_id, task).
             for task in tasks:
-                row, preds = _test_client(
-                    config,
-                    device,
-                    str(master_file),
-                    run_path,
-                    fold,
-                    client_id,
-                    dataset,
-                    task,
-                    setup,
-                    shared_arrays=final_shared,
-                )
+                with runtime_events.measure(
+                    "test", setup=setup, fold=fold, client_id=client_id
+                ) as event:
+                    row, preds = _test_client(
+                        config,
+                        device,
+                        str(master_file),
+                        run_path,
+                        fold,
+                        client_id,
+                        dataset,
+                        task,
+                        setup,
+                        shared_arrays=final_shared,
+                    )
+                    event.update(examples=int(row.get("n_test", 0)), batches=0)
                 fold_rows.append(row)
                 if preds is not None:
                     fold_pred_frames.append(preds)
@@ -479,6 +505,8 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
     from src.experiments.training_curves import build_run_artifacts
 
     build_run_artifacts(run_path)
+    runtime_events.write()
+    gpu_telemetry.stop()
     logging.info(f"Total {setup} time: {time.perf_counter() - init_time:.2f}s")
     return run_path
 

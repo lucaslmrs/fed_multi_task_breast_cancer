@@ -5,6 +5,7 @@ from pathlib import Path
 
 from src.dataset import paths
 from src.dataset.splitting import evaluation_settings
+from src.utils.training_runtime import validate_runtime_config
 
 
 def active_datasets(config: dict) -> list:
@@ -85,6 +86,7 @@ def partition_file(config: dict) -> Path:
 
 
 def validate_federated_config(config: dict) -> None:
+    validate_runtime_config(config)
     if "training" in config:
         evaluation_settings(config["training"])
     datasets = active_datasets(config)
