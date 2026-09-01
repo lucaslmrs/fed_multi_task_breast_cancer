@@ -1,14 +1,36 @@
 schema_version: 1
-study_id: multi_dataset_balance_v1
+study_id: multi_dataset_balance_v2_bf16
 base_config: src/config.yaml
 
-# Freeze the completed study's original numerical protocol even though the repository default is
-# now BF16. Runtime-only settings remain free to change because they are excluded from its hash.
+# The study declares its own protocol instead of inheriting it from `src/config.yaml`. The base
+# config is a working default and drifts between experiments; a manifest that reads a
+# partition-defining field from it silently changes what its arms mean the next time someone edits
+# it. Everything below is pinned here for that reason, and an arm that needs a different value
+# declares `partition_variant` and overrides it (the two `multitask_*` arms do exactly that).
 config_overrides:
   training:
     CV: 4
-    precision: fp32
-    cuda_benchmark: false
+    precision: bf16
+    cuda_benchmark: true
+  datasets:
+    Curated_BUSI:
+      # The eight base arms ARE the single-task topology: each client owns one task. The base
+      # config now defaults BUSI to `multi_task`, which would turn them into multi-task arms
+      # without a single warning -- and they cannot pin it themselves, because an arm may only
+      # override a partition-defining field when it declares a `partition_variant`.
+      client_topology: single_task
+      # Not partition-defining, but it drifted to `cls: false` in the base config to accommodate
+      # multi-task clients (which refuse oversampling). The single-task arms keep oversampling on
+      # the classification pool: 120/148 raw rows become 371/453 effective.
+      oversampling: {seg: false, cls: true}
+  federated:
+    # Both topology groups must observe the same number of ISIC clients, otherwise
+    # `effect_client_topology` mixes a client-count ablation into the topology comparison. The
+    # `multitask_*` arms declare BUSI 4/4 against these 2/2 on purpose: four multi-task clients
+    # hold the same images as two seg plus two cls clients.
+    n_clients:
+      Curated_BUSI: {seg: 2, cls: 2}
+      ISIC_2018: {seg: 2, cls: 2}
 
 seed_profiles:
   operational: [1993]
@@ -16,7 +38,8 @@ seed_profiles:
 default_seed_profile: operational
 
 output_root: runs/studies/{study_id}
-partition_template: data/federated_studies/{study_id}/seed_{seed}/federated_mapping.csv
+# Reuse the byte-identical frozen v1 masters; numerical precision does not define a partition.
+partition_template: data/federated_studies/multi_dataset_balance_v1/seed_{seed}/federated_mapping.csv
 
 # Each arm is explicit so the execution index is an unambiguous record of the eight-run matrix.
 arms:

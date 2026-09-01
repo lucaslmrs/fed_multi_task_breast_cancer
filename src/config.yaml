@@ -22,11 +22,12 @@ loss:
 training:
   debug: False
   seed: 1993
+  precision: bf16       # fp32 | bf16; BF16 requires a compatible CUDA GPU
   epochs: 200
   max_patience: 50
   CV: 1
   holdout_test_size: 0.30  # used only when CV=1; remaining 70% is the train+validation pool
-  cuda_benchmark: False
+  cuda_benchmark: True
   alpha: 0.85
   threshold_postprocessing: 0
   overlap_seg_based_on_class: True
@@ -63,6 +64,24 @@ data:
     horizontal_flip: .5
     vertical_flip: .5
     rotation: 1.0
+
+# Execution-only controls. These are persisted for audit but excluded from scientific hashes.
+runtime:
+  inference_batch_size: 32
+  dataloader:
+    num_workers: 4
+    federated_num_workers: 0
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2
+  federated:
+    ray_num_cpus: 8
+    client_resources:
+      num_cpus: 2
+      num_gpus: 0.5       # two concurrent clients share the single GPU
+  telemetry:
+    enabled: true
+    gpu_interval_seconds: 1.0
 
 # Registry consumed by the multi-dataset federated pipeline.  The legacy ``data`` block above
 # remains the source of truth for preprocessing, EDA and single-dataset training.
@@ -121,7 +140,7 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
   partition_file: data/federated_multi/busi_mt2_isic_st8/federated_mapping_holdout_70_30.csv
   n_clients_seg: 2
   n_clients_cls: 2
-  rounds: 10
+  rounds: 200
   local_epochs: 2
   local_training:
     mode: steps             # steps | epochs; steps controls equal local optimizer work
@@ -151,11 +170,6 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
     cls: True
   standalone: False        # True => local-only baseline (clients ignore the federated encoder)
   device: cuda             # auto | cpu | cuda
-  ray_num_cpus: 16          # caps the Ray cluster -> bounds how many clients run concurrently
-  client_resources:        # resources reserved per client (num_cpus high => fewer in parallel)
-    num_cpus: 2
-    num_gpus: 1.0          # >0 lets the client see the GPU. 1.0 => 1 client/GPU (sequential,
-                           # safe). For 2 concurrent GPU clients use 0.5 AND raise ray_num_cpus.
 
 # python -m src.dataset.federated_partition                     # Gera csv mestre caso haja mudanças de configurações
 # python -m src.training_federated                              # federated (standalone: False)

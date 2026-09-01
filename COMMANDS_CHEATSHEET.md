@@ -24,6 +24,9 @@ python -m src.experiments.study_runner --smoke --seed-profile operational
 
 # 4. Smoke federado/local-only específico para CV=1, com partição temporária
 python -m scripts.smoke_federated --setup both --holdout --samples 2
+
+# 5. Gate na GPU: FP32/sequencial versus BF16/dois clientes, sem regenerar partição
+python -m scripts.benchmark_training_runtime
 ```
 
 O smoke com `--holdout` cria e remove uma partição temporária. Ele não sobrescreve a partição
@@ -32,7 +35,7 @@ congelada usada pelos estudos de cross-validation.
 Artefatos do smoke:
 
 ```text
-runs/studies/multi_dataset_balance_v1/smoke/
+runs/studies/multi_dataset_balance_v2_bf16/smoke/
 ├── execution_plan.csv
 ├── run_index.csv
 ├── runs/seed_1993/<arm_id>/
@@ -49,6 +52,18 @@ runs/studies/multi_dataset_balance_v1/smoke/
 ```
 
 ## Execução científica
+
+Sem `--manifest`, o runner usa o novo estudo `multi_dataset_balance_v2_bf16` (BF16). Ele aponta
+para os mesmos masters congelados do v1. Para reproduzir/retomar o histórico FP32, use sempre:
+
+```bash
+python -m src.experiments.study_runner \
+  --manifest studies/multi_dataset_balance_v1.yaml \
+  --seed-profile operational
+```
+
+Precisão e `cuda_benchmark` entram no hash científico; o bloco operacional `runtime` não entra.
+Consulte `docs/TRAINING_ACCELERATION.md` para configuração, telemetria e diagnóstico.
 
 Primeiro execute apenas a comparação principal com a seed operacional:
 
@@ -122,11 +137,11 @@ final.
 ## Acompanhar execução
 
 ```bash
-column -s, -t < runs/studies/multi_dataset_balance_v1/run_index.csv | less -S
-tail -f runs/studies/multi_dataset_balance_v1/runs/seed_1993/primary/execution.log
+column -s, -t < runs/studies/multi_dataset_balance_v2_bf16/run_index.csv | less -S
+tail -f runs/studies/multi_dataset_balance_v2_bf16/runs/seed_1993/primary/execution.log
 ```
 
-No smoke, acrescente `/smoke` depois de `multi_dataset_balance_v1`.
+No smoke, acrescente `/smoke` depois de `multi_dataset_balance_v2_bf16`.
 
 ## Executar uma configuração isolada
 

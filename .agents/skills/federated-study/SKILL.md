@@ -30,9 +30,21 @@ python -m src.experiments.study_runner --analyze-only                     # só 
 python -m src.experiments.training_curves <diretorio_da_run>              # reconstrói CSV/HTML/PNG
 ```
 
-O manifesto é `studies/multi_dataset_balance_v1.yaml`. `--rebuild-partitions` **regenera a
-partição congelada** — não use sem intenção explícita: braços já executados deixam de ser
-comparáveis com os novos.
+O manifesto padrão é `studies/multi_dataset_balance_v2_bf16.yaml`: BF16, dois clientes concorrentes
+por GPU e as partições congeladas do v1. O histórico `studies/multi_dataset_balance_v1.yaml` fixa
+FP32 e `cuda_benchmark: false`; informe-o explicitamente para reproduzir ou retomar v1. Os hashes
+impedem resume entre as duas precisões. `--rebuild-partitions` **regenera a partição congelada** —
+não use sem intenção explícita: braços já executados deixam de ser comparáveis com os novos.
+
+Depois dos smokes e antes de uma alocação longa de GPU, valide o runtime pareado:
+
+```bash
+python -m scripts.benchmark_training_runtime
+```
+
+Ele não regenera partições, remove os checkpoints temporários e exige ganho ponta a ponta de 25%,
+ausência de NaN/Inf e diferença média máxima de 0,02 em Dice/balanced accuracy. Consulte
+`docs/TRAINING_ACCELERATION.md` para configuração e artefatos.
 
 `training.CV=1` seleciona um holdout determinístico. A fração de teste vem de
 `training.holdout_test_size` (padrão `0.30`); os 70% restantes formam o pool de
@@ -114,7 +126,7 @@ o analisador não inventa curvas a partir do log.
 ```bash
 python -m src.experiments.analyze \
   --results <*_test_results.csv ...> --preds <*_cls_predictions.csv ...> \
-  --out runs/comparison --manifest studies/multi_dataset_balance_v1.yaml
+  --out runs/comparison --manifest studies/multi_dataset_balance_v2_bf16.yaml
 ```
 
 Aceita dois ou três conjuntos. Sem `--manifest` ele não sabe quais braços formam par.

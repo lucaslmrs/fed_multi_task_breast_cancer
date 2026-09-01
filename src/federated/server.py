@@ -39,7 +39,7 @@ class FedPerStrategy(FedAvg):
         # separate from Flower's scalar History allows auditing every client's effective weight.
         self.aggregation_history = []
         # Kept as diagnostics for legacy callers. Final evaluation deliberately uses the common
-        # last-round global trunk, not the per-client local ``best.pt`` snapshots.
+        # last-round global trunk plus the latest durable personalized ``state.pt``.
         self.best_mean_val = float("inf")
         self.best_round = -1
         self.latest_parameters = None

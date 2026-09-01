@@ -19,6 +19,7 @@ import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
 
 from src.utils.metrics import dice_score_from_tensor
+from src.utils.training_runtime import PrecisionPolicy, move_to_device
 
 
 def _seg_loss(criterion, masks, outputs, inversely_weighted):
@@ -86,7 +87,7 @@ def _supervised(data, task, device, batch_size):
     flag = data.get(_SUPERVISION_FLAG[task])
     if flag is None:
         return torch.ones(batch_size, dtype=torch.bool, device=device)
-    return flag.reshape(-1).to(device=device, dtype=torch.bool)
+    return move_to_device(flag.reshape(-1), device).to(dtype=torch.bool)
 
 
 def _combined_loss(data, logits, outputs, tasks, lambdas, device, num_classes,
@@ -99,11 +100,11 @@ def _combined_loss(data, logits, outputs, tasks, lambdas, device, num_classes,
         if not bool(keep.any()):
             continue
         if task == "seg":
-            masks = data["mask"].to(device)[keep]
+            masks = move_to_device(data["mask"], device)[keep]
             selected = [item[keep] for item in outputs] if isinstance(outputs, list) else outputs[keep]
             term = _seg_loss(seg_criterion, masks, selected, inversely_weighted)
         else:
-            label = _prep_label(data["label"].to(device)[keep], num_classes)
+            label = _prep_label(move_to_device(data["label"], device)[keep], num_classes)
             selected = [item[keep] for item in logits] if isinstance(logits, list) else logits[keep]
             term = _cls_loss(cls_criterion, label, selected)
         terms.append(lambdas[task] * term)
@@ -141,7 +142,7 @@ def _update_task_stats(stats, data, logits, outputs, task, device, num_classes):
     current = stats[task]
     current["n_samples"] += int(keep.sum().item())
     if task == "seg":
-        masks = data["mask"].to(device)[keep].to(torch.bool)
+        masks = move_to_device(data["mask"], device)[keep].to(torch.bool)
         seg = outputs[-1] if isinstance(outputs, list) else outputs
         predicted = (torch.sigmoid(seg[keep]) > 0.5).to(torch.bool)
         current["tp"] += float(torch.logical_and(predicted, masks).sum().item())
@@ -151,7 +152,7 @@ def _update_task_stats(stats, data, logits, outputs, task, device, num_classes):
         current["ground_truth_positive"] += float(masks.sum().item())
         return
 
-    label = _prep_label(data["label"].to(device)[keep], num_classes)
+    label = _prep_label(move_to_device(data["label"], device)[keep], num_classes)
     averaged = _avg_logits(logits)[keep]
     if num_classes > 2:
         current["ground_truth"].extend(
@@ -232,7 +233,7 @@ def _history_rows(tasks, task_stats, task_loss_sums, task_loss_counts,
 def train_local(model, loader, optimizer, task, device, local_epochs, num_classes,
                 seg_criterion=None, cls_criterion=None, inversely_weighted=True,
                 training_mode="epochs", steps_per_round=10, tasks=None, task_lambdas=None,
-                epoch_end_callback=None, record_step_history=False):
+                epoch_end_callback=None, record_step_history=False, precision=None):
     """Run local SGD and return loss plus exact optimization/exposure telemetry.
 
     ``epochs`` preserves the legacy nested epoch/loader loop. In ``steps`` mode the loader must
@@ -243,6 +244,7 @@ def train_local(model, loader, optimizer, task, device, local_epochs, num_classe
     single-task client, so it is rejected.
     """
     owned = resolve_tasks(task, tasks)
+    precision = precision or PrecisionPolicy("fp32", device)
     lambdas = resolve_task_lambdas(owned, task_lambdas)
     training_mode = str(training_mode).lower()
     if training_mode not in {"epochs", "steps"}:
@@ -273,25 +275,28 @@ def train_local(model, loader, optimizer, task, device, local_epochs, num_classe
         for name in owned:
             epoch_stats[name]["num_classes"] = num_classes
         for data in loader:
-            inputs = data["image"].to(device)
+            inputs = precision.move(data["image"])
             optimizer.zero_grad(set_to_none=True)
-            logits, outputs = model(inputs)
-            if len(owned) == 1:
-                # Historical single-task path, kept verbatim so existing arms reproduce exactly.
-                if owned[0] == "seg":
-                    loss = _seg_loss(
-                        seg_criterion, data["mask"].to(device), outputs, inversely_weighted
-                    )
+            with precision.autocast():
+                logits, outputs = model(inputs)
+                if len(owned) == 1:
+                    # Historical single-task path, kept verbatim so existing arms reproduce exactly.
+                    if owned[0] == "seg":
+                        loss = _seg_loss(
+                            seg_criterion, precision.move(data["mask"]), outputs,
+                            inversely_weighted,
+                        )
+                    else:
+                        label = _prep_label(precision.move(data["label"]), num_classes)
+                        loss = _cls_loss(cls_criterion, label, logits)
+                    counted = list(owned)
+                    raw_terms = {owned[0]: loss}
                 else:
-                    label = _prep_label(data["label"].to(device), num_classes)
-                    loss = _cls_loss(cls_criterion, label, logits)
-                counted = list(owned)
-                raw_terms = {owned[0]: loss}
-            else:
-                loss, counted, raw_terms = _combined_loss(
-                    data, logits, outputs, owned, lambdas, device, num_classes,
-                    seg_criterion, cls_criterion, inversely_weighted,
-                )
+                    loss, counted, raw_terms = _combined_loss(
+                        data, logits, outputs, owned, lambdas, device, num_classes,
+                        seg_criterion, cls_criterion, inversely_weighted,
+                    )
+            precision.ensure_finite(loss, "federated local training")
             for name in counted:
                 _update_task_stats(task_stats, data, logits, outputs, name, device, num_classes)
                 _update_task_stats(epoch_stats, data, logits, outputs, name, device, num_classes)
@@ -371,7 +376,7 @@ def train_local(model, loader, optimizer, task, device, local_epochs, num_classe
 @torch.inference_mode()
 def evaluate_local(model, loader, task, device, num_classes,
                    seg_criterion=None, cls_criterion=None, inversely_weighted=True,
-                   tasks=None, task_lambdas=None):
+                   tasks=None, task_lambdas=None, precision=None):
     """Evaluate the client's task(s). Returns {loss, metric, metric_name, n}.
 
     A multi-task client reports the same combined objective it optimises, so the server's
@@ -379,6 +384,7 @@ def evaluate_local(model, loader, task, device, num_classes,
     ``val_metric_<task>`` entry per owned task.
     """
     owned = resolve_tasks(task, tasks)
+    precision = precision or PrecisionPolicy("fp32", device)
     model.eval()
     n_samples = len(loader.dataset)
     if n_samples == 0:
@@ -387,7 +393,7 @@ def evaluate_local(model, loader, task, device, num_classes,
     if len(owned) > 1:
         return _evaluate_multitask(
             model, loader, owned, resolve_task_lambdas(owned, task_lambdas), device, num_classes,
-            seg_criterion, cls_criterion, inversely_weighted, n_samples,
+            seg_criterion, cls_criterion, inversely_weighted, n_samples, precision,
         )
     task = owned[0]
 
@@ -396,9 +402,12 @@ def evaluate_local(model, loader, task, device, num_classes,
         stats = _empty_task_stats(("seg",))
         stats["seg"]["num_classes"] = num_classes
         for data in loader:
-            logits, outputs = model(data["image"].to(device))
-            masks = data["mask"].to(device)
-            total_loss += _seg_loss(seg_criterion, masks, outputs, inversely_weighted).item()
+            masks = precision.move(data["mask"])
+            with precision.autocast():
+                logits, outputs = model(precision.move(data["image"]))
+                batch_loss = _seg_loss(seg_criterion, masks, outputs, inversely_weighted)
+            precision.ensure_finite(batch_loss, "federated segmentation validation")
+            total_loss += batch_loss.item()
             seg = outputs[-1] if isinstance(outputs, list) else outputs
             dice += float(dice_score_from_tensor(masks, torch.sigmoid(seg) > 0.5))
             _update_task_stats(stats, data, logits, outputs, "seg", device, num_classes)
@@ -415,9 +424,12 @@ def evaluate_local(model, loader, task, device, num_classes,
     total_loss, n = 0.0, 0
     gt, pred = [], []
     for data in loader:
-        label = _prep_label(data["label"].to(device), num_classes)
-        logits, outputs = model(data["image"].to(device))
-        total_loss += _cls_loss(cls_criterion, label, logits).item()
+        label = _prep_label(precision.move(data["label"]), num_classes)
+        with precision.autocast():
+            logits, outputs = model(precision.move(data["image"]))
+            batch_loss = _cls_loss(cls_criterion, label, logits)
+        precision.ensure_finite(batch_loss, "federated classification validation")
+        total_loss += batch_loss.item()
         n += 1
         pl = _avg_logits(logits)
         if num_classes > 2:
@@ -445,7 +457,7 @@ def evaluate_local(model, loader, task, device, num_classes,
 
 @torch.inference_mode()
 def _evaluate_multitask(model, loader, tasks, lambdas, device, num_classes,
-                        seg_criterion, cls_criterion, inversely_weighted, n_samples):
+                        seg_criterion, cls_criterion, inversely_weighted, n_samples, precision):
     """Combined-objective evaluation with one metric per owned task.
 
     Dice is averaged over the mask-supervised samples only, and accuracy over the label-supervised
@@ -460,11 +472,13 @@ def _evaluate_multitask(model, loader, tasks, lambdas, device, num_classes,
     task_loss_sums = {name: 0.0 for name in tasks}
     task_loss_counts = {name: 0 for name in tasks}
     for data in loader:
-        logits, outputs = model(data["image"].to(device))
-        loss, _, raw_terms = _combined_loss(
-            data, logits, outputs, tasks, lambdas, device, num_classes,
-            seg_criterion, cls_criterion, inversely_weighted,
-        )
+        with precision.autocast():
+            logits, outputs = model(precision.move(data["image"]))
+            loss, _, raw_terms = _combined_loss(
+                data, logits, outputs, tasks, lambdas, device, num_classes,
+                seg_criterion, cls_criterion, inversely_weighted,
+            )
+        precision.ensure_finite(loss, "federated multitask validation")
         total_loss += loss.item()
         n_batches += 1
         for name, term in raw_terms.items():
@@ -475,14 +489,14 @@ def _evaluate_multitask(model, loader, tasks, lambdas, device, num_classes,
         if "seg" in tasks:
             keep = _supervised(data, "seg", device, int(data["image"].shape[0]))
             if bool(keep.any()):
-                masks = data["mask"].to(device)[keep]
+                masks = move_to_device(data["mask"], device)[keep]
                 seg = outputs[-1] if isinstance(outputs, list) else outputs
                 dice_sum += float(dice_score_from_tensor(masks, torch.sigmoid(seg[keep]) > 0.5))
                 dice_batches += 1
         if "cls" in tasks:
             keep = _supervised(data, "cls", device, int(data["image"].shape[0]))
             if bool(keep.any()):
-                label = _prep_label(data["label"].to(device)[keep], num_classes)
+                label = _prep_label(move_to_device(data["label"], device)[keep], num_classes)
                 pl = _avg_logits(logits)[keep]
                 if num_classes > 2:
                     gt.extend(torch.argmax(label, dim=1).detach().cpu().tolist())

@@ -317,7 +317,7 @@ def load_segmentation_experiment_artefacts(config_model, config_opt, config_loss
     model = init_segmentation_model(architecture=config_model['architecture'],
                                     sequences=config_model['sequences'] + n_augments,
                                     width=config_model['width'], deep_supervision=config_model['deep_supervision'],
-                                    save_folder=Path(f'./{run_path}/'))
+                                    save_folder=Path(run_path))
     optimizer = init_optimizer(model=model, optimizer=config_opt['opt'], learning_rate=config_opt['lr'])
     criterion = init_criterion_segmentation(loss_function=config_loss['function'])
     scheduler = init_lr_scheduler(optimizer=optimizer, scheduler=config_opt['scheduler'], t_max=int(config_opt['t_max']),

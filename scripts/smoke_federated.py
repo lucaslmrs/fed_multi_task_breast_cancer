@@ -162,12 +162,19 @@ def main():
                 "local_epochs": 1,
                 "standalone": setup == "standalone",
                 "device": "cpu",
-                "ray_num_cpus": 1,
-                "client_resources": {"num_cpus": 1, "num_gpus": 0.0},
                 "max_samples_per_split": args.samples,
                 "max_clients_per_dataset_task": 1,
                 "max_folds": 1,
             })
+            arm_config["training"]["precision"] = "fp32"
+            arm_config.setdefault("runtime", {}).setdefault("federated", {}).update({
+                "ray_num_cpus": 1,
+                "client_resources": {"num_cpus": 1, "num_gpus": 0.0},
+            })
+            arm_config["runtime"]["telemetry"] = {
+                "enabled": False,
+                "gpu_interval_seconds": 1.0,
+            }
             local_training = arm_config["federated"].setdefault("local_training", {})
             if local_training.get("mode") == "steps":
                 local_training["steps_per_round"] = 1

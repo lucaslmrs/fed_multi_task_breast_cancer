@@ -287,6 +287,7 @@ def build_client_loader(
     steps_per_round: int = 10,
     sampling_seed: int = 0,
     tasks: Optional[Sequence[str]] = None,
+    loader_options: Optional[dict] = None,
 ) -> DataLoader:
     """Build the DataLoader for a single client/split.
 
@@ -351,6 +352,7 @@ def build_client_loader(
         f" (smoke cap={max_samples})" if max_samples is not None else "",
     )
 
+    loader_options = dict(loader_options or {})
     if is_train and local_training_mode == "steps" and len(client_dataset) > 0:
         loader = DataLoader(
             client_dataset,
@@ -360,6 +362,7 @@ def build_client_loader(
                 steps_per_round=steps_per_round,
                 seed=sampling_seed,
             ),
+            **loader_options,
         )
     else:
         loader = DataLoader(
@@ -369,6 +372,7 @@ def build_client_loader(
             # zero batches, which lets the caller issue the domain-specific validation message.
             shuffle=is_train and len(client_dataset) > 0,
             drop_last=False,
+            **loader_options,
         )
 
     # Explicit loader metadata lets clients report raw ownership, effective oversampled size and
