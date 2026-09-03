@@ -106,3 +106,7 @@ mlruns/
 .coverage
 .pytest_cache/
 htmlcov/
+
+
+*.pdf
+*.html
