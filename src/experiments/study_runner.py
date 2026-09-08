@@ -9,7 +9,7 @@ Examples::
 
     python -m src.experiments.study_runner --dry-run
     python -m src.experiments.study_runner --smoke --seed-profile operational
-    python -m src.experiments.study_runner --arms primary local_steps_ce
+    python -m src.experiments.study_runner --arms primary local_only
     python -m src.experiments.study_runner --seed-profile final
 """
 
@@ -29,7 +29,7 @@ import pandas as pd
 import yaml
 
 
-DEFAULT_MANIFEST = "studies/multi_dataset_balance_v1.yaml"
+DEFAULT_MANIFEST = "studies/example_multi_dataset.yaml"
 SUPPORTED_SCHEMA_VERSION = 1
 SETUPS = {"federated", "standalone"}
 
@@ -54,7 +54,9 @@ _PARTITION_DATASET_FIELDS = {
     "fold_strategy",
     "cls_source_split",
     "seg_exclude_classes",
+    "client_topology",
 }
+DEFAULT_PARTITION_VARIANT = "base"
 
 
 def _utc_now() -> str:
@@ -85,7 +87,17 @@ def _flatten_paths(value: Any, prefix: str = "") -> Iterable[str]:
             yield path
 
 
-def _validate_arm_overrides(overrides: dict, arm_id: str) -> None:
+def _validate_arm_overrides(
+    overrides: dict, arm_id: str, partition_variant: str | None = None
+) -> None:
+    """Reject partition-defining overrides unless the arm declares its own partition variant.
+
+    An arm that changes the client topology or the roster necessarily needs its own partition, so
+    it opts in explicitly with ``partition_variant``. Every other arm keeps the original guard:
+    silently diverging partitions would break the pairing the whole comparison rests on.
+    """
+    if partition_variant is not None:
+        return
     for path in _flatten_paths(overrides):
         if path in _PARTITION_EXACT_PATHS or any(
             path.startswith(exact + ".") for exact in _PARTITION_EXACT_PATHS
@@ -136,7 +148,10 @@ def load_manifest(path: str | Path) -> dict:
             raise ValueError(f"Study arm is missing fields: {sorted(missing)}")
         if arm["setup"] not in SETUPS:
             raise ValueError(f"Arm '{arm['arm_id']}' has unsupported setup '{arm['setup']}'")
-        _validate_arm_overrides(arm.get("overrides", {}), arm["arm_id"])
+        variant = arm.get("partition_variant")
+        if variant is not None and not str(variant).strip():
+            raise ValueError(f"Arm '{arm['arm_id']}' has an empty partition_variant")
+        _validate_arm_overrides(arm.get("overrides", {}), arm["arm_id"], variant)
         arm_ids.append(str(arm["arm_id"]))
     if len(arm_ids) != len(set(arm_ids)):
         raise ValueError("Study arm_id values must be unique")
@@ -161,11 +176,35 @@ def _project_path(value: str | Path, manifest: dict, *, must_exist: bool = False
     return resolved
 
 
-def _format_path(template: str, study_id: str, seed: int | None = None) -> str:
+def _format_path(
+    template: str, study_id: str, seed: int | None = None, variant: str | None = None
+) -> str:
     values = {"study_id": study_id}
     if seed is not None:
         values["seed"] = seed
+    if variant is not None:
+        values["variant"] = variant
     return template.format(**values)
+
+
+def _arm_partition_variant(arm: dict) -> str:
+    return str(arm.get("partition_variant") or DEFAULT_PARTITION_VARIANT)
+
+
+def _partition_path_for(manifest: dict, study_id: str, seed: int, variant: str) -> Path:
+    """Resolve the master partition of one ``(seed, partition_variant)`` pair.
+
+    The default variant keeps the historical path byte-identical -- the completed arms record it
+    inside their resolved config, and their config hash is what marks them reusable. A non-default
+    variant is nested one directory deeper instead of changing the template, so adding a topology
+    can never invalidate work that is already on disk.
+    """
+    base = _project_path(
+        _format_path(manifest["partition_template"], study_id, seed), manifest
+    )
+    if variant == DEFAULT_PARTITION_VARIANT:
+        return base
+    return base.parent / variant / base.name
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -221,6 +260,9 @@ def _partition_signature(config: dict) -> dict:
 def _config_signature(config: dict) -> dict:
     """Hash only effective settings; holdout size is inert for CV with two or more folds."""
     signature = copy.deepcopy(config)
+    signature.pop("runtime", None)
+    # Curve settings are observational and must not invalidate completed scientific arms.
+    signature.get("federated", {}).pop("training_telemetry", None)
     if signature.get("training", {}).get("CV", 0) > 1:
         signature["training"].pop("holdout_test_size", None)
     return signature
@@ -270,7 +312,8 @@ def resolve_arm_config(
     *,
     smoke: bool = False,
 ) -> dict:
-    config = _deep_merge(base, arm.get("overrides", {}))
+    config = _deep_merge(base, manifest.get("config_overrides", {}))
+    config = _deep_merge(config, arm.get("overrides", {}))
     config["training"]["seed"] = int(seed)
     config["federated"]["partition_file"] = str(partition_path)
     config["federated"]["standalone"] = arm["setup"] == "standalone"
@@ -286,13 +329,22 @@ def resolve_arm_config(
             {
                 "rounds": 2,
                 "device": "cpu",
-                "ray_num_cpus": 1,
-                "client_resources": {"num_cpus": 1, "num_gpus": 0.0},
                 "max_samples_per_split": 2,
                 "max_clients_per_dataset_task": 1,
                 "max_folds": 1,
             }
         )
+        config["training"]["precision"] = "fp32"
+        config.setdefault("runtime", {}).setdefault("federated", {}).update(
+            {
+                "ray_num_cpus": 1,
+                "client_resources": {"num_cpus": 1, "num_gpus": 0.0},
+            }
+        )
+        config["runtime"]["telemetry"] = {
+            "enabled": False,
+            "gpu_interval_seconds": 1.0,
+        }
         local_training = config["federated"].setdefault("local_training", {})
         if local_training.get("mode") == "steps":
             local_training["steps_per_round"] = 1
@@ -316,10 +368,9 @@ def build_execution_plan(
         output_root = output_root / "smoke"
     rows = []
     for seed in seeds:
-        partition_path = _project_path(
-            _format_path(manifest["partition_template"], study_id, seed), manifest
-        )
         for arm in arms:
+            variant = _arm_partition_variant(arm)
+            partition_path = _partition_path_for(manifest, study_id, seed, variant)
             config = resolve_arm_config(
                 base, manifest, arm, seed, partition_path, smoke=smoke
             )
@@ -334,6 +385,7 @@ def build_execution_plan(
                     "method_id": arm["method_id"],
                     "seed": int(seed),
                     "setup": arm["setup"],
+                    "partition_variant": variant,
                     "base_config": str(base_path),
                     "resolved_config": str(config_path),
                     "partition_path": str(partition_path),
@@ -411,6 +463,7 @@ def _ensure_partition(
         {
             "study_id": representative["study_id"],
             "seed": int(representative["seed"]),
+            "partition_variant": str(representative.get("partition_variant", "base")),
             "created_at_utc": _utc_now(),
             "partition_signature": signature,
             "partition_signature_sha256": signature_hash,
@@ -548,8 +601,17 @@ def execute_study(
         return output_root
 
     failures = []
-    for seed in selected_seeds:
-        seed_rows = [row for row in rows if row["seed"] == seed]
+    # One partition per (seed, partition_variant): arms sharing a variant stay exactly paired,
+    # while an arm that changes the client topology gets its own frozen master.
+    partition_groups = list(dict.fromkeys(
+        (row["seed"], row["partition_variant"]) for row in rows
+        if row["seed"] in set(selected_seeds)
+    ))
+    for seed, variant in partition_groups:
+        seed_rows = [
+            row for row in rows
+            if row["seed"] == seed and row["partition_variant"] == variant
+        ]
         partition_sha256 = ""
         if not analyze_only:
             try:
@@ -563,7 +625,7 @@ def execute_study(
                 _save_run_index(rows, output_root)
                 if not continue_on_error:
                     raise
-                failures.append(f"seed={seed} partition: {exc}")
+                failures.append(f"seed={seed} variant={variant} partition: {exc}")
                 continue
 
         for row in seed_rows:

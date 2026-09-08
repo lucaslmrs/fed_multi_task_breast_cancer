@@ -10,6 +10,7 @@ matplotlib==3.6.2
 seaborn==0.12.2
 openpyxl==3.0.9
 flwr[simulation]==1.30.0
+nvidia-ml-py==13.610.43
 # NOTE: tensorboard was removed -- it was an unused (dead) import and its pinned
 # 2.10.0 needs protobuf<3.20, which conflicts with flwr's protobuf>=4 requirement.
 # numpy must stay <2 (pandas 1.5.0 / monai are not ABI-compatible with numpy 2.x).

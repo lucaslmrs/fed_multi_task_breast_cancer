@@ -30,6 +30,15 @@ def load_config_file(path: str):
     return config['model'], config['optimizer'], config['loss'], config['training'], config['data']
 
 
+def load_config(path: str) -> dict:
+    """Load the complete YAML configuration, including execution-only runtime settings."""
+    with open(path, encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    if not isinstance(config, dict):
+        raise ValueError(f"Configuration '{path}' must contain a mapping")
+    return config
+
+
 def save_args(args: argparse.Namespace):
     """
     This function saves parsed arguments into config file.

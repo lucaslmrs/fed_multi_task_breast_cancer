@@ -22,11 +22,12 @@ loss:
 training:
   debug: False
   seed: 1993
+  precision: bf16       # fp32 | bf16; BF16 requires a compatible CUDA GPU
   epochs: 200
   max_patience: 50
   CV: 1
   holdout_test_size: 0.30  # used only when CV=1; remaining 70% is the train+validation pool
-  cuda_benchmark: False
+  cuda_benchmark: True
   alpha: 0.85
   threshold_postprocessing: 0
   overlap_seg_based_on_class: True
@@ -43,7 +44,10 @@ data:
   image_size: 128          # side of the square the preprocessing resizes to; defines the variant
   batch_size: 32
   train_size: 0.8
-  classes: [benign, malignant, normal]
+  classes:
+    - benign     # 222 images
+    - malignant  # 164 images
+    - normal     # 64 images
   seg_exclude_classes: [normal]  # no useful mask -> dropped from the segmentation task
   classes_weighted: null
   use_duplicated_to_train: False
@@ -61,26 +65,64 @@ data:
     vertical_flip: .5
     rotation: 1.0
 
+# Execution-only controls. These are persisted for audit but excluded from scientific hashes.
+runtime:
+  inference_batch_size: 32
+  dataloader:
+    num_workers: 4
+    federated_num_workers: 0
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2
+  federated:
+    ray_num_cpus: 8
+    client_resources:
+      num_cpus: 2
+      num_gpus: 0.5       # two concurrent clients share the single GPU
+  telemetry:
+    enabled: true
+    gpu_interval_seconds: 1.0
+
 # Registry consumed by the multi-dataset federated pipeline.  The legacy ``data`` block above
 # remains the source of truth for preprocessing, EDA and single-dataset training.
 datasets:
   Curated_BUSI:
     variant: processed_128
     channels: 1
-    classes: [benign, malignant, normal]
+    classes:
+      - benign     # 222 images
+      - malignant  # 164 images
+      - normal     # 64 images
     seg_exclude_classes: [normal]
     fold_strategy: stratified       # one image-level fold shared by seg and cls
+    # single_task: one task per client (a task's images are re-partitioned independently, so the
+    # same image ends up in a seg client AND in a different cls client).
+    # multi_task: one client owns every task over the SAME images; requires fold_strategy
+    # stratified, and n_clients must declare the same count for every task.
+    client_topology: multi_task
     class_weighting: none
     classification_criterion: CE
     oversampling:
       seg: False
-      cls: True
+      cls: False  # multi-task clients cannot oversample cls without duplicating masks
   ISIC_2018:
     variant: processed_128
     channels: 3
-    classes: [AKIEC, BCC, BKL, DF, MEL, NV, VASC]
+    # Task 1 segmentation pool: 3,694 images with masks and no class labels.
+    # Task 3 classification pool: 11,720 labeled images.
+    classes:
+      - AKIEC  # 378 images
+      - BCC    # 622 images
+      - BKL    # 1,338 images
+      - DF     # 160 images
+      - MEL    # 1,305 images
+      - NV     # 7,737 images
+      - VASC   # 180 images
     seg_exclude_classes: []
     fold_strategy: per_task         # KFold for seg; grouped/stratified folds for cls
+    # ISIC's two tasks are disjoint image sets (zero ID overlap), so no image carries both a mask
+    # and a label and a multi-task client is structurally impossible here.
+    client_topology: single_task
     cls_source_split: train         # only this official split has complete lesion_id metadata
     class_weighting: balanced_fold
     classification_criterion: CE
@@ -94,16 +136,20 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
   share_stem: False           # heterogeneous 1ch/3ch stems stay personalized
   n_clients:
     Curated_BUSI: {seg: 2, cls: 2}
-    ISIC_2018: {seg: 2, cls: 2}
-  partition_file: data/federated_multi/federated_mapping_holdout_70_30.csv
+    ISIC_2018: {seg: 4, cls: 4}
+  partition_file: data/federated_multi/busi_mt2_isic_st8/federated_mapping_holdout_70_30.csv
   n_clients_seg: 2
   n_clients_cls: 2
-  rounds: 50
+  rounds: 200
   local_epochs: 2
   local_training:
     mode: steps             # steps | epochs; steps controls equal local optimizer work
     steps_per_round: 10     # public default; rotating sampler avoids a permanent subset
     local_epochs: 2         # used only when mode=epochs
+  training_telemetry:       # observational only; excluded from scientific run signatures
+    enabled: true
+    granularity: epoch_and_round  # epochs: train+val per epoch; steps: train per step, val per round
+    formats: [csv, html, png]
   dirichlet_alpha: 100.0   # high alpha ~ IID; lower it to simulate non-IID
   val_size: 0.2            # carved from each client's train pool for early stopping
   patience: 10             # reservado; avaliação final usa a última rodada em ambos os braços
@@ -122,13 +168,8 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
   oversampling:            # per-task override of data.oversampling
     seg: False
     cls: True
-  standalone: True        # True => local-only baseline (clients ignore the federated encoder)
+  standalone: False        # True => local-only baseline (clients ignore the federated encoder)
   device: cuda             # auto | cpu | cuda
-  ray_num_cpus: 16          # caps the Ray cluster -> bounds how many clients run concurrently
-  client_resources:        # resources reserved per client (num_cpus high => fewer in parallel)
-    num_cpus: 2
-    num_gpus: 1.0          # >0 lets the client see the GPU. 1.0 => 1 client/GPU (sequential,
-                           # safe). For 2 concurrent GPU clients use 0.5 AND raise ray_num_cpus.
 
 # python -m src.dataset.federated_partition                     # Gera csv mestre caso haja mudanças de configurações
 # python -m src.training_federated                              # federated (standalone: False)

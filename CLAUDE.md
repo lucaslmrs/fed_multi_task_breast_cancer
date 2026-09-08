@@ -38,6 +38,8 @@ Violating any of these silently invalidates frozen artifacts or already-publishe
 
 ## Claude-specific notes
 
-- Skills are mirrored into `.claude/skills/` from `.agents/skills/`. Never edit the mirror —
-  edit the canonical copy and run `python -m scripts.sync_agent_assets`.
-- The same skills are mirrored into `.codex/skills/` for Codex. Both mirrors are generated.
+- Skills have one canonical copy in `.agents/skills/`. `.claude/skills/` contains relative links
+  used for Claude Code discovery; never replace their targets with local copies.
+- Codex discovers the same canonical directories through links in `.codex/skills/`.
+- After adding, renaming, or removing a skill, run `python -m scripts.sync_agent_assets`; use
+  `python -m scripts.sync_agent_assets --check` to validate both discovery trees.

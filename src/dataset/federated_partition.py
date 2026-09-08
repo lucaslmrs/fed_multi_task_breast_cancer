@@ -380,6 +380,68 @@ def _build_shared_pool_dataset(
     return pd.concat(rows, ignore_index=True)
 
 
+def _build_multitask_dataset(
+    mapping: pd.DataFrame,
+    dataset: str,
+    dataset_cfg: dict,
+    n_clients: dict,
+    n_folds: int,
+    seed: int,
+    dirichlet_alpha: float,
+    val_size: float,
+    holdout_test_size: float,
+) -> pd.DataFrame:
+    """Build a topology in which one client owns SEVERAL tasks over the SAME images.
+
+    The fold pool is partitioned exactly ONCE, so every image belongs to a single client.  That is
+    the whole point of the topology: the single-task layout allocates each task independently, so
+    the same image ends up owned by a segmentation client and by a *different* classification
+    client -- duplicating one silo's data across two silos.
+
+    The master schema is unchanged: each client emits one row per ``(image, task)`` it is
+    supervised for, and ``seg_exclude_classes`` simply drops those images from the ``seg`` rows.
+    """
+    counts = {n_clients[task] for task in TASKS}
+    if len(counts) != 1:
+        raise ValueError(
+            f"client_topology 'multi_task' needs one client count for '{dataset}', but "
+            f"n_clients is {dict(n_clients)}; set the same value for every task"
+        )
+    n_multitask_clients = counts.pop()
+    _validate_partition_args(n_multitask_clients, dirichlet_alpha)
+    excluded = dataset_cfg.get("seg_exclude_classes", [])
+
+    rows = []
+    outer_splits = outer_split_indices(
+        mapping,
+        n_splits=n_folds,
+        seed=seed,
+        strategy="stratified",
+        holdout_test_size=holdout_test_size,
+        label_col=CLASS_COL,
+    )
+    for fold, (train_ix, test_ix) in enumerate(outer_splits):
+        train_pool, test_pool = mapping.iloc[train_ix], mapping.iloc[test_ix]
+        fold_seed = seed + fold
+        client_train = dirichlet_partition(
+            train_pool.reset_index(drop=True), n_multitask_clients, dirichlet_alpha, fold_seed
+        )
+        client_test = stratified_uniform_partition(
+            test_pool.reset_index(drop=True), n_multitask_clients, fold_seed
+        )
+        for client in range(n_multitask_clients):
+            client_id = f"{dataset}_mt_{client}"
+            train_df, val_df = carve_validation(client_train[client], val_size, fold_seed)
+            for task in TASKS:
+                for split, frame in (
+                    ("train", train_df), ("val", val_df), ("test", client_test[client]),
+                ):
+                    if task == "seg":
+                        frame = frame[~frame[CLASS_COL].isin(excluded)]
+                    rows.append(_tag(frame, fold, client_id, task, split, dataset))
+    return pd.concat(rows, ignore_index=True)
+
+
 def _build_per_task_dataset(
     mapping: pd.DataFrame,
     dataset: str,
@@ -497,6 +559,23 @@ def _validate_multi_master(master: pd.DataFrame) -> None:
     if duplicate_image.any():
         raise AssertionError("An image was assigned more than once within a dataset/fold/task")
 
+    # A client owning more than one task marks the multi-task topology, whose defining property is
+    # that an image lives in exactly one silo. The single-task topology deliberately allows an
+    # image in a seg client and in a different cls client, so the check is scoped, not global.
+    tasks_per_client = master.groupby(["dataset", "client_id"])["task"].nunique()
+    multitask_datasets = sorted(
+        {dataset for (dataset, _), n_tasks in tasks_per_client.items() if n_tasks > 1}
+    )
+    for dataset in multitask_datasets:
+        rows = master[master["dataset"] == dataset]
+        ownership = rows.groupby(["fold", "img_path"])["client_id"].nunique()
+        shared = int((ownership > 1).sum())
+        if shared:
+            raise AssertionError(
+                f"{shared} images of '{dataset}' belong to more than one client within a fold; "
+                "a multi-task topology must not duplicate an image across silos"
+            )
+
     if GROUP_COL in master.columns:
         grouped = master[
             (master["task"] == "cls") & master[GROUP_COL].notna()
@@ -560,7 +639,21 @@ def build_multi_dataset_partition(
             holdout_test_size=split_test_size,
         )
         strategy = dataset_cfg.get("fold_strategy", "stratified")
-        if strategy == "stratified":
+        topology = str(dataset_cfg.get("client_topology", "single_task")).lower()
+        if topology not in {"single_task", "multi_task"}:
+            raise ValueError(
+                f"datasets.{dataset}.client_topology must be 'single_task' or 'multi_task', "
+                f"got {topology!r}"
+            )
+        if topology == "multi_task":
+            if strategy != "stratified":
+                raise ValueError(
+                    f"Dataset '{dataset}' uses fold_strategy '{strategy}', whose tasks are "
+                    "disjoint image sets; a multi-task client requires images supervised for "
+                    "every task, so only 'stratified' can host client_topology 'multi_task'"
+                )
+            frames.append(_build_multitask_dataset(**common))
+        elif strategy == "stratified":
             frames.append(_build_shared_pool_dataset(**common))
         elif strategy == "per_task":
             frames.append(_build_per_task_dataset(**common))

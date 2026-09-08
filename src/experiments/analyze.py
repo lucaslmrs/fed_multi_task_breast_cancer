@@ -37,6 +37,15 @@ from src.dataset.splitting import CROSS_VALIDATION, HOLDOUT, UNKNOWN_SINGLE_SPLI
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402  (must follow the Agg backend selection)
+from matplotlib.patches import Patch  # noqa: E402
+
+from src.utils.plot_style import (  # noqa: E402
+    ACCENT_RED,
+    EMBED_DPI,
+    setup_color,
+    style_axis,
+    with_plot_style,
+)
 
 # --- Edit these to point at each setup's run directory before running (CLI flags override them) ---
 FED = "runs/20260622_192540_FEDERATED_MTnnUNet_2seg_2cls"
@@ -569,11 +578,14 @@ def pooled_auc(pred_paths):
 
 def _fig_to_b64(fig):
     buffer = io.BytesIO()
-    fig.savefig(buffer, format="png", dpi=110, bbox_inches="tight")
+    fig.savefig(
+        buffer, format="png", dpi=EMBED_DPI, bbox_inches="tight", facecolor="white"
+    )
     plt.close(fig)
     return base64.b64encode(buffer.getvalue()).decode()
 
 
+@with_plot_style
 def _metric_boxplot(df, task, metrics, dataset=None, scheme=None):
     """Plot metric distributions within one explicit evaluation design."""
     subset = df[df.task == task]
@@ -586,10 +598,12 @@ def _metric_boxplot(df, task, metrics, dataset=None, scheme=None):
     subset["series"] = subset["method_id"].astype(str) + " (" + subset["setup"] + ")"
     series = sorted(subset.series.unique())
     width = 0.8 / max(len(series), 1)
-    colors = plt.cm.Set2.colors
-    fig, axis = plt.subplots(figsize=(8, 4))
+    fig, axis = plt.subplots(figsize=(8, 4), constrained_layout=True)
+    legend_handles = []
     for setup_index, label in enumerate(series):
         setup_rows = subset[subset.series == label]
+        color = setup_color(label, setup_index)
+        hatch = ("", "//", "xx", "..")[setup_index % 4]
         for metric_index, metric in enumerate(metrics):
             values = pd.to_numeric(setup_rows[metric], errors="coerce").dropna().to_numpy()
             if len(values) == 0:
@@ -602,12 +616,13 @@ def _metric_boxplot(df, task, metrics, dataset=None, scheme=None):
                 patch_artist=True,
                 manage_ticks=False,
             )
-            boxes["boxes"][0].set(
-                facecolor=colors[setup_index % len(colors)], alpha=0.85
-            )
-        axis.plot(
-            [], [], color=colors[setup_index % len(colors)], lw=6, label=label
-        )
+            boxes["boxes"][0].set(facecolor=color, alpha=0.82, hatch=hatch)
+            boxes["medians"][0].set(color="#584A47", linewidth=1.5)
+            for whisker in boxes["whiskers"]:
+                whisker.set(color="#6F6357")
+            for cap in boxes["caps"]:
+                cap.set(color="#6F6357")
+        legend_handles.append(Patch(facecolor=color, hatch=hatch, alpha=0.82, label=label))
     axis.set_xticks(range(len(metrics)))
     axis.set_xticklabels(metrics, rotation=20, ha="right")
     axis.set_ylim(0, 1)
@@ -616,37 +631,49 @@ def _metric_boxplot(df, task, metrics, dataset=None, scheme=None):
     if scheme == UNKNOWN_SINGLE_SPLIT:
         unit = "clients in an unknown single split"
     axis.set_title(f"{prefix}{task} - distribution across {unit}")
+    style_axis(axis)
     if series:
-        axis.legend(fontsize=8)
+        axis.legend(handles=legend_handles, fontsize=8)
     return _fig_to_b64(fig)
 
 
+@with_plot_style
 def _delta_bars(per_client, task, dataset=None):
     """Plot a paired delta for every matching client observation."""
     subset = per_client[per_client.task == task].copy()
     if dataset is not None:
         subset = subset[subset.dataset == dataset]
     subset["label"] = subset["client_id"].astype(str) + " f" + subset["fold"].astype(str)
-    colors = ["#2a9d8f" if delta >= 0 else "#e76f51" for delta in subset["delta"]]
-    fig, axis = plt.subplots(figsize=(max(6, len(subset) * 0.5), 4))
-    axis.bar(subset["label"], subset["delta"], color=colors)
-    axis.axhline(0, color="black", lw=0.8)
+    colors = ["#08519C" if delta >= 0 else ACCENT_RED for delta in subset["delta"]]
+    hatches = ["" if delta >= 0 else "//" for delta in subset["delta"]]
+    fig, axis = plt.subplots(
+        figsize=(max(6, len(subset) * 0.5), 4), constrained_layout=True
+    )
+    bars = axis.bar(subset["label"], subset["delta"], color=colors)
+    for bar, hatch in zip(bars, hatches):
+        bar.set_hatch(hatch)
+    axis.axhline(0, color="#584A47", lw=0.9)
     axis.tick_params(axis="x", rotation=60)
     prefix = f"{dataset} / " if dataset is not None else ""
     comparison = subset["comparison_id"].iloc[0] if not subset.empty else "comparison"
     scheme = subset["evaluation_scheme"].iloc[0] if not subset.empty else UNKNOWN_SINGLE_SPLIT
     unit = "client holdout" if scheme == HOLDOUT else "client-fold"
     axis.set_title(f"{prefix}{task} - {comparison} ({PRIMARY[task]}) per {unit}")
+    axis.set_ylabel(f"Δ {PRIMARY[task]}")
+    style_axis(axis)
     return _fig_to_b64(fig)
 
 
+@with_plot_style
 def _auc_bars(pooled, dataset=None):
     if dataset is not None:
         pooled = pooled[pooled.dataset == dataset]
     overall = pooled[pooled.fold == "all"]
-    fig, axis = plt.subplots(figsize=(5, 4))
+    fig, axis = plt.subplots(figsize=(5, 4), constrained_layout=True)
     labels = overall["method_id"].astype(str) + " (" + overall["setup"] + ")"
-    axis.bar(labels, overall["auc_pooled"], color="#264653")
+    colors = [setup_color(label, index) for index, label in enumerate(labels)]
+    bars = axis.bar(labels, overall["auc_pooled"], color=colors)
+    axis.bar_label(bars, fmt="%.3f", padding=3, color="#584A47", fontsize=8)
     axis.tick_params(axis="x", rotation=55)
     axis.set_ylim(0, 1)
     prefix = f"{dataset} - " if dataset is not None else ""
@@ -654,10 +681,12 @@ def _auc_bars(pooled, dataset=None):
     scope = next(iter(scopes)) if len(scopes) == 1 else "combined_test"
     label = "holdout test" if scope == "holdout_test" else "all folds"
     axis.set_title(f"{prefix}pooled OvR-macro AUC ({label})")
+    axis.set_ylabel("OvR-macro AUC")
+    style_axis(axis)
     return _fig_to_b64(fig)
 
 
-def build_html(df, summary, deltas, per_client, pooled, out):
+def build_html(df, summary, deltas, per_client, pooled, out, training_dashboard=None):
     df = _with_study_metadata(df)
     charts = []
     dataset_tasks = (
@@ -732,15 +761,23 @@ def build_html(df, summary, deltas, per_client, pooled, out):
         + summary.round(4).to_html(index=False)
     )
 
+    training_section = ""
+    if training_dashboard is not None:
+        training_section = (
+            "<h2>Training dynamics</h2><p>Loss and performance curves remain separated by "
+            "dataset and task. <a href='training_dashboard.html'>Open training dashboards</a>.</p>"
+        )
+
     html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Comparison report</title><style>
-body{{font-family:system-ui,Arial,sans-serif;margin:2rem auto;max-width:1000px;color:#222}}
-h1{{border-bottom:2px solid #264653}} h2{{margin-top:2rem;color:#264653}}
-img{{max-width:100%;border:1px solid #ddd;border-radius:6px}}
-table{{border-collapse:collapse;font-size:.82rem}} th,td{{border:1px solid #ccc;padding:4px 8px}}
-th{{background:#f4f4f4}}</style></head><body>
+body{{font-family:system-ui,Arial,sans-serif;margin:2rem auto;max-width:1000px;color:#584A47;background:#fff}}
+h1{{border-bottom:3px solid #08519C}} h2{{margin-top:2rem;color:#08519C}}
+img{{max-width:100%;border:1px solid #CABD91;border-radius:6px;background:#fff}}
+table{{border-collapse:collapse;font-size:.82rem}} th,td{{border:1px solid #CABD91;padding:4px 8px}}
+th{{background:#EFF3FF;color:#584A47}} a{{color:#08519C}}
+strong{{color:#9F2B2C}}</style></head><body>
 <h1>Federated experiment comparison</h1>
-{figures}{tables}
+{figures}{tables}{training_section}
 </body></html>"""
     (out / "report.html").write_text(html, encoding="utf-8")
 
@@ -880,7 +917,13 @@ def run(results, preds, out, manifest=None):
     if not class_balance.empty:
         class_balance.to_csv(out / "class_balance_audit.csv", index=False)
 
-    build_html(df, summary, deltas, per_client, pooled, out)
+    from src.experiments.training_curves import build_study_artifacts
+
+    training_dashboard = build_study_artifacts(results, out)
+    build_html(
+        df, summary, deltas, per_client, pooled, out,
+        training_dashboard=training_dashboard,
+    )
 
     logging.info(
         "\nSummary (mean per dataset x task x method):\n%s",

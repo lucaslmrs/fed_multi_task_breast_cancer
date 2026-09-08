@@ -1,0 +1,116 @@
+schema_version: 1
+study_id: example_multi_dataset
+base_config: src/config.yaml
+
+# Estudo de exemplo. Ele declara o protocolo científico aqui em vez de herdá-lo de
+# `src/config.yaml`: o config base é um padrão de trabalho e muda entre experimentos, então um
+# manifesto que lê um campo definidor de partição de lá troca silenciosamente o significado dos seus
+# braços na próxima edição. Tudo abaixo replica o protocolo atual do config base de propósito; se o
+# config base mudar, este bloco continua valendo para o estudo.
+#
+# Campos definidores de partição (`training.CV`, `holdout_test_size`, `datasets.*.client_topology`,
+# `federated.n_clients`, ...) só podem ser sobrescritos por um braço que declare `partition_variant`;
+# os braços base compartilham uma única partição congelada por semente.
+config_overrides:
+  training:
+    CV: 1                     # holdout determinístico; 70% treino+validação, 30% teste
+    holdout_test_size: 0.30
+    precision: bf16           # exige GPU CUDA com BF16; o smoke força fp32 na CPU
+    cuda_benchmark: true
+  datasets:
+    Curated_BUSI:
+      # Topologia principal: um cliente BUSI possui segmentação E classificação sobre as mesmas
+      # imagens, então nenhuma imagem é duplicada entre silos.
+      client_topology: multi_task
+      classification_criterion: CE
+      class_weighting: balanced_fold
+      # Oversampling é recusado em clientes multitarefa (replicaria as máscaras das classes
+      # reforçadas); o rebalanceamento vem de `class_weighting`.
+      oversampling: {seg: false, cls: false}
+    ISIC_2018:
+      # Seg e cls do ISIC são conjuntos disjuntos de imagens: só a topologia single_task é possível.
+      client_topology: single_task
+      classification_criterion: CE
+      class_weighting: balanced_fold
+  federated:
+    rounds: 200
+    n_clients:
+      Curated_BUSI: {seg: 2, cls: 2}   # multi_task exige a mesma contagem em todas as tarefas
+      ISIC_2018: {seg: 4, cls: 4}
+    local_training: {mode: steps, steps_per_round: 10}
+    aggregation: {mode: hierarchical, client_weighting: uniform}
+
+seed_profiles:
+  operational: [1993]
+  final: [1993, 1994, 1995]
+default_seed_profile: operational
+
+output_root: runs/studies/{study_id}
+partition_template: data/federated_studies/{study_id}/seed_{seed}/federated_mapping.csv
+
+# Cada braço federado tem um par local-only com orçamento idêntico: é o piso da comparação.
+arms:
+  - arm_id: primary
+    method_id: primary
+    setup: federated
+    overrides: {}
+
+  - arm_id: local_only
+    method_id: local_only
+    setup: standalone
+    overrides: {}
+
+  # Ablação de agregação: FedAvg puro (flat, ponderado por amostras) contra a hierárquica uniforme.
+  - arm_id: ablation_flat
+    method_id: ablation_flat
+    setup: federated
+    overrides:
+      federated:
+        aggregation: {mode: flat, client_weighting: num_examples}
+
+  # --- Topologia de cliente -------------------------------------------------------------------
+  # Estes dois braços usam a topologia histórica single_task (cada cliente BUSI possui UMA tarefa;
+  # a mesma imagem acaba em um cliente seg e em um cliente cls diferente). Como isso muda a partição,
+  # eles declaram `partition_variant` e recebem um master próprio, um diretório abaixo do base.
+  # As fatias de teste diferem entre topologias, então `effect_client_topology` é uma comparação
+  # agregada por dataset/tarefa, não um delta pareado por cliente.
+  - arm_id: single_task_primary
+    method_id: single_task_primary
+    setup: federated
+    partition_variant: single_task
+    overrides:
+      datasets:
+        Curated_BUSI:
+          client_topology: single_task
+          # Clientes monotarefa podem oversamplear a classificação (120/148 linhas -> 371/453).
+          oversampling: {seg: false, cls: true}
+
+  - arm_id: single_task_local
+    method_id: single_task_local
+    setup: standalone
+    partition_variant: single_task
+    overrides:
+      datasets:
+        Curated_BUSI:
+          client_topology: single_task
+          oversampling: {seg: false, cls: true}
+
+comparisons:
+  - comparison_id: primary_vs_local
+    left: {method_id: primary, setup: federated}
+    right: {method_id: local_only, setup: standalone}
+    interpretation: transferência federada sob o protocolo principal (clientes multitarefa)
+  - comparison_id: effect_flat_aggregation
+    left: {method_id: primary, setup: federated}
+    right: {method_id: ablation_flat, setup: federated}
+    interpretation: agregação hierárquica uniforme menos flat ponderada por amostras
+  - comparison_id: single_task_vs_local
+    left: {method_id: single_task_primary, setup: federated}
+    right: {method_id: single_task_local, setup: standalone}
+    interpretation: transferência federada sob a topologia monotarefa
+  - comparison_id: effect_client_topology
+    left: {method_id: primary, setup: federated}
+    right: {method_id: single_task_primary, setup: federated}
+    interpretation: >-
+      clientes multitarefa menos monotarefa; as fatias de teste diferem entre topologias, então leia
+      como comparação agregada por dataset/tarefa, não como delta pareado por cliente

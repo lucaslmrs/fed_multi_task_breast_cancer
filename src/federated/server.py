@@ -12,6 +12,8 @@ import numpy as np
 from flwr.common import ndarrays_to_parameters, parameters_to_ndarrays
 from flwr.server.strategy import FedAvg
 
+TASKS = ("seg", "cls")
+
 
 class FedPerStrategy(FedAvg):
     def __init__(
@@ -20,6 +22,7 @@ class FedPerStrategy(FedAvg):
         dataset_weights=None,
         aggregation_mode="flat",
         client_weighting="num_examples",
+        shared_key_names=None,
         *args,
         **kwargs,
     ):
@@ -36,11 +39,22 @@ class FedPerStrategy(FedAvg):
         # separate from Flower's scalar History allows auditing every client's effective weight.
         self.aggregation_history = []
         # Kept as diagnostics for legacy callers. Final evaluation deliberately uses the common
-        # last-round global trunk, not the per-client local ``best.pt`` snapshots.
+        # last-round global trunk plus the latest durable personalized ``state.pt``.
         self.best_mean_val = float("inf")
         self.best_round = -1
         self.latest_parameters = None
         self.latest_round = 0
+        # Names of the shared tensors, used only to label the per-block gradient-conflict blocks.
+        self.shared_key_names = list(shared_key_names) if shared_key_names else None
+        # The trunk the server SENT this round. Cosines must be taken between client *deltas*;
+        # the returned trunks all start from this point, so cosines between trunks are ~1 and
+        # meaningless. Nothing else persists a client's post-fit trunk, so this is collected live.
+        self._sent_arrays = None
+
+    def configure_fit(self, server_round, parameters, client_manager):
+        # Round 1 configures from ``initial_parameters``; ``latest_parameters`` is still None then.
+        self._sent_arrays = parameters_to_ndarrays(parameters)
+        return super().configure_fit(server_round, parameters, client_manager)
 
     def aggregate_fit(self, server_round, results, failures):
         if failures and not self.accept_failures:
@@ -56,7 +70,9 @@ class FedPerStrategy(FedAvg):
         for _, fit_res in results:
             task = fit_res.metrics.get("task", "seg")
             dataset = fit_res.metrics.get("dataset", "default")
-            base_weight = self._base_weight(fit_res.num_examples, task, dataset)
+            base_weight = self._base_weight(
+                fit_res.num_examples, task, dataset, metrics=fit_res.metrics
+            )
             updates.append({
                 "dataset": dataset,
                 "task": task,
@@ -74,6 +90,9 @@ class FedPerStrategy(FedAvg):
             aggregated, final_weights = self._aggregate_flat(updates)
 
         telemetry = self._record_aggregation(server_round, "fit", updates, final_weights)
+        conflict = self._gradient_conflict(updates)
+        if conflict is not None:
+            telemetry["gradient_conflict"] = conflict
         summary = telemetry["group_participation"]
         logging.info(
             f"[round {server_round}] {self.aggregation_mode}/{self.client_weighting} "
@@ -84,20 +103,38 @@ class FedPerStrategy(FedAvg):
         self.latest_round = server_round
         return self.latest_parameters, self._participation_metrics(telemetry)
 
-    def _base_weight(self, num_examples, task, dataset):
+    def _base_weight(self, num_examples, task, dataset, metrics=None):
         if int(num_examples) <= 0:
             raise ValueError(
                 f"Client from dataset={dataset}, task={task} reported non-positive "
                 f"num_examples={num_examples}"
             )
         client_factor = float(num_examples) if self.client_weighting == "num_examples" else 1.0
-        base_weight = client_factor * float(self.task_weights.get(task, 1.0))
+        base_weight = client_factor * self._task_factor(num_examples, task, metrics)
         if base_weight <= 0:
             raise ValueError(
                 f"Non-positive aggregation weight for dataset={dataset}, task={task}: "
                 f"{base_weight}"
             )
         return base_weight
+
+    def _task_factor(self, num_examples, task, metrics):
+        """Task weighting generalised from one scalar to a per-task supervision mass.
+
+        ``sum_t task_weights[t] * mass_t / num_examples``. A single-task client reports its whole
+        slice under its own task, so the sum collapses to ``task_weights[task]`` and reproduces the
+        historical weights exactly. A client that predates this telemetry falls back to the scalar.
+        """
+        mass = {}
+        for name in TASKS:
+            value = (metrics or {}).get(f"task_mass_{name}")
+            if value is not None:
+                mass[name] = float(value)
+        if not mass or sum(mass.values()) <= 0:
+            return float(self.task_weights.get(task, 1.0))
+        weighted = sum(float(self.task_weights.get(name, 1.0)) * value
+                       for name, value in mass.items())
+        return weighted / float(num_examples)
 
     def _aggregate_flat(self, updates):
         # Dataset weights belong exclusively to the hierarchical mixing stage. With task weights
@@ -162,7 +199,9 @@ class FedPerStrategy(FedAvg):
                 "task": task,
                 "client_id": str(result.metrics.get("client_id", "?")),
                 "num_examples": int(result.num_examples),
-                "base_weight": self._base_weight(result.num_examples, task, dataset),
+                "base_weight": self._base_weight(
+                    result.num_examples, task, dataset, metrics=result.metrics
+                ),
                 "loss": float(result.loss),
                 "metrics": dict(result.metrics),
             })
@@ -211,6 +250,12 @@ class FedPerStrategy(FedAvg):
             "effective_num_examples",
             "optimizer_steps",
             "examples_processed",
+            # Per-task supervision mass and exercised batches: the audit trail for how a
+            # multi-task client earned its aggregation weight.
+            "task_mass_seg",
+            "task_mass_cls",
+            "task_batches_seg",
+            "task_batches_cls",
         )
         for record, weight in zip(records, weights):
             dataset = str(record["dataset"])
@@ -227,9 +272,18 @@ class FedPerStrategy(FedAvg):
                 "final_weight": float(weight),
             }
             metrics = record.get("metrics", {})
+            if "loss" in record:
+                client["val_loss"] = float(record["loss"])
             for key in optional_metrics:
                 if key in metrics:
                     client[key] = float(metrics[key])
+            # Preserve every scalar performance value returned by the client. Older histories
+            # remain readable because these keys are additive and optional.
+            for key, value in metrics.items():
+                if key.startswith(("train_", "val_")) and isinstance(
+                    value, (int, float, np.integer, np.floating)
+                ):
+                    client[key] = float(value)
             clients.append(client)
 
         telemetry = {
@@ -244,6 +298,54 @@ class FedPerStrategy(FedAvg):
         }
         self.aggregation_history.append(telemetry)
         return telemetry
+
+    def _gradient_conflict(self, updates):
+        """Pairwise cosine between client trunk DELTAS, per block and overall.
+
+        FedBone motivates this: aggregating updates from heterogeneous tasks skews the shared
+        trunk's direction. Measuring it is only possible here -- no artifact persists a client's
+        post-fit trunk, so the matrix cannot be recovered after the run.
+
+        The FULL matrix is stored rather than a seg-vs-cls mean, because only the matrix can later
+        separate conflict between tasks (BUSI-seg vs BUSI-cls) from conflict between domains
+        (BUSI-seg vs ISIC-seg).
+        """
+        sent = self._sent_arrays
+        if not sent or len(sent) != len(updates[0]["arrays"]):
+            return None
+
+        blocks = {}
+        if self.shared_key_names and len(self.shared_key_names) == len(sent):
+            for index, key in enumerate(self.shared_key_names):
+                blocks.setdefault(str(key).split(".")[0], []).append(index)
+        else:
+            blocks["shared"] = list(range(len(sent)))
+
+        n_clients = len(updates)
+        grams = {}
+        for block, indices in blocks.items():
+            gram = np.zeros((n_clients, n_clients), dtype=np.float64)
+            for index in indices:
+                # One tensor at a time: never materialise every client's full delta at once.
+                deltas = np.stack([
+                    (update["arrays"][index] - sent[index]).ravel().astype(np.float32)
+                    for update in updates
+                ])
+                gram += (deltas @ deltas.T).astype(np.float64)
+            grams[block] = gram
+
+        overall = np.zeros((n_clients, n_clients), dtype=np.float64)
+        for gram in grams.values():
+            overall += gram
+        grams["shared_total"] = overall
+
+        return {
+            "clients": [
+                f"{update['dataset']}/{update['task']}/{update['client_id']}"
+                for update in updates
+            ],
+            "cosine": {block: _cosine_from_gram(gram) for block, gram in grams.items()},
+        }
 
     @staticmethod
     def _participation_metrics(telemetry):
@@ -290,3 +392,18 @@ def _weighted_arrays(updates, weights):
         value = np.tensordot(weights, stacked, axes=(0, 0))
         aggregated.append(value.astype(layers[0].dtype, copy=False))
     return aggregated
+
+
+def _cosine_from_gram(gram):
+    """Cosine matrix from a Gram matrix, with NaN for clients whose delta is exactly zero."""
+    norms = np.sqrt(np.clip(np.diag(gram), 0.0, None))
+    degenerate = norms <= 0
+    safe = np.where(degenerate, 1.0, norms)
+    cosine = gram / np.outer(safe, safe)
+    cosine[degenerate, :] = np.nan
+    cosine[:, degenerate] = np.nan
+    cosine = np.clip(cosine, -1.0, 1.0)
+    return [
+        [None if np.isnan(value) else round(float(value), 6) for value in row]
+        for row in cosine
+    ]

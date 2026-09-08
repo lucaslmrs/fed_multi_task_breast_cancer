@@ -14,7 +14,7 @@ from pathlib import Path
 
 from scripts.sync_agent_assets import (CANONICAL_SKILLS, CLAUDE_FILE, AGENTS_FILE, IMPORT_LINE,
                                        SKILL_MIRRORS, Problem, canonical_skills,
-                                       check_instructions, extract_guard_rails, rendered, sync,
+                                       check_instructions, expected_link, extract_guard_rails, sync,
                                        validate_skill)
 
 
@@ -27,24 +27,22 @@ class TestSkillMirrors(unittest.TestCase):
             with self.subTest(skill=skill_md.parent.name):
                 validate_skill(skill_md)
 
-    def test_mirrors_match_canonical(self):
+    def test_discovery_entries_link_to_canonical(self):
         names = {p.parent.name for p in canonical_skills()}
         for mirror_root in SKILL_MIRRORS:
             for name in names:
-                target = mirror_root / name / "SKILL.md"
+                target = mirror_root / name
                 with self.subTest(mirror=mirror_root.name, skill=name):
-                    self.assertTrue(
-                        target.exists(),
-                        f"{target} ausente — rode `python -m scripts.sync_agent_assets`")
+                    self.assertTrue(target.is_symlink(), f"{target} não é um link simbólico")
                     self.assertEqual(
-                        target.read_text(encoding="utf-8"),
-                        rendered(CANONICAL_SKILLS / name / "SKILL.md"),
-                        f"{target} divergiu — rode `python -m scripts.sync_agent_assets`")
+                        target.readlink(), expected_link(mirror_root, name),
+                        f"{target} não aponta para a fonte canônica")
+                    self.assertTrue((target / "SKILL.md").is_file(), f"{target} está quebrado")
 
     def test_no_orphan_skills_in_mirrors(self):
         names = {p.parent.name for p in canonical_skills()}
         for mirror_root in SKILL_MIRRORS:
-            orphans = {p.parent.name for p in mirror_root.glob("*/SKILL.md")} - names
+            orphans = {p.name for p in mirror_root.iterdir()} - names
             with self.subTest(mirror=mirror_root.name):
                 self.assertFalse(orphans, f"skills órfãs em {mirror_root}: {sorted(orphans)}")
 

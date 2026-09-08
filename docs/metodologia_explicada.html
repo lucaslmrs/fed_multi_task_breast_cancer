@@ -313,7 +313,17 @@ footer.end { margin-top:3.5em; padding-top:1.4em; border-top:1px solid var(--hai
   <p>Ultrassom é cinza (1 canal); dermatoscopia é colorida (3 canais). São formatos de entrada literalmente incompatíveis — não dá para somar um filtro que espera 1 canal com um que espera 3. Por isso a primeira camada (<code>encoder1</code>) fica <strong>fora</strong> da média: ela é o “adaptador de tomada” de cada modalidade. Do <code>encoder2</code> em diante, todos os clientes já falam a mesma língua interna e podem partilhar. No arquivo de configuração isso é <code>share_stem: false</code>.</p>
 </div>
 
-<p>No fim do treino, portanto, o resultado <strong>não é um modelo só</strong>. É <em>um tronco comum + 8 conjuntos de peças pessoais</em>. Cada cliente sai com o seu próprio modelo completo, montado com o tronco que todos construíram juntos.</p>
+<p>No fim do treino, portanto, o resultado <strong>não é um modelo só</strong>. É <em>um tronco comum + um conjunto de peças pessoais por cliente</em>. Cada cliente sai com o seu próprio modelo completo, montado com o tronco que todos construíram juntos.</p>
+
+<div class="note">
+  <p class="lbl">Um cliente pode responder mais de uma pergunta</p>
+  <p>Como cada cliente carrega o modelo inteiro, ele já tem <em>as duas</em> cabeças — a de contorno e a de diagnóstico. No desenho padrão só uma delas treina. Quando um cliente possui as duas tarefas sobre as mesmas fotos, as duas cabeças treinam juntas e a perda vira uma soma ponderada: <code>L = Σ λ_t · L_t</code>. A ponderação por tarefa passa a agir onde ela de fato existe — no gradiente local, sobre a mesma foto — em vez de ser deixada para a média do servidor.</p>
+</div>
+
+<div class="note">
+  <p class="lbl">O detalhe que é fácil errar</p>
+  <p>As imagens <code>normal</code> do BUSI (sem tumor) <em>têm</em> um arquivo de máscara — só que ele é todo preto. Se o código decidisse “tem contorno?” olhando se o arquivo existe, ele treinaria a cabeça de segmentação para prever “nada” em imagens saudáveis, e o Dice despencaria por um motivo invisível. Por isso quem decide é a <strong>planilha da partição</strong>, não o arquivo: cada amostra carrega duas bandeirinhas (<code>has_mask</code>, <code>has_label</code>) e cada perda só olha as amostras que ela realmente supervisiona. Uma tarefa sem nenhuma amostra no lote é <em>omitida</em>, nunca somada como zero.</p>
+</div>
 
 <!-- ============================================================ -->
 <h2 id="p6">6. Como as fotos foram repartidas entre os 8 clientes</h2>
@@ -327,6 +337,13 @@ footer.end { margin-top:3.5em; padding-top:1.4em; border-top:1px solid var(--hai
 
 <h4>Dirichlet: quanto os clientes se parecem</h4>
 <p>As fotos de treino de cada fold são espalhadas entre os clientes por um sorteio com um botão de ajuste chamado <strong>Dirichlet α</strong>. α baixo dá clientes muito diferentes entre si (um só tem casos malignos, outro só benignos); α alto dá clientes parecidos. Aqui foi usado <strong>α = 100</strong>, ou seja, praticamente o caso fácil: <em>clientes parecidos</em>. Isso é proposital — o objetivo era isolar o efeito de juntar <em>datasets</em> diferentes, não o de clientes desbalanceados.</p>
+
+<h4>Quantas tarefas cada cliente tem</h4>
+<p>Existem dois desenhos possíveis, escolhidos por <code>client_topology</code>. O padrão é <strong>uma tarefa por cliente</strong>, e é ele que produziu todos os resultados publicados.</p>
+<ul>
+  <li><strong><code>single_task</code> (padrão)</strong> — cada cliente cuida de uma tarefa só. Como o sorteio é feito separadamente para cada tarefa, a <em>mesma foto</em> do BUSI acaba em um cliente de segmentação <em>e</em> em um cliente de classificação <em>diferente</em>. Não é vazamento (treino e teste continuam separados), mas é o dado de um hospital aparecendo em dois hospitais — algo que não acontece numa federação de verdade.</li>
+  <li><strong><code>multi_task</code></strong> — um cliente cuida de <em>todas</em> as suas tarefas usando <em>as mesmas fotos</em>. O sorteio acontece uma vez só, então cada foto pertence a exatamente um cliente. O ISIC não pode usar esse desenho: lá, as fotos que têm contorno e as que têm diagnóstico são conjuntos <em>disjuntos</em> — nenhuma foto tem as duas coisas.</li>
+</ul>
 
 <h4>Nada de vazamento</h4>
 <p>Duas regras protegem o resultado de trapaça acidental:</p>
@@ -378,6 +395,17 @@ footer.end { margin-top:3.5em; padding-top:1.4em; border-top:1px solid var(--hai
   <li><strong>Dentro de cada dataset</strong>, as tarefas são pesadas 4 para segmentação e 1 para classificação.</li>
   <li><strong>Entre os datasets</strong>, os pesos são forçados para 1 : 1 — metade da voz para o BUSI, metade para o ISIC, não importa o tamanho.</li>
 </ol>
+
+<div class="note">
+  <p class="lbl">E quando um cliente tem mais de uma tarefa?</p>
+  <p>“Peso 4 para segmentação” só faz sentido se o cliente <em>é</em> de segmentação. Para valer com 1, 2 ou N tarefas, o peso passa a ser calculado pela <strong>massa de supervisão</strong>: quantas amostras do cliente carregam cada tipo de rótulo. O peso vira <code>Σ_t peso[t] · massa_t / n</code>. Um cliente de uma tarefa só reporta a fatia inteira sob a própria tarefa, a conta colapsa em <code>peso[tarefa]</code> e os números antigos são reproduzidos <em>exatamente</em> — a generalização não altera nenhum resultado já publicado.</p>
+  <p>O que <em>não</em> dá para fazer: separar a contribuição de cada tarefa <em>dentro</em> do caderno devolvido. Um cliente multitarefa devolve <strong>um</strong> caderno, treinado por uma soma de perdas; não existe “a parte de segmentação” desse caderno. Por isso a hierarquia continua sendo <code>dataset → cliente</code>, e a ponderação por tarefa de verdade acontece na perda local, onde os gradientes ainda são separáveis.</p>
+</div>
+
+<div class="note">
+  <p class="lbl">Medindo a briga entre as tarefas</p>
+  <p>Quando o servidor faz a média de cadernos treinados em tarefas diferentes, os ajustes podem <em>se cancelar</em>. Para medir isso, a cada rodada o servidor calcula o ângulo (cosseno) entre as <strong>mudanças</strong> que cada cliente fez no tronco — não entre os troncos em si, que são quase idênticos porque todos partiram do mesmo ponto. Cosseno negativo = os dois estão puxando o tronco para lados opostos. A matriz inteira é guardada, e não só a média, porque só ela permite separar depois a briga <em>entre tarefas</em> da briga <em>entre datasets</em>.</p>
+</div>
 
 <div id="fig-weights"></div>
 

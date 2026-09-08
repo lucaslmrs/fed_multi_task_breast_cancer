@@ -196,6 +196,11 @@ class BUSI(Dataset):
             "patient_id": patient_info.get("id", -1),
             "label": label,
             "class": class_name,
+            # Per-sample supervision flags.  A multi-task client owns rows whose mask or label is
+            # absent, and its loss must skip the corresponding term instead of training against the
+            # safe placeholders (an all-zero mask is a legitimate target only for BUSI's `normal`).
+            "has_mask": torch.tensor(not _missing(patient_info.get("mask_path"))),
+            "has_label": torch.tensor(not _missing(patient_info.get("class"))),
             "image": image,
             "mask": mask,
             "dim1": patient_info.get("dim1", image.shape[-2]),

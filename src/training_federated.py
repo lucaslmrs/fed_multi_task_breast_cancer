@@ -1,6 +1,6 @@
 """Multi-dataset FedPer training orchestrator.
 
-Every client owns one dataset and one task. Dataset-specific stems and all decoders/heads remain
+Every client owns one dataset and one or more tasks. Dataset-specific stems and all decoders/heads remain
 local; only the configured shared trunk travels through Flower. The same runner implements the
 local-only baseline by setting ``federated.standalone``.
 """
@@ -40,6 +40,13 @@ from src.federated.model_split import (
 from src.federated.server import FedPerStrategy
 from src.utils.experiment_init import device_setup, init_multitask_model
 from src.utils.miscellany import init_log, seed_everything
+from src.utils.training_runtime import (
+    RuntimeEvents,
+    dataloader_kwargs,
+    precision_policy,
+    runtime_config,
+    start_gpu_telemetry,
+)
 
 
 class _DropFlwrDeprecation(logging.Filter):
@@ -49,6 +56,8 @@ class _DropFlwrDeprecation(logging.Filter):
 
 def _resume_config_signature(config):
     signature = copy.deepcopy(config)
+    signature.pop("runtime", None)
+    signature.get("federated", {}).pop("training_telemetry", None)
     if signature.get("training", {}).get("CV", 0) > 1:
         signature["training"].pop("holdout_test_size", None)
     return signature
@@ -153,21 +162,26 @@ def _test_client(
         model.load_state_dict(state["model"])
 
     data_cfg = dataset_config(config, dataset)
+    runtime = runtime_config(config)
+    precision = precision_policy(config, device)
     test_loader = build_client_loader(
         partition_file=master_file,
         fold=fold,
         client_id=client_id,
         dataset=dataset,
         split="test",
-        batch_size=1,
+        batch_size=runtime["inference_batch_size"],
         channels=data_cfg["channels"],
         classes=data_cfg["classes"],
         augmentations=None,
+        tasks=[task],
         max_samples=config["federated"].get("max_samples_per_split"),
+        loader_options=dataloader_kwargs(config, federated=True),
     )
     metrics, preds = unified_eval.evaluate(
         model, test_loader, task, len(data_cfg["classes"]), device,
         class_names=data_cfg["classes"],
+        precision=precision,
     )
     experiment = config.get("experiment", {})
     evaluation = evaluation_metadata(config["training"])
@@ -267,6 +281,7 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
 
     seed_everything(train_cfg["seed"], cuda_benchmark=train_cfg["cuda_benchmark"])
     device = _resolve_orchestrator_device(fed.get("device", "auto"))
+    precision_policy(config, device)  # fail before creating run artifacts on unsupported BF16
     standalone = fed.get("standalone", False)
     setup = "standalone" if standalone else "federated"
 
@@ -293,6 +308,8 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
     logging.getLogger("flwr").addFilter(_DropFlwrDeprecation())
     with config_output.open("w", encoding="utf-8") as stream:
         yaml.safe_dump(config, stream, sort_keys=False)
+    gpu_telemetry = start_gpu_telemetry(config, run_path)
+    runtime_events = RuntimeEvents(run_path / "runtime_events.csv", device)
 
     master_file = partition_file(config)
     master_frame = pd.read_csv(master_file, usecols=lambda column: column in {"fold", "split"})
@@ -324,17 +341,33 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
             .head(int(client_cap))
             .reset_index(drop=True)
         )
+    # ``list_clients`` returns one row per (client, task). Group them so a multi-task client is a
+    # SINGLE federated participant that owns several tasks, not several participants.
+    grouped = (
+        roster_df.groupby(["client_id", "dataset"], sort=False)["task"]
+        .apply(lambda values: tuple(
+            name for name in ("seg", "cls") if name in set(values)
+        ))
+        .reset_index()
+    )
     roster = [
-        (row.client_id, row.dataset, row.task) for row in roster_df.itertuples(index=False)
+        (row.client_id, row.dataset, row.task) for row in grouped.itertuples(index=False)
     ]
     if not roster:
         raise ValueError(f"Partition '{master_file}' contains no configured clients")
     num_clients = len(roster)
 
-    client_resources = dict(fed.get("client_resources", {"num_cpus": 1, "num_gpus": 0.0}))
+    runtime = runtime_config(config)
+    runtime_federated = runtime["federated"]
+    client_resources = dict(runtime_federated["client_resources"])
     if device == "cpu" and client_resources.get("num_gpus", 0) > 0:
         logging.warning("GPU resources requested for a CPU run; setting client num_gpus=0")
         client_resources["num_gpus"] = 0.0
+
+    # Labels the per-block gradient-conflict matrices; also reused when persisting the trunk.
+    shared_key_names = shared_keys(
+        _build_model(config, datasets[0], "cpu"), fed.get("share_stem", True)
+    )
 
     fold_count = train_cfg["CV"]
     if fed.get("max_folds") is not None:
@@ -383,6 +416,7 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                 dataset_weights=aggregation["dataset_weights"],
                 aggregation_mode=aggregation["mode"],
                 client_weighting=aggregation["client_weighting"],
+                shared_key_names=shared_key_names,
                 initial_parameters=_initial_shared_parameters(config, datasets, device, fold),
                 fraction_fit=1.0,
                 fraction_evaluate=1.0,
@@ -394,20 +428,25 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                 on_evaluate_config_fn=_round_config,
             )
 
-            start_simulation(
-                client_fn=build_client_fn(
-                    config, device, str(master_file), str(run_path), roster, fold, standalone
-                ),
-                num_clients=num_clients,
-                config=ServerConfig(num_rounds=fed["rounds"]),
-                strategy=strategy,
-                client_resources=client_resources,
-                ray_init_args={
-                    "include_dashboard": False,
-                    "ignore_reinit_error": True,
-                    "num_cpus": fed.get("ray_num_cpus", 2),
-                },
-            )
+            with runtime_events.measure(
+                "flower_simulation", setup=setup, fold=fold
+            ) as event:
+                start_simulation(
+                    client_fn=build_client_fn(
+                        config, device, str(master_file), str(run_path), roster, fold, standalone
+                    ),
+                    num_clients=num_clients,
+                    config=ServerConfig(num_rounds=fed["rounds"]),
+                    strategy=strategy,
+                    client_resources=client_resources,
+                    ray_init_args={
+                        "include_dashboard": False,
+                        "ignore_reinit_error": True,
+                        "num_cpus": runtime_federated["ray_num_cpus"],
+                    },
+                )
+                event["examples"] = 0
+                event["batches"] = 0
 
             with (fold_dir / "aggregation_history.json").open("w") as stream:
                 json.dump(strategy.aggregation_history, stream, indent=2)
@@ -419,10 +458,7 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                 torch.save(
                     {
                         "round": strategy.latest_round,
-                        "keys": shared_keys(
-                            _build_model(config, datasets[0], "cpu"),
-                            fed.get("share_stem", True),
-                        ),
+                        "keys": shared_key_names,
                         "arrays": [torch.as_tensor(array).cpu() for array in final_shared],
                     },
                     fold_dir / "global_shared.pt",
@@ -434,22 +470,29 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                 f"{'global trunk + personalized states' if not standalone else 'local models'}"
             )
         fold_rows, fold_pred_frames = [], []
-        for client_id, dataset, task in roster:
-            row, preds = _test_client(
-                config,
-                device,
-                str(master_file),
-                run_path,
-                fold,
-                client_id,
-                dataset,
-                task,
-                setup,
-                shared_arrays=final_shared,
-            )
-            fold_rows.append(row)
-            if preds is not None:
-                fold_pred_frames.append(preds)
+        for client_id, dataset, tasks in roster:
+            # One result row per (client, task): a multi-task client is scored once per task over
+            # the slice that task supervises. analyze.py already keys on (client_id, task).
+            for task in tasks:
+                with runtime_events.measure(
+                    "test", setup=setup, fold=fold, client_id=client_id
+                ) as event:
+                    row, preds = _test_client(
+                        config,
+                        device,
+                        str(master_file),
+                        run_path,
+                        fold,
+                        client_id,
+                        dataset,
+                        task,
+                        setup,
+                        shared_arrays=final_shared,
+                    )
+                    event.update(examples=int(row.get("n_test", 0)), batches=0)
+                fold_rows.append(row)
+                if preds is not None:
+                    fold_pred_frames.append(preds)
         pd.DataFrame(fold_rows).to_csv(fold_results_path, index=False)
         if fold_pred_frames:
             pd.concat(fold_pred_frames, ignore_index=True, sort=False).to_csv(
@@ -459,6 +502,11 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
         pred_frames.extend(fold_pred_frames)
 
     _save_results(pd.DataFrame(test_rows), pred_frames, run_path, setup)
+    from src.experiments.training_curves import build_run_artifacts
+
+    build_run_artifacts(run_path)
+    runtime_events.write()
+    gpu_telemetry.stop()
     logging.info(f"Total {setup} time: {time.perf_counter() - init_time:.2f}s")
     return run_path
 

@@ -11,17 +11,15 @@ import pandas as pd
 import yaml
 
 
-STUDY_ROOT = Path("runs/studies/multi_dataset_balance_v1")
+STUDY_ROOT = Path("runs/studies/example_multi_dataset")
 DEFAULT_OUTPUT = Path("RELATORIO_EXECUTIVO_FEDERACAO_MULTI_DATASET.html")
+# Display names for the arms of studies/example_multi_dataset.yaml; unknown ids are shown raw.
 METHOD_LABELS = {
-    "primary": "Federado principal",
-    "local_steps_ce": "Local — passos/CE",
-    "ablation_budget": "Federado — épocas",
-    "local_epochs_ce": "Local — épocas/CE",
-    "ablation_weighting": "Federado — cardinalidade",
+    "primary": "Federado principal (clientes multitarefa)",
+    "local_only": "Local (clientes multitarefa)",
     "ablation_flat": "Federado — flat",
-    "ablation_focal": "Federado — focal",
-    "local_steps_focal": "Local — focal",
+    "single_task_primary": "Federado — clientes monotarefa",
+    "single_task_local": "Local — clientes monotarefa",
 }
 METRIC_LABELS = {
     "dice": "Dice",
@@ -35,15 +33,10 @@ METRIC_LABELS = {
     "auc": "AUC OvR macro",
 }
 COMPARISON_LABELS = {
-    "primary_vs_local": "Federado principal vs local (passos/CE)",
-    "budget_vs_local": "Federado por épocas vs local por épocas",
-    "weighting_vs_local": "Federado por cardinalidade vs local por épocas",
-    "flat_vs_local": "Federado flat vs local por épocas",
-    "focal_vs_local": "Federado focal vs local focal",
-    "effect_local_budget": "Passos fixos vs duas épocas",
-    "effect_uniform_weighting": "Clientes uniformes vs cardinalidade",
-    "effect_hierarchy": "Hierárquica vs flat",
-    "effect_ce_vs_focal": "CE balanced_fold vs focal sem pesos",
+    "primary_vs_local": "Federado principal vs local",
+    "effect_flat_aggregation": "Hierárquica uniforme vs flat",
+    "single_task_vs_local": "Federado monotarefa vs local monotarefa",
+    "effect_client_topology": "Clientes multitarefa vs monotarefa",
 }
 
 
@@ -86,7 +79,7 @@ def _comparison_chart(summary: pd.DataFrame):
                 (summary.dataset == dataset)
                 & (summary.task == task)
                 & (summary.metric == metric)
-                & (summary.method_id.isin(["primary", "local_steps_ce"]))
+                & (summary.method_id.isin(["primary", "local_only"]))
             ]
             values = {row.method_id: float(row.mean) for row in rows.itertuples()}
             if values:
@@ -109,7 +102,7 @@ def _comparison_chart(summary: pd.DataFrame):
         y = 68 + 80 * index
         label = f"{dataset} · {'seg.' if task == 'seg' else 'cls.'} · {METRIC_LABELS[metric]}"
         parts.append(f'<text class="label" x="0" y="{y+17}">{_esc(label)}</text>')
-        for offset, method in ((0, "primary"), (26, "local_steps_ce")):
+        for offset, method in ((0, "primary"), (26, "local_only")):
             value = values.get(method)
             if value is None:
                 continue

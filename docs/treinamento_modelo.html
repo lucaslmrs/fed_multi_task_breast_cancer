@@ -54,7 +54,7 @@
         </div>
         <div class="cards">
           <article class="card orange"><div class="num">MTL</div><h3>Treino centralizado</h3><p><code>training_multitask.py</code> aprende segmentação e classificação quando cada linha possui as duas supervisões. É válido para BUSI, mas não para o ISIC multi-tarefa disjunto.</p></article>
-          <article class="card blue"><div class="num">1×</div><h3>Treinos por tarefa</h3><p><code>training_segmentation.py</code> e <code>training_classification.py</code> treinam uma tarefa por vez. As variantes <code>_prod</code> unem treino e validação.</p></article>
+          <article class="card blue"><div class="num">1×</div><h3>Treinos por tarefa</h3><p><code>training_segmentation.py</code> e <code>training_classification.py</code> treinam uma tarefa por vez, com validação separada para selecionar o checkpoint.</p></article>
           <article class="card green"><div class="num">FedPer</div><h3>Treino federado</h3><p><code>training_federated.py</code> atende BUSI + ISIC, com clientes de tarefa única, tronco compartilhado e partes personalizadas.</p></article>
         </div>
         <div class="callout info"><b>Este documento acompanha a rota FedPer.</b><p>Ela também implementa o baseline local-only: com <code>federated.standalone: true</code>, os clientes recebem a mesma inicialização, mas deixam de aceitar o tronco agregado nas rodadas seguintes.</p></div>
@@ -111,8 +111,12 @@
     <section id="clientes">
       <div class="shell">
         <div class="section-head">
-          <div><span class="kicker">04 · Construção dos clientes</span><h2>Oito clientes, uma tarefa por cliente</h2></div>
-          <p>No roster completo há dois clientes de segmentação e dois de classificação por dataset. Cada worker recebe somente as linhas que pertencem ao seu dataset, fold, cliente e split.</p>
+          <div><span class="kicker">04 · Construção dos clientes</span><h2>Quantas tarefas cabem em um cliente</h2></div>
+          <p>A chave <code>datasets.&lt;nome&gt;.client_topology</code> decide o desenho, e o padrão é <code>single_task</code> — todos os resultados publicados usam ele. Cada worker recebe somente as linhas que pertencem ao seu dataset, fold, cliente e split.</p>
+        </div>
+        <div class="split-view" style="margin-bottom:24px">
+          <article class="panel"><div class="panel-head"><h3>single_task · padrão</h3><p>oito clientes, uma tarefa cada</p></div><div class="panel-body"><p>Dois clientes de segmentação e dois de classificação por dataset. O pool de cada tarefa é sorteado de forma independente, então a <strong>mesma imagem do BUSI</strong> acaba em um cliente de segmentação <strong>e</strong> em um cliente de classificação <em>diferente</em>: 215 de 215 imagens de treino, na partição congelada. Treino e teste continuam disjuntos por fold, mas o dado de um silo aparece duplicado em dois silos.</p></div></article>
+          <article class="panel"><div class="panel-head blue"><h3>multi_task</h3><p>um cliente, várias tarefas, as mesmas imagens</p></div><div class="panel-body"><p>O pool do fold é particionado <strong>uma única vez</strong>, então cada imagem pertence a exatamente um silo. Exige <code>fold_strategy: stratified</code> e a mesma contagem de clientes em todas as tarefas. O ISIC não pode usar: seus conjuntos de segmentação e classificação são imagens disjuntas, nenhuma linha tem máscara e rótulo ao mesmo tempo.</p></div></article>
         </div>
         <div class="matrix" aria-label="Matriz de clientes e tarefas">
           <div class="head">Dataset</div><div class="head">seg 0</div><div class="head">seg 1</div><div class="head">cls 0</div><div class="head">cls 1</div>
@@ -185,12 +189,24 @@
       <div class="shell">
         <div class="section-head">
           <div><span class="kicker">08 · Forward e perdas</span><h2>Cada tarefa usa uma saída diferente</h2></div>
-          <p>O forward retorna logits de classificação e uma lista de mapas de segmentação em múltiplas escalas. O cliente calcula somente a parte compatível com sua tarefa.</p>
+          <p>O forward retorna logits de classificação e uma lista de mapas de segmentação em múltiplas escalas. Um cliente <code>single_task</code> calcula somente a parte compatível com sua tarefa; um cliente <code>multi_task</code> soma as duas.</p>
         </div>
         <div class="split-view">
           <article class="panel"><div class="panel-head"><h3>Cliente de segmentação</h3><p>máscara → deep supervision Dice</p></div><div class="panel-body"><div class="formula-main" style="border-radius:14px"><em>Lseg</em> = Σ Dice(output_n, mask) / (n + 1)</div><ul><li>usa todas as saídas de segmentação;</li><li>com pesos inversos se configurado;</li><li>não aplica sigmoid antes do critério;</li><li>classificação é ignorada.</li></ul></div></article>
           <article class="panel"><div class="panel-head blue"><h3>Cliente de classificação</h3><p>classe → CE ou Focal</p></div><div class="panel-body"><div class="formula-main" style="border-radius:14px"><em>Lcls</em> = Σ critério(logits_n, label)</div><ul><li>rótulo vira one-hot no multiclasses;</li><li>pode usar pesos por classe;</li><li>Focal usa gamma configurável;</li><li>máscara é ignorada.</li></ul></div></article>
         </div>
+
+        <div class="section-head" style="margin-top:32px">
+          <div><h3>Cliente multitarefa: a soma ponderada</h3></div>
+          <p>Quando um cliente possui mais de uma tarefa sobre as mesmas imagens, o objetivo local vira a soma ponderada — e a ponderação por tarefa passa a existir <strong>de fato</strong>, porque aqui os gradientes são separáveis.</p>
+        </div>
+        <div class="formula-main"><em>L</em> = Σ<sub>t</sub> λ<sub>t</sub> · <em>L</em><sub>t</sub>(amostras que a tarefa <em>t</em> supervisiona), com λ<sub>t</sub> = task_weights[t] / Σ task_weights</div>
+        <ul>
+          <li>a seleção vem de flags por amostra (<code>has_mask</code>, <code>has_label</code>) derivadas da <strong>partição</strong>, nunca do caminho do arquivo;</li>
+          <li>isso é obrigatório e não cosmético: as imagens <code>normal</code> do BUSI <em>possuem</em> um arquivo de máscara toda zero, então confiar no caminho treinaria o termo de Dice contra alvos vazios;</li>
+          <li>uma tarefa sem nenhuma amostra supervisionada no batch é <strong>omitida</strong>, nunca somada como zero — termo zero e termo ausente não são a mesma coisa;</li>
+          <li>se um cliente declara duas tarefas e termina a rodada tendo exercitado só uma, a execução falha: ele teria degradado em silêncio para um cliente monotarefa.</li>
+        </ul>
       </div>
     </section>
 
@@ -205,9 +221,25 @@
           <article class="weight-box"><h3>Flat · ablação</h3><p>Normaliza todos os clientes em um único nível. Com <code>num_examples</code> e pesos de tarefa 1, equivale ao FedAvg amostral.</p><div class="weight-bar"><span style="width:18%"></span><span style="width:12%"></span><span style="width:26%"></span><span style="width:44%"></span></div><div class="legend"><span>participação depende do peso base</span></div></article>
         </div>
         <div class="formula" style="margin-top:22px">
-          <div class="formula-main"><em>peso_base</em> = fator_cliente × peso_tarefa<br><em>fator_cliente</em> = 1 ou num_examples<br><em>peso_final_hierárquico</em> = peso_dataset × normalização_interna</div>
+          <div class="formula-main"><em>peso_base</em> = fator_cliente × Σ<sub>t</sub> peso_tarefa[t] · massa<sub>t</sub> / n<br><em>fator_cliente</em> = 1 ou num_examples<br><em>peso_final_hierárquico</em> = peso_dataset × normalização_interna</div>
           <div class="formula-note">Na configuração principal, <code>client_weighting=uniform</code>, tarefas seg:cls = 4:1 e datasets BUSI:ISIC = 1:1. Com dois clientes por tarefa, cada dataset recebe 50% e, dentro dele, seg recebe 80% e cls 20%.</div>
         </div>
+        <div class="formula-note" style="margin-top:14px"><strong>massa<sub>t</sub></strong> é quantas amostras do cliente carregam supervisão da tarefa <em>t</em>. Um cliente monotarefa reporta a fatia inteira sob a própria tarefa, o somatório colapsa em <code>peso_tarefa[task]</code> e os pesos históricos são reproduzidos <strong>exatamente</strong> — a generalização é retrocompatível por construção. A hierarquia continua <code>dataset → cliente</code>: o update do tronco de um cliente multitarefa é um objeto entrelaçado e não pode ser decomposto por tarefa na agregação, por isso a ponderação por tarefa <em>real</em> vive na perda local.</div>
+      </div>
+    </section>
+
+    <section id="conflito">
+      <div class="shell">
+        <div class="section-head">
+          <div><span class="kicker">09b · Diagnóstico</span><h2>Conflito de gradiente entre clientes</h2></div>
+          <p>A cada rodada o servidor registra o cosseno par a par entre os <strong>deltas</strong> do tronco de cada cliente — por bloco (<code>encoder2..5</code>, <code>bottleneck</code>) e no agregado.</p>
+        </div>
+        <ul>
+          <li>tem que ser entre <em>deltas</em>, não entre os troncos devolvidos: todos partem do mesmo tronco global naquela rodada, então o cosseno entre troncos daria ≈ +1 e não mediria nada;</li>
+          <li>a matriz <strong>completa</strong> é guardada, não a média seg-vs-cls: só ela permite separar depois o conflito <em>entre tarefas</em> (BUSI-seg vs BUSI-cls) do conflito <em>entre domínios</em> (BUSI-seg vs ISIC-seg);</li>
+          <li>a coleta é obrigatoriamente ao vivo — nenhum artefato persiste o tronco pós-fit de um cliente, então a matriz não é recuperável depois da execução;</li>
+          <li>custo: n_clientes² floats por rodada, dentro do <code>aggregation_history.json</code> que já existia.</li>
+        </ul>
       </div>
     </section>
 
@@ -219,7 +251,7 @@
         </div>
         <div class="filetree"><pre>fold_&lt;k&gt;/
 ├── <span class="accent">global_shared.pt</span>          <span class="dim"># tronco global da última rodada; apenas federado</span>
-├── <span class="accent">aggregation_history.json</span> <span class="dim"># pesos, participação e exposição por rodada</span>
+├── <span class="accent">aggregation_history.json</span> <span class="dim"># pesos, participação, exposição e cossenos por rodada</span>
 ├── client_&lt;id&gt;/
 │   ├── <span class="accent">state.pt</span>              <span class="dim"># optimizer + personalizado, ou modelo local completo</span>
 │   ├── best.pt               <span class="dim"># melhor validação local; diagnóstico</span>

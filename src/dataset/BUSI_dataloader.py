@@ -81,7 +81,8 @@ def BUSI_dataloader(seed, batch_size, transforms, remove_outliers=False, augment
 def BUSI_dataloader_CV(seed, batch_size, transforms, remove_outliers=False, augmentations=None, normalization=None,
                        train_size=0.8, classes=None, n_folds=5, oversampling=True, use_duplicated_to_train=False,
                        path_images="./Datasets/Dataset_BUSI_with_GT_postprocessed_128/", semantic_segmentation=False,
-                       holdout_test_size=DEFAULT_HOLDOUT_TEST_SIZE):
+                       holdout_test_size=DEFAULT_HOLDOUT_TEST_SIZE, loader_options=None,
+                       inference_batch_size=1):
 
     # classes to use by default
     if classes is None:
@@ -152,86 +153,21 @@ def BUSI_dataloader_CV(seed, batch_size, transforms, remove_outliers=False, augm
                                  normalization=normalization, semantic_segmentation=semantic_segmentation))
 
     # Creating a list of dataloaders. Each component of the list corresponds to a CV fold
-    train_loader = [DataLoader(fold, batch_size=batch_size, shuffle=True) for fold in fold_trainset]
-    val_loader = [DataLoader(fold, batch_size=batch_size, shuffle=True) for fold in fold_valset]
-    test_loader = [DataLoader(fold, batch_size=1) for fold in fold_testset]
+    loader_options = dict(loader_options or {})
+    train_loader = [
+        DataLoader(fold, batch_size=batch_size, shuffle=True, **loader_options)
+        for fold in fold_trainset
+    ]
+    val_loader = [
+        DataLoader(fold, batch_size=batch_size, shuffle=False, **loader_options)
+        for fold in fold_valset
+    ]
+    test_loader = [
+        DataLoader(fold, batch_size=inference_batch_size, **loader_options)
+        for fold in fold_testset
+    ]
 
     return train_loader, val_loader, test_loader
-
-
-def BUSI_dataloader_CV_prod(seed, batch_size, transforms, remove_outliers=False, augmentations=None, normalization=None,
-                            train_size=0.8, classes=None, n_folds=5, oversampling=True, use_duplicated_to_train=False,
-                            path_images="./Datasets/Dataset_BUSI_with_GT_postprocessed_128/", semantic_segmentation=False,
-                            holdout_test_size=DEFAULT_HOLDOUT_TEST_SIZE):
-
-    # classes to use by default
-    if classes is None:
-        classes = ['benign', 'malignant']
-
-    # Checking if the path, where the images are, exists
-    path_images = Path(path_images).resolve()
-    assert path_images.exists(), f"Path '{path_images}' it doesn't exist"
-    logging.info(f"Images are contained in the following path: {path_images}")
-
-    # loading mapping file
-    mapping = pd.read_csv(f"{path_images}/mapping.csv")
-
-    if use_duplicated_to_train:
-        mapping = filter_incongruent_cases(mapping)
-        mapping, mapping_out_complementary = filter_train_cases(mapping)
-
-    # filtering specific classes
-    mapping = mapping[mapping['class'].isin(classes)]
-
-    # splitting dataset into train-val-test CV
-    fold_trainset, fold_valset, fold_testset = [], [], []
-    outer_splits = outer_split_indices(
-        mapping,
-        n_splits=n_folds,
-        seed=int(seed),
-        strategy="stratified",
-        holdout_test_size=holdout_test_size,
-    )
-    for n, (train_ix, test_ix) in enumerate(outer_splits):
-        train_val_mapping, test_mapping = mapping.iloc[train_ix], mapping.iloc[test_ix].copy()
-        test_mapping['fold'] = [n] * len(test_mapping)
-
-        # Splitting the mapping dataset into train_mapping, val_mapping and test_mapping
-        train_mapping, val_mapping = train_test_split(train_val_mapping, train_size=train_size, random_state=int(seed),
-                                                      shuffle=True, stratify=train_val_mapping['class'])
-
-        if remove_outliers:
-            train_mapping = filter_anomalous_cases(train_mapping)
-            val_mapping = filter_anomalous_cases(val_mapping)
-            test_mapping = filter_anomalous_cases(test_mapping)
-
-        if use_duplicated_to_train:
-            train_mapping = pd.concat([train_mapping, mapping_out_complementary])
-
-        if oversampling:
-            # train_mapping = oversampling_BUSI(train_mapping, seed)
-            train_mapping = deterministic_oversampling(train_mapping)
-
-        train_mapping = pd.concat([train_mapping, val_mapping])
-        if n == 0:  # for simplicity, just showing distribution for fold 0
-            logging.info(f"\nClass distribution for train set:"
-                         f"\n{train_mapping['class'].value_counts(normalize=True).reset_index()}")
-            logging.info(f"\nClass distribution for test set:"
-                         f"\n{test_mapping['class'].value_counts(normalize=True).reset_index()}")
-            logging.info(f"Train size: {train_mapping.shape}")
-            logging.info(f"Test size: {test_mapping.shape}")
-
-        # append the corresponding subset to train-val-test sets for each CV
-        fold_trainset.append(BUSI(mapping_file=train_mapping, transforms=transforms, augmentations=augmentations,
-                                  normalization=normalization, semantic_segmentation=semantic_segmentation))
-        fold_testset.append(BUSI(mapping_file=test_mapping, transforms=None, augmentations=augmentations,
-                                 normalization=normalization, semantic_segmentation=semantic_segmentation))
-
-    # Creating a list of dataloaders. Each component of the list corresponds to a CV fold
-    train_loader = [DataLoader(fold, batch_size=batch_size, shuffle=True) for fold in fold_trainset]
-    test_loader = [DataLoader(fold, batch_size=1) for fold in fold_testset]
-
-    return train_loader, test_loader
 
 
 def UCLM_dataloader(batch_size, path_images, augmentations=None, normalization=None, classes=None):
@@ -356,8 +292,9 @@ def deterministic_oversampling(mapping_df):
     return mapping_df
 
 
-def load_datasets(config_training, config_data, transforms, mode='CV'):
+def load_datasets(config_training, config_data, transforms, mode='CV', runtime=None):
     if mode == 'CV':
+        runtime = dict(runtime or {})
         train_loaders, val_loaders, test_loaders = BUSI_dataloader_CV(seed=config_training['seed'],
                                                                       batch_size=config_data['batch_size'],
                                                                       transforms=transforms,
@@ -372,24 +309,12 @@ def load_datasets(config_training, config_data, transforms, mode='CV'):
                                                                       path_images=paths.processed_dir(config_data),
                                                                       holdout_test_size=config_training.get(
                                                                           'holdout_test_size',
-                                                                          DEFAULT_HOLDOUT_TEST_SIZE))
+                                                                          DEFAULT_HOLDOUT_TEST_SIZE),
+                                                                      loader_options=runtime.get("loader_options"),
+                                                                      inference_batch_size=runtime.get(
+                                                                          "inference_batch_size", 1
+                                                                      ))
         return train_loaders, val_loaders, test_loaders
-    if mode == 'CV_PROD':
-        train_loaders, test_loaders = BUSI_dataloader_CV_prod(seed=config_training['seed'],
-                                                              batch_size=config_data['batch_size'],
-                                                              transforms=transforms,
-                                                              remove_outliers=config_data['remove_outliers'],
-                                                              train_size=config_data['train_size'],
-                                                              n_folds=config_training['CV'],
-                                                              augmentations=config_data['augmentation'],
-                                                              normalization=None,
-                                                              classes=config_data['classes'],
-                                                              oversampling=config_data['oversampling'],
-                                                              path_images=paths.processed_dir(config_data),
-                                                              holdout_test_size=config_training.get(
-                                                                  'holdout_test_size',
-                                                                  DEFAULT_HOLDOUT_TEST_SIZE))
-        return train_loaders, test_loaders
     if mode == 'UCLM':
         dataloader = UCLM_dataloader(batch_size=1,
                                      path_images="/home/carlos/Documentos/proyectos/breast_cancer/Datasets/BUS_UCLM_postprocessed_128",
