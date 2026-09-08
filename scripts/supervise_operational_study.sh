@@ -3,16 +3,24 @@
 set -euo pipefail
 
 STUDY_HOME="/home/lucas/fed_multi_task_breast_cancer"
-STUDY_DIR="$STUDY_HOME/runs/studies/multi_dataset_balance_v1"
+# Override with STUDY_ID=<study_id> to supervise a different manifest in studies/.
+STUDY_ID="${STUDY_ID:-example_multi_dataset}"
+MANIFEST="studies/$STUDY_ID.yaml"
+STUDY_DIR="$STUDY_HOME/runs/studies/$STUDY_ID"
 SUPERVISOR_LOG="$STUDY_DIR/supervisor.log"
 
 cd "$STUDY_HOME"
+mkdir -p "$STUDY_DIR"
 
 all_arms_complete() {
-  .venv/bin/python - <<'PY'
+  STUDY_ID="$STUDY_ID" .venv/bin/python - <<'PY'
+import os
 import pandas as pd
 
-index = pd.read_csv("runs/studies/multi_dataset_balance_v1/run_index.csv")
+path = f"runs/studies/{os.environ['STUDY_ID']}/run_index.csv"
+if not os.path.exists(path):
+    raise SystemExit(1)
+index = pd.read_csv(path)
 complete = {"complete", "reused"}
 raise SystemExit(0 if len(index) and index.status.isin(complete).all() else 1)
 PY
@@ -35,14 +43,14 @@ while ! all_arms_complete; do
   fi
 
   printf '[%s] retomando braços/folds incompletos\n' "$(date -Is)" >> "$SUPERVISOR_LOG"
-  .venv/bin/python -u -m src.experiments.study_runner --seed-profile operational --retry-incomplete \
-    >> "$SUPERVISOR_LOG" 2>&1 || true
+  .venv/bin/python -u -m src.experiments.study_runner --manifest "$MANIFEST" \
+    --seed-profile operational --retry-incomplete >> "$SUPERVISOR_LOG" 2>&1 || true
   sleep 30
 done
 
 # The runner writes the complete analysis before it exits. Generate the final executive handoff and
 # repeat the automated verification after the last successful completion.
-.venv/bin/python -m src.experiments.executive_report \
+.venv/bin/python -m src.experiments.executive_report --study-root "$STUDY_DIR" \
   --output RELATORIO_EXECUTIVO_FEDERACAO_MULTI_DATASET.html >> "$SUPERVISOR_LOG" 2>&1
 .venv/bin/python -m pytest -q >> "$SUPERVISOR_LOG" 2>&1
 printf '[%s] estudo, relatório e testes finais concluídos\n' "$(date -Is)" >> "$SUPERVISOR_LOG"

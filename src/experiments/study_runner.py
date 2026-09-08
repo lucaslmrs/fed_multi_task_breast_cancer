@@ -9,7 +9,7 @@ Examples::
 
     python -m src.experiments.study_runner --dry-run
     python -m src.experiments.study_runner --smoke --seed-profile operational
-    python -m src.experiments.study_runner --arms primary local_steps_ce
+    python -m src.experiments.study_runner --arms primary local_only
     python -m src.experiments.study_runner --seed-profile final
 """
 
@@ -29,7 +29,7 @@ import pandas as pd
 import yaml
 
 
-DEFAULT_MANIFEST = "studies/multi_dataset_balance_v2_bf16.yaml"
+DEFAULT_MANIFEST = "studies/example_multi_dataset.yaml"
 SUPPORTED_SCHEMA_VERSION = 1
 SETUPS = {"federated", "standalone"}
 

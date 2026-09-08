@@ -207,21 +207,19 @@ class FederatedValidationContractTests(unittest.TestCase):
 
 
 class StudyPrecisionTests(unittest.TestCase):
-    def test_v1_fp32_and_v2_bf16_reuse_the_same_frozen_partitions(self):
-        v1 = load_manifest("studies/multi_dataset_balance_v1.yaml")
-        v2 = load_manifest("studies/multi_dataset_balance_v2_bf16.yaml")
-        row1 = build_execution_plan(v1, [1993], [v1["arms"][0]])[0][0]
-        row2 = build_execution_plan(v2, [1993], [v2["arms"][0]])[0][0]
-        self.assertEqual(row1["config"]["training"]["precision"], "fp32")
-        self.assertFalse(row1["config"]["training"]["cuda_benchmark"])
-        self.assertEqual(row1["config"]["training"]["CV"], 4)
-        self.assertEqual(row2["config"]["training"]["precision"], "bf16")
-        self.assertTrue(row2["config"]["training"]["cuda_benchmark"])
-        self.assertEqual(row2["config"]["training"]["CV"], 4)
-        self.assertEqual(row1["partition_path"], row2["partition_path"])
+    def test_example_study_pins_the_bf16_protocol(self):
+        manifest = load_manifest("studies/example_multi_dataset.yaml")
+        row = build_execution_plan(manifest, [1993], [manifest["arms"][0]])[0][0]
+        self.assertEqual(row["config"]["training"]["precision"], "bf16")
+        self.assertTrue(row["config"]["training"]["cuda_benchmark"])
+        self.assertEqual(row["config"]["training"]["CV"], 1)
+        # Precision is a scientific hash input: flipping it must change the arm signature.
+        fp32 = copy.deepcopy(row["config"])
+        fp32["training"]["precision"] = "fp32"
+        self.assertNotEqual(_config_signature(row["config"]), _config_signature(fp32))
 
     def test_cpu_smoke_overrides_bf16(self):
-        manifest = load_manifest("studies/multi_dataset_balance_v2_bf16.yaml")
+        manifest = load_manifest("studies/example_multi_dataset.yaml")
         row = build_execution_plan(
             manifest, [1993], [manifest["arms"][0]], smoke=True
         )[0][0]

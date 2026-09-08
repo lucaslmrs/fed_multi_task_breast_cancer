@@ -35,7 +35,7 @@ congelada usada pelos estudos de cross-validation.
 Artefatos do smoke:
 
 ```text
-runs/studies/multi_dataset_balance_v2_bf16/smoke/
+runs/studies/example_multi_dataset/smoke/
 ├── execution_plan.csv
 ├── run_index.csv
 ├── runs/seed_1993/<arm_id>/
@@ -53,12 +53,13 @@ runs/studies/multi_dataset_balance_v2_bf16/smoke/
 
 ## Execução científica
 
-Sem `--manifest`, o runner usa o novo estudo `multi_dataset_balance_v2_bf16` (BF16). Ele aponta
-para os mesmos masters congelados do v1. Para reproduzir/retomar o histórico FP32, use sempre:
+Sem `--manifest`, o runner usa o estudo de exemplo `studies/example_multi_dataset.yaml` (BF16,
+holdout 70/30, clientes BUSI multitarefa). Para rodar outro estudo, copie o manifesto de exemplo,
+mude `study_id` e informe-o explicitamente:
 
 ```bash
 python -m src.experiments.study_runner \
-  --manifest studies/multi_dataset_balance_v1.yaml \
+  --manifest studies/<meu_estudo>.yaml \
   --seed-profile operational
 ```
 
@@ -70,7 +71,7 @@ Primeiro execute apenas a comparação principal com a seed operacional:
 ```bash
 python -m src.experiments.study_runner \
   --seed-profile operational \
-  --arms primary local_steps_ce
+  --arms primary local_only
 ```
 
 Depois execute ou retome a matriz completa da seed `1993`:
@@ -137,11 +138,11 @@ final.
 ## Acompanhar execução
 
 ```bash
-column -s, -t < runs/studies/multi_dataset_balance_v2_bf16/run_index.csv | less -S
-tail -f runs/studies/multi_dataset_balance_v2_bf16/runs/seed_1993/primary/execution.log
+column -s, -t < runs/studies/example_multi_dataset/run_index.csv | less -S
+tail -f runs/studies/example_multi_dataset/runs/seed_1993/primary/execution.log
 ```
 
-No smoke, acrescente `/smoke` depois de `multi_dataset_balance_v2_bf16`.
+No smoke, acrescente `/smoke` depois de `example_multi_dataset`.
 
 ## Executar uma configuração isolada
 
@@ -261,24 +262,23 @@ Nos CSVs, confirme `evaluation_scheme=holdout`, `n_splits=1` e
 `descriptive_only_single_holdout`; `wilcoxon_stat` e `wilcoxon_p` ficam ausentes/`NaN`, e a AUC é
 rotulada como AUC do teste holdout.
 
-## Braços do manifesto
+## Braços do manifesto de exemplo
 
-| Braço | Agregação | Peso de cliente | Orçamento | Classificação ISIC |
-|---|---|---|---|---|
-| `primary` | hierárquica 50/50 | uniforme | 10 passos | CE + balanced_fold |
-| `local_steps_ce` | local-only | — | 10 passos | CE + balanced_fold |
-| `ablation_budget` | hierárquica 50/50 | uniforme | 2 épocas | CE + balanced_fold |
-| `local_epochs_ce` | local-only | — | 2 épocas | CE + balanced_fold |
-| `ablation_weighting` | hierárquica 50/50 | `num_examples` | 2 épocas | CE + balanced_fold |
-| `ablation_flat` | flat | `num_examples` | 2 épocas | CE + balanced_fold |
-| `ablation_focal` | hierárquica 50/50 | uniforme | 10 passos | focal sem pesos |
-| `local_steps_focal` | local-only | — | 10 passos | focal sem pesos |
+Todos os braços usam 10 passos por rodada e CE + `balanced_fold` nos dois datasets.
+
+| Braço | Setup | Topologia BUSI | Agregação | Peso de cliente | Partição |
+|---|---|---|---|---|---|
+| `primary` | federado | `multi_task` | hierárquica 50/50 | uniforme | base |
+| `local_only` | local-only | `multi_task` | — | — | base |
+| `ablation_flat` | federado | `multi_task` | flat | `num_examples` | base |
+| `single_task_primary` | federado | `single_task` | hierárquica 50/50 | uniforme | variante `single_task` |
+| `single_task_local` | local-only | `single_task` | — | — | variante `single_task` |
 
 ## Regras de interpretação
 
 - Compare métricas separadamente por `dataset × task`; nunca faça média global ponderada pelo
   número de imagens de BUSI e ISIC.
-- O resultado principal é `primary` versus `local_steps_ce`.
+- O resultado principal é `primary` versus `local_only`.
 - O smoke comprova o fluxo, mas suas métricas não são resultados científicos.
 - Os pares cliente × fold não são réplicas independentes; os testes de Wilcoxon são exploratórios.
 - Não apresente os resultados como benchmark oficial do ISIC 2018.

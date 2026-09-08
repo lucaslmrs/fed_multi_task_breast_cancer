@@ -24,17 +24,18 @@ partição nem em treino. Sempre rode isso depois de mexer no manifesto.
 
 ```bash
 python -m src.experiments.study_runner --seed-profile operational
-python -m src.experiments.study_runner --arms primary local_steps_ce      # subconjunto
+python -m src.experiments.study_runner --arms primary local_only          # subconjunto
 python -m src.experiments.study_runner --retry-incomplete                 # retoma folds truncados
 python -m src.experiments.study_runner --analyze-only                     # só re-roda a análise
 python -m src.experiments.training_curves <diretorio_da_run>              # reconstrói CSV/HTML/PNG
 ```
 
-O manifesto padrão é `studies/multi_dataset_balance_v2_bf16.yaml`: BF16, dois clientes concorrentes
-por GPU e as partições congeladas do v1. O histórico `studies/multi_dataset_balance_v1.yaml` fixa
-FP32 e `cuda_benchmark: false`; informe-o explicitamente para reproduzir ou retomar v1. Os hashes
-impedem resume entre as duas precisões. `--rebuild-partitions` **regenera a partição congelada** —
-não use sem intenção explícita: braços já executados deixam de ser comparáveis com os novos.
+O manifesto padrão é `studies/example_multi_dataset.yaml`: BF16, holdout 70/30 determinístico,
+clientes BUSI multitarefa e dois clientes concorrentes por GPU. Ele fixa o protocolo científico em
+`config_overrides` em vez de herdá-lo de `src/config.yaml`; copie-o para criar um estudo novo e
+mude `study_id`. Precisão entra no hash científico, então não há resume entre FP32 e BF16.
+`--rebuild-partitions` **regenera a partição congelada** — não use sem intenção explícita: braços
+já executados deixam de ser comparáveis com os novos.
 
 Depois dos smokes e antes de uma alocação longa de GPU, valide o runtime pareado:
 
@@ -53,26 +54,27 @@ partição separada/regenerada com intenção explícita.
 
 ## Como o estudo é montado
 
-Oito braços sobre a **mesma partição congelada** e a mesma semente, variando em três eixos:
+Três braços base sobre a **mesma partição congelada** e a mesma semente:
 
-| Eixo | Valores |
-|---|---|
-| Orçamento local | `steps` (10 passos fixos/rodada) ou `epochs` (2 épocas/rodada) |
-| Agregação | `hierarchical` + `uniform`/`num_examples`, ou `flat` (estilo FedAvg) |
-| Perda de classificação | CE com `balanced_fold`, ou Focal sem pesos |
+| Braço | Setup | O que varia |
+|---|---|---|
+| `primary` | federado | protocolo principal: steps (10/rodada), hierárquica/uniforme, CE `balanced_fold` |
+| `local_only` | local-only | mesmo orçamento, sem federação — o piso da comparação |
+| `ablation_flat` | federado | agregação `flat` + `num_examples` (estilo FedAvg) |
 
-Cada braço federado tem um par local-only com **orçamento idêntico** — é o piso da comparação.
-`primary` (federado, steps, hierárquica/uniforme, CE ponderada) pareia com `local_steps_ce`.
+Cada braço federado tem um par local-only com **orçamento idêntico**. Os braços base usam a
+topologia `multi_task` no BUSI: cada cliente possui as duas tarefas sobre as mesmas imagens.
 
-Mais **dois braços** (`multitask_primary`, `multitask_local`) variam um quarto eixo, a **topologia
-de cliente**, e por isso declaram `partition_variant: multitask`: cada cliente BUSI passa a possuir
-as duas tarefas sobre as mesmas imagens, o que exige uma partição própria. Um braço só pode
-sobrescrever campos que definem partição se declarar uma variante; os oito braços base mantêm a
-guarda original e o **caminho de partição original**, então acrescentar uma topologia nunca
-invalida execução já concluída. A partição de uma variante fica um diretório abaixo da base.
+Mais **dois braços** (`single_task_primary`, `single_task_local`) variam a **topologia de
+cliente** para `single_task` (a histórica: uma tarefa por cliente, com a mesma imagem em um cliente
+seg e em outro cliente cls), e por isso declaram `partition_variant: single_task`, que lhes dá uma
+partição própria. Um braço só pode sobrescrever campos que definem partição se declarar uma
+variante; os braços base mantêm a guarda original e o **caminho de partição original**, então
+acrescentar uma topologia nunca invalida execução já concluída. A partição de uma variante fica um
+diretório abaixo da base.
 
-Quatro clientes BUSI multitarefa (não dois) mantêm o orçamento em `steps` e o número de observações
-iguais aos dos braços monotarefa, de modo que a topologia seja a única variável.
+Para criar um estudo novo, copie `studies/example_multi_dataset.yaml`, mude `study_id` e edite os
+braços; o protocolo científico fica em `config_overrides`, nunca herdado de `src/config.yaml`.
 
 ## Onde caem os artefatos
 
@@ -126,7 +128,7 @@ o analisador não inventa curvas a partir do log.
 ```bash
 python -m src.experiments.analyze \
   --results <*_test_results.csv ...> --preds <*_cls_predictions.csv ...> \
-  --out runs/comparison --manifest studies/multi_dataset_balance_v2_bf16.yaml
+  --out runs/comparison --manifest studies/example_multi_dataset.yaml
 ```
 
 Aceita dois ou três conjuntos. Sem `--manifest` ele não sabe quais braços formam par.

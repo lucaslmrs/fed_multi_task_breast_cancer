@@ -362,12 +362,12 @@ tagged `descriptive_only_single_holdout`.
 
 ### Client topology arms
 
-`studies/multi_dataset_balance_v1.yaml` (historical FP32) and
-`studies/multi_dataset_balance_v2_bf16.yaml` (default BF16) carry two arms
-(`multitask_primary`, `multitask_local`)
-that declare `partition_variant: multitask`. An arm may override partition-defining fields **only**
-when it declares a variant; the eight base arms keep the original guard and the original partition
-path, so adding a topology never invalidates completed runs. A variant's master is nested one
+`studies/example_multi_dataset.yaml` (the default manifest) runs the `multi_task` BUSI topology in
+its base arms (`primary`, `local_only`, `ablation_flat`) and carries two arms
+(`single_task_primary`, `single_task_local`) that declare `partition_variant: single_task` to run
+the historical one-task-per-client topology. An arm may override partition-defining fields **only**
+when it declares a variant; the base arms keep the original guard and share one partition per
+seed, so adding a topology never invalidates completed runs. A variant's master is nested one
 directory deeper under the same `partition_template`.
 
 ## Multi-arm studies
@@ -376,6 +376,8 @@ directory deeper under the same `partition_template`.
 `(seed, partition_variant)` from a manifest in `studies/`. See the `federated-study` skill for the workflow, the artifact layout under
 `runs/studies/<study_id>/`, and the rules for reading the analysis tables.
 
-The v2 manifest reuses the v1 partition paths byte-for-byte. Precision and `cuda_benchmark` are
-scientific hash inputs; `runtime` and NVML telemetry are operational and excluded. See
+A manifest pins its scientific protocol (`CV`, precision, topology, client counts, budget,
+aggregation) in `config_overrides` instead of inheriting it from `src/config.yaml`, which is a
+working default that drifts between experiments. Precision and `cuda_benchmark` are scientific hash
+inputs; `runtime` and NVML telemetry are operational and excluded. See
 `docs/TRAINING_ACCELERATION.md`.

@@ -102,7 +102,7 @@ def _write_report(output: Path, report: dict, pairs: pd.DataFrame) -> None:
 def main(argv=None) -> Path:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--manifest", default="studies/multi_dataset_balance_v2_bf16.yaml"
+        "--manifest", default="studies/example_multi_dataset.yaml"
     )
     parser.add_argument("--seed", type=int, default=1993)
     # Five rounds amortize the fixed Ray/model startup while keeping the gate short enough

@@ -42,10 +42,11 @@ cruzado entre FP32 e BF16. O bloco `runtime` e a telemetria são operacionais e 
 de comparabilidade/resume. Batch de treino, partições, sementes, critérios, orçamento e validação
 por época/rodada continuam científicos.
 
-- `studies/multi_dataset_balance_v1.yaml`: protocolo histórico FP32, `cuda_benchmark: false`.
-- `studies/multi_dataset_balance_v2_bf16.yaml`: novo protocolo BF16, manifesto padrão.
-- v2 referencia exatamente os masters congelados do v1, inclusive a variante `multitask`; precisão
-  numérica não cria nem altera partições.
+- `studies/example_multi_dataset.yaml`: manifesto padrão, protocolo BF16 com
+  `cuda_benchmark: true` fixado em `config_overrides`.
+- Para um protocolo FP32, copie o manifesto e troque `training.precision` para `fp32` (e
+  `cuda_benchmark` para `false`); precisão numérica não cria nem altera partições, mas entra no hash
+  científico, então os dois estudos não compartilham resume.
 
 No federado, a validação continua ocorrendo depois de cada agregação. A avaliação pós-treino local e
 o antigo `best.pt` diagnóstico foram removidos; o artefato final continua sendo o tronco global da
@@ -83,12 +84,12 @@ python -m scripts.smoke_federated --setup both --samples 2
 # checkpoints temporários.
 python -m scripts.benchmark_training_runtime
 
-# Novo estudo padrão BF16.
+# Estudo de exemplo (BF16).
 python -m src.experiments.study_runner --seed-profile operational
 
-# Reprodução/continuação explícita do estudo histórico FP32.
+# Qualquer outro manifesto em studies/.
 python -m src.experiments.study_runner \
-  --manifest studies/multi_dataset_balance_v1.yaml \
+  --manifest studies/<meu_estudo>.yaml \
   --seed-profile operational
 ```
 
