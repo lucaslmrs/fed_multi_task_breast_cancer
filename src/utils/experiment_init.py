@@ -196,7 +196,7 @@ def init_optimizer(model: torch.nn.Module, optimizer: str, learning_rate: float 
     return optimizer
 
 
-def init_criterion_segmentation(loss_function: str = "dice") -> torch.nn.Module:
+def init_criterion_segmentation(loss_function: str = "dice", dice_weight=0.5, bce_weight=0.5) -> torch.nn.Module:
     """
     This function initialize the segmentation criterion chosen.
     Note: All the loss functions are initialized with sigmoid activation by default. Then, the segmentation map
@@ -206,6 +206,9 @@ def init_criterion_segmentation(loss_function: str = "dice") -> torch.nn.Module:
     :return: PyTorch module
     """
 
+    if loss_function == "DiceBCE":
+        from src.utils.segmentation_loss import DiceBCELoss
+        return DiceBCELoss(dice_weight, bce_weight)
     if loss_function == 'DICE':
         loss_function_criterion = DiceLoss(include_background=True, sigmoid=True, smooth_dr=1, smooth_nr=1,
                                            squared_pred=True)
@@ -248,7 +251,11 @@ def init_criterion_classification(
     without renormalising them.  Passing ``device`` avoids assuming CUDA is available or selected.
     """
     if n_classes == 2:
-        loss_function_criterion = torch.nn.BCEWithLogitsLoss()
+        if class_weights is not None:
+            from src.utils.supervision import WeightedBinaryClassificationLoss
+            loss_function_criterion = WeightedBinaryClassificationLoss(class_weights).to(device or 'cpu')
+        else:
+            loss_function_criterion = torch.nn.BCEWithLogitsLoss()
     else:
         if class_weights is not None and classes_weighted is not None:
             raise ValueError("Pass either class_weights (direct) or classes_weighted (legacy frequencies), not both")
@@ -319,7 +326,7 @@ def load_segmentation_experiment_artefacts(config_model, config_opt, config_loss
                                     width=config_model['width'], deep_supervision=config_model['deep_supervision'],
                                     save_folder=Path(run_path))
     optimizer = init_optimizer(model=model, optimizer=config_opt['opt'], learning_rate=config_opt['lr'])
-    criterion = init_criterion_segmentation(loss_function=config_loss['function'])
+    criterion = init_criterion_segmentation(config_loss['function'], config_loss.get('dice_weight', 0.5), config_loss.get('bce_weight', 0.5))
     scheduler = init_lr_scheduler(optimizer=optimizer, scheduler=config_opt['scheduler'], t_max=int(config_opt['t_max']),
                                   patience=int(config_opt['patience']), min_lr=float(config_opt['min_lr']),
                                   factor=float(config_opt['decrease_factor']))
@@ -337,7 +344,7 @@ def load_multitask_experiment_artefacts(
                                  deep_supervision=config_model['deep_supervision'],
                                  save_folder=Path(f'{run_path}/') if run_path is not None else None)
     optimizer = init_optimizer(model=model, optimizer=config_opt['opt'], learning_rate=config_opt['lr'])
-    segmentation_criterion = init_criterion_segmentation(loss_function=config_loss['function'])
+    segmentation_criterion = init_criterion_segmentation(config_loss['function'], config_loss.get('dice_weight', 0.5), config_loss.get('bce_weight', 0.5))
     classification_criterion = init_criterion_classification(n_classes=len(config_data['classes']),
                                                              classes_weighted=config_data.get("classes_weighted"),
                                                              class_weights=config_data.get("class_weights"),

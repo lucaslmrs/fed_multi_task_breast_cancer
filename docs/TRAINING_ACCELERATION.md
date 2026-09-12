@@ -94,7 +94,7 @@ python -m src.experiments.study_runner \
 ```
 
 O benchmark falha se o ganho ponta a ponta for menor que 25%, se houver NaN/Inf ou se a diferença
-absoluta média nas métricas primárias pareadas (Dice para segmentação e balanced accuracy para
+absoluta média nas métricas primárias pareadas (métrica de segmentação declarada no protocolo (`dice_positive` no novo estudo) e balanced accuracy para
 classificação) ultrapassar 0,02. O relatório compacto fica em
 `runs/benchmarks/<timestamp>_paired_fp32_bf16/`; use `--keep-runs` apenas se precisar inspecionar os
 checkpoints grandes.
@@ -127,3 +127,8 @@ wsl --shutdown
 
 Esse comando encerra as distribuições WSL em execução. Ele é uma etapa manual e nunca é executado
 automaticamente pelos scripts deste repositório.
+
+
+O estudo padrão agora usa `study_id: example_multi_dataset_dice_bce`, com Dice+BCE e máscaras
+vazias supervisionadas. Consulte [o protocolo de supervisão](DICE_BCE_SUPERVISION.md) para os comandos e as métricas
+separadas de alvos vazios e não vazios.

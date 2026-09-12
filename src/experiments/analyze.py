@@ -65,7 +65,8 @@ PREDS = [
 OUT = "runs/comparison"
 # --------------------------------------------------------------------------------------------------
 
-SEG_METRICS = ["dice", "iou", "sensitivity", "specificity", "precision"]
+SEG_METRICS = ["dice_positive", "iou_positive", "empty_fp_image_rate",
+               "empty_predicted_area_fraction", "dice", "iou", "sensitivity", "specificity", "precision"]
 CLS_BASE_METRICS = ["acc", "macro_f1", "balanced_acc", "auc"]
 # Preserve the public legacy constant; runtime discovery extends it to any number of classes.
 CLS_METRICS = CLS_BASE_METRICS + [
@@ -163,6 +164,16 @@ def _paired_inference(left, right, scheme):
     return statistic, p_value, "exploratory_only_non_independent_client_fold_pairs"
 
 
+def _primary_metric(task, frame):
+    if task == 'seg' and 'segmentation_primary_metric' in frame:
+        selected = frame['segmentation_primary_metric'].dropna().unique()
+        if len(selected) > 1:
+            raise ValueError('Cannot combine different segmentation primary metrics')
+        if len(selected) == 1:
+            return str(selected[0])
+    return PRIMARY[task]
+
+
 def _class_metric_sort_key(metric):
     match = _CLASS_METRIC_RE.match(str(metric))
     if match is None:
@@ -188,6 +199,14 @@ def _metrics_for(task, columns=None):
 
 def _add_class_metadata(row, metric, group):
     """Associate a long-format per-class metric with its optional human-readable name."""
+    if metric in SEG_METRICS:
+        row["metric_scope"] = (
+            "nonempty_targets" if metric.endswith("_positive") else
+            "empty_targets" if metric.startswith("empty_") else "all_supervised_targets"
+        )
+        for count in ("n_positive", "n_empty"):
+            if count in group:
+                row[count] = int(pd.to_numeric(group[count], errors="coerce").sum())
     match = _CLASS_METRIC_RE.match(str(metric))
     if match is None:
         return
@@ -218,7 +237,9 @@ def summary_table(df):
             values = pd.to_numeric(group[metric], errors="coerce")
             # Concatenating 3- and 7-class result frames creates all-NaN class 3..6 columns for
             # the 3-class dataset.  Those columns belong to the other label space, not this group.
-            if not values.notna().any():
+            if not values.notna().any() and metric not in {
+                "dice_positive", "iou_positive", "empty_fp_image_rate", "empty_predicted_area_fraction"
+            }:
                 continue
             row = {
                 "study_id": study_id,
@@ -253,9 +274,9 @@ def summary_by_seed(df):
             if metric not in group:
                 continue
             values = pd.to_numeric(group[metric], errors="coerce")
-            if not values.notna().any():
+            if not values.notna().any() and metric not in SEG_METRICS[:4]:
                 continue
-            rows.append({
+            row = {
                 "study_id": study_id,
                 "seed": seed,
                 "evaluation_scheme": scheme,
@@ -269,7 +290,9 @@ def summary_by_seed(df):
                 "mean": values.mean(),
                 "std": values.std(),
                 "n": int(values.notna().sum()),
-            })
+            }
+            _add_class_metadata(row, metric, group)
+            rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -337,7 +360,8 @@ def per_client_deltas(df, a="federated", b="standalone"):
     key = ["evaluation_scheme", "dataset", "fold", "client_id", "task"]
     left, right = df[df.setup == a], df[df.setup == b]
     rows = []
-    for task, metric in PRIMARY.items():
+    for task in PRIMARY:
+        metric = _primary_metric(task, df[df.task == task])
         task_left, task_right = left[left.task == task], right[right.task == task]
         if metric not in task_left or metric not in task_right:
             continue
@@ -440,7 +464,7 @@ def method_comparisons(df, comparisons):
                     "wilcoxon_p": p_value,
                     "inference_scope": inference_scope,
                 })
-                if metric == PRIMARY.get(task):
+                if metric == _primary_metric(task, group):
                     for record, left_value, right_value, delta in zip(
                         paired.itertuples(index=False), left_array, right_array, differences
                     ):
@@ -658,8 +682,9 @@ def _delta_bars(per_client, task, dataset=None):
     comparison = subset["comparison_id"].iloc[0] if not subset.empty else "comparison"
     scheme = subset["evaluation_scheme"].iloc[0] if not subset.empty else UNKNOWN_SINGLE_SPLIT
     unit = "client holdout" if scheme == HOLDOUT else "client-fold"
-    axis.set_title(f"{prefix}{task} - {comparison} ({PRIMARY[task]}) per {unit}")
-    axis.set_ylabel(f"Δ {PRIMARY[task]}")
+    metric = subset["metric"].iloc[0] if "metric" in subset and len(subset) else PRIMARY[task]
+    axis.set_title(f"{prefix}{task} - {comparison} ({metric}) per {unit}")
+    axis.set_ylabel(f"Δ {metric}")
     style_axis(axis)
     return _fig_to_b64(fig)
 

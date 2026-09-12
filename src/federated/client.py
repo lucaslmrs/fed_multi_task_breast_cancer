@@ -35,6 +35,7 @@ from src.federated.model_split import (
     set_personalized_state,
     set_shared_state,
 )
+from src.utils.metrics import metric_sample_count
 from src.utils.experiment_init import (
     init_criterion_classification,
     init_criterion_segmentation,
@@ -142,7 +143,7 @@ class FederatedClient(NumPyClient):
         self.optimizer = init_optimizer(
             self.model, config["optimizer"]["opt"], config["optimizer"]["lr"]
         )
-        self.seg_criterion = init_criterion_segmentation(config["loss"]["function"])
+        self.seg_criterion = init_criterion_segmentation(config["loss"]["function"], config["loss"].get("dice_weight", 0.5), config["loss"].get("bce_weight", 0.5))
 
         weighting_mode = self.data_cfg.get("class_weighting", "none")
         self.class_weights = resolve_class_weights(
@@ -300,7 +301,7 @@ class FederatedClient(NumPyClient):
             for metric_name, value in result.get("metrics", {}).get(task, {}).items():
                 rows.append({
                     "task": task, "metric_name": metric_name, "value": value,
-                    "n_samples": result.get("n", 0),
+                    "n_samples": metric_sample_count(result['metrics'][task], metric_name, result.get('n', 0)),
                 })
         for row in rows:
             row.update({
@@ -327,7 +328,7 @@ class FederatedClient(NumPyClient):
             for metric_name, value in result["task_metrics"].get(task, {}).items():
                 rows.append({
                     "task": task, "metric_name": metric_name, "value": value,
-                    "n_samples": self.task_mass.get(task, 0),
+                    "n_samples": metric_sample_count(result['task_metrics'][task], metric_name, self.task_mass.get(task, 0)),
                 })
         for row in rows:
             row.update({

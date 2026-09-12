@@ -1,5 +1,5 @@
 import logging
-import shutil
+import yaml
 import sys
 import time
 from datetime import datetime
@@ -13,6 +13,7 @@ from sklearn.metrics import f1_score as f1
 from torchvision.transforms import RandomRotation, RandomHorizontalFlip, RandomVerticalFlip
 
 from src.dataset.BUSI_dataloader import load_datasets
+from src.dataset.classic_dataloader import classic_data_config
 from src.utils.criterions import apply_criterion_multitask_segmentation_classification
 from src.utils.experiment_init import device_setup
 from src.utils.experiment_init import load_multitask_experiment_artefacts
@@ -78,93 +79,26 @@ def process_segmentation_predicted(outputs, masks):
     return dice_score_from_tensor(masks, outputs)
 
 
+def _epoch(num_classes, training):
+    from src.utils.classic_multitask import run_epoch
+    result = run_epoch(model, training_loader if training else validation_loader, dev, precision,
+                       num_classes, seg_criterion, cls_criterion, alpha,
+                       config_loss['inversely_weighted'], optimizer if training else None)
+    epoch_metrics['train' if training else 'val'] = result
+    values = (result['loss'], result['dice'], result['acc'], result['f1'])
+    return values if training else values + (result['seg_loss'], result['cls_loss'])
+
+
+epoch_metrics = {}
+
+
 def train_one_epoch(num_classes):
-    training_loss, training_dice = 0., 0.
-    gt_label, pred_label = [], []
-
-    # Iterating over training loader
-    for k, data in enumerate(training_loader):
-
-        # Loading the input data
-        inputs, masks, label = precision.move(data['image']), precision.move(data['mask']), precision.move(data['label'])
-        if num_classes > 2:
-            label = torch.nn.functional.one_hot(label.flatten().to(torch.int64), num_classes=3).to(torch.float)
-
-        # Zero the gradients for every batch
-        optimizer.zero_grad(set_to_none=True)
-
-        # Make predictions for this batch
-        with precision.autocast():
-            logits, outputs = model(inputs)
-            # Criteria consume logits directly; Dice applies sigmoid internally.
-            seg_loss, cls_loss = apply_criterion_multitask_segmentation_classification(
-                seg_criterion, masks, outputs, cls_criterion, label, logits,
-                config_loss['inversely_weighted']
-            )
-            total_loss = alpha * seg_loss + (1 - alpha) * cls_loss
-        precision.ensure_finite(total_loss, "classic multitask training")
-        training_loss += total_loss.item()
-
-        # Performing backward step through scaler methodology
-        total_loss.backward()
-        optimizer.step()
-
-        # processing predictions to calculate training metrics
-        # print(training_dice)
-        training_dice += process_segmentation_predicted(outputs, masks)
-        gt_label, pred_label = processes_classification_predicted(num_classes, logits, label, gt_label, pred_label)
-
-    avg_training_loss = training_loss / training_loader.__len__()
-    avg_training_dice = training_dice / training_loader.__len__()
-    training_acc = accuracy_score(gt_label, pred_label)
-    training_f1 = f1(y_true=gt_label, y_pred=pred_label, labels=[0, 1, 2], average='weighted')
-
-    del training_dice, gt_label, pred_label
-    return avg_training_loss, avg_training_dice, training_acc, training_f1
+    return _epoch(num_classes, True)
 
 
 @torch.inference_mode()
 def validate_one_epoch(num_classes):
-    val_loss, seg_val_loss, cls_val_loss, val_dice = 0.0, 0.0, 0.0, 0.0
-    val_gt_label, val_pred_label = [], []
-
-    # Iterating over training loader
-    for k, val_data in enumerate(validation_loader):
-
-        # Loading the input data
-        val_inputs = precision.move(val_data['image'])
-        val_masks = precision.move(val_data['mask'])
-        val_label = precision.move(val_data['label'])
-        if num_classes > 2:
-            val_label = torch.nn.functional.one_hot(val_label.flatten().to(torch.int64), num_classes=3).to(torch.float)
-
-        # Make predictions for this batch
-        with precision.autocast():
-            val_logits, val_outputs = model(val_inputs)
-            seg_loss, cls_loss = apply_criterion_multitask_segmentation_classification(
-                seg_criterion, val_masks, val_outputs, cls_criterion, val_label, val_logits,
-                config_loss['inversely_weighted']
-            )
-            total_loss = alpha * seg_loss + (1 - alpha) * cls_loss
-        precision.ensure_finite(total_loss, "classic multitask validation")
-        seg_val_loss += seg_loss.item()
-        cls_val_loss += cls_loss.item()
-        val_loss += total_loss.item()
-
-        # processing predictions to calculate training metrics
-        val_dice += process_segmentation_predicted(val_outputs, val_masks)
-        val_gt_label, val_pred_label = processes_classification_predicted(num_classes, val_logits, val_label, val_gt_label, val_pred_label)
-
-    # total segmentation loss and DICE metric for the epoch
-    avg_val_loss = val_loss / validation_loader.__len__()
-    avg_cls_val_loss = cls_val_loss / validation_loader.__len__()
-    avg_seg_val_loss = seg_val_loss / validation_loader.__len__()
-    avg_val_dice = val_dice / validation_loader.__len__()
-    val_acc = accuracy_score(val_gt_label, val_pred_label)
-    val_f1 = f1(y_true=val_gt_label, y_pred=val_pred_label, labels=[0, 1, 2], average='weighted')
-
-    del val_dice, val_pred_label, val_gt_label
-    return avg_val_loss, avg_val_dice, val_acc, val_f1, avg_seg_val_loss, avg_cls_val_loss
+    return _epoch(num_classes, False)
 
 
 # alphas = [1, .95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45, .4, .35, .3, .25, .2, .15, .1, .05, .0]
@@ -184,6 +118,8 @@ def run(config_path="./src/config.yaml", run_path=None):
     # loading config file
     full_config = load_config(config_path)
     config_model, config_opt, config_loss, config_training, config_data = load_config_file(path=config_path)
+    config_data = classic_data_config(full_config)
+    config_model["sequences"] = config_data.get("channels", config_model["sequences"])
     if config_training['CV'] < 1:
         sys.exit("training.CV must be at least 1 (CV=1 selects deterministic holdout)")
 
@@ -201,7 +137,9 @@ def run(config_path="./src/config.yaml", run_path=None):
     resolved_run_path = Path(run_path)
     resolved_run_path.mkdir(parents=True, exist_ok=True)
     init_log(log_name=str(resolved_run_path / "execution.log"))
-    shutil.copyfile(config_path, resolved_run_path / "config.yaml")
+    full_config['data'], full_config['model'] = config_data, config_model
+    (resolved_run_path / 'config.yaml').write_text(
+        yaml.safe_dump(full_config, sort_keys=False), encoding='utf-8')
     run_path = str(resolved_run_path)
     gpu_telemetry = start_gpu_telemetry(full_config, run_path)
     runtime_events = RuntimeEvents(Path(run_path) / "runtime_events.csv", dev)
@@ -215,7 +153,7 @@ def run(config_path="./src/config.yaml", run_path=None):
         RandomRotation(degrees=360)
     )
     train_loaders, val_loaders, test_loaders = load_datasets(
-        config_training, config_data, transforms, mode='CV',
+        config_training, config_data, transforms, mode='CV', tasks=('seg', 'cls'),
         runtime={
             "loader_options": dataloader_kwargs(full_config),
             "inference_batch_size": full_config.get("runtime", {}).get(
@@ -236,8 +174,17 @@ def run(config_path="./src/config.yaml", run_path=None):
         Path(f"{run_path}/fold_{n}/features_map/").mkdir(parents=True, exist_ok=True)
 
         # artefacts initialization
-        model, optimizer, seg_criterion, cls_criterion, scheduler = load_multitask_experiment_artefacts(config_data, config_model, config_opt, config_loss, n_augments, run_path)
+        if config_data.get('class_weighting', 'balanced_fold') == 'balanced_fold':
+            config_data['classes_weighted'] = None
+            config_data['class_weights'] = training_loader.dataset.class_weights
+        model, optimizer, seg_criterion, cls_criterion, scheduler = load_multitask_experiment_artefacts(config_data, config_model, config_opt, config_loss, n_augments, run_path, device=dev)
         model = model.to(dev)
+        (Path(run_path) / f'fold_{n}/supervision_metadata.yaml').write_text(yaml.safe_dump({
+            'class_names': config_data['classes'],
+            'class_weights': config_data.get('class_weights'),
+            'class_weight_source': 'supervised_training_rows_only',
+            'oversampling': False,
+        }), encoding='utf-8')
 
         # init metrics file
         write_metrics_file(path_file=f'{run_path}/fold_{n}/metrics.csv',
@@ -305,6 +252,11 @@ def run(config_path="./src/config.yaml", run_path=None):
                                              f'{train_f1_score:.4f},{val_acc_score:.4f},{val_f1_score:.4f}',
                                close=True)
 
+            pd.DataFrame([
+                dict(epoch=epoch, split=split, **values) for split, values in epoch_metrics.items()
+            ]).to_csv(Path(run_path) / f'fold_{n}/supervision_metrics.csv', mode='a',
+                      header=epoch == 0, index=False)
+
             # early stopping
             if patience > config_training['max_patience']:
                 logging.info(f"\nValidation loss did not improve over the last {patience} epochs. Stopping training")
@@ -328,7 +280,12 @@ def run(config_path="./src/config.yaml", run_path=None):
         logging.info(f"\n\n ###############  TESTING PHASE  ###############  \n\n")
         with runtime_events.measure("test", setup="multitask", fold=n) as event:
             with precision.autocast():
-                if len(config_data['classes']) <= 2:
+                if not (config_training.get('overlap_seg_based_on_class', False) or
+                        config_training.get('overlap_class_based_on_seg', False)):
+                    from src.utils.classic_multitask import inference_supervised_multitask
+                    test_results_segmentation, test_results_classification = inference_supervised_multitask(
+                        model, test_loader, f'{run_path}/fold_{n}', dev, precision)
+                elif len(config_data['classes']) <= 2:
                     test_results_segmentation, test_results_classification = inference_multitask_binary_classification_segmentation(model=model, test_loader=test_loader, path=f"{run_path}/fold_{n}/", device=dev)
                 else:
                     test_results_segmentation, test_results_classification = inference_multitask_multiclass_classification_segmentation(model=model, test_loader=test_loader, path=f"{run_path}/fold_{n}/", device=dev, threshold=config_training["threshold_postprocessing"], overlap_seg_based_on_class=config_training["overlap_seg_based_on_class"], overlap_class_based_on_seg=config_training["overlap_class_based_on_seg"])
@@ -336,10 +293,12 @@ def run(config_path="./src/config.yaml", run_path=None):
         logging.info(f"Segmentation metric:\n\n{test_results_segmentation.mean()}\n")
 
         # classification metrics
-        if len(config_data['classes']) <= 2:
+        if test_results_classification.empty:
+            logging.info('No classification supervision in test slice')
+        elif len(config_data['classes']) <= 2:
             logging.info(f"\nClassification metrics:\n\n{pformat(binary_classification_metrics(test_results_classification.ground_truth, test_results_classification.predicted_label))}")
         else:
-            logging.info(f"\nClassification metrics:\n\n{pformat(multiclass_classification_metrics(test_results_classification.ground_truth, test_results_classification.predicted_label))}")
+            logging.info(f"\nClassification metrics:\n\n{pformat(multiclass_classification_metrics(test_results_classification.ground_truth, test_results_classification.predicted_label, labels=list(range(len(config_data['classes'])))))}")
 
         # Clear the GPU memory after evaluating on the test data for this fold
         torch.cuda.empty_cache()

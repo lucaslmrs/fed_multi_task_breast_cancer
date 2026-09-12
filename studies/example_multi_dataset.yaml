@@ -1,5 +1,5 @@
 schema_version: 1
-study_id: example_multi_dataset
+study_id: example_multi_dataset_dice_bce
 base_config: src/config.yaml
 
 # Estudo de exemplo. Ele declara o protocolo científico aqui em vez de herdá-lo de
@@ -12,6 +12,13 @@ base_config: src/config.yaml
 # `federated.n_clients`, ...) só podem ser sobrescritos por um braço que declare `partition_variant`;
 # os braços base compartilham uma única partição congelada por semente.
 config_overrides:
+  loss:
+    function: DiceBCE
+    dice_weight: 0.5
+    bce_weight: 0.5
+  evaluation:
+    segmentation_primary_metric: dice_positive
+    segmentation_protocol: positive_and_empty_v1
   training:
     CV: 1                     # holdout determinístico; 70% treino+validação, 30% teste
     holdout_test_size: 0.30
@@ -21,6 +28,7 @@ config_overrides:
     Curated_BUSI:
       # Topologia principal: um cliente BUSI possui segmentação E classificação sobre as mesmas
       # imagens, então nenhuma imagem é duplicada entre silos.
+      seg_exclude_classes: []
       client_topology: multi_task
       classification_criterion: CE
       class_weighting: balanced_fold

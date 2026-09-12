@@ -184,7 +184,7 @@ def _test_client(
         precision=precision,
     )
     experiment = config.get("experiment", {})
-    evaluation = evaluation_metadata(config["training"])
+    evaluation = {**evaluation_metadata(config["training"]), **config.get("evaluation", {})}
     identifiers = {
         key: experiment[key]
         for key in ("study_id", "arm_id", "method_id", "seed")
@@ -522,6 +522,10 @@ def _save_results(df, pred_frames, run_path, setup):
     glance_col = {"seg": "dice", "cls": "acc"}
     for (dataset, task), group in df.groupby(["dataset", "task"]):
         metric = glance_col[task]
+        if task == 'seg' and 'segmentation_primary_metric' in group:
+            declared = group.segmentation_primary_metric.dropna().unique()
+            if len(declared) == 1:
+                metric = str(declared[0])
         scheme = group["evaluation_scheme"].iloc[0]
         unit = "clients in one holdout" if scheme == "holdout" else "client-fold observations"
         mean_value = group[metric].mean()

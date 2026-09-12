@@ -351,7 +351,7 @@ def inference_multitask_multiclass_classification_segmentation(
     for test_data in test_loader:
         patient_ids = _batch_values(test_data['patient_id'])
         test_label = move_to_device(test_data['label'], device)
-        test_label = torch.nn.functional.one_hot(test_label.flatten().to(torch.int64), num_classes=3).to(torch.float)
+        test_label = torch.nn.functional.one_hot(test_label.flatten().to(torch.int64), num_classes=len(test_loader.dataset.classes)).to(torch.float)
         test_images = move_to_device(test_data['image'], device)
 
         # generating segmentation
@@ -409,7 +409,7 @@ def inference_multiclass_classification(
     for test_data in test_loader:
         patient_ids = _batch_values(test_data['patient_id'])
         test_label = move_to_device(test_data['label'], device)
-        test_label = torch.nn.functional.one_hot(test_label.flatten().to(torch.int64), num_classes=3).to(torch.float)
+        test_label = torch.nn.functional.one_hot(test_label.flatten().to(torch.int64), num_classes=len(test_loader.dataset.classes)).to(torch.float)
         test_images = move_to_device(test_data['image'], device)
 
         # generating segmentation

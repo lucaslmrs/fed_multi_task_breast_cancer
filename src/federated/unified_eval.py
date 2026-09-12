@@ -1,7 +1,7 @@
 """
 Single shared evaluation used by ALL comparison setups (federated, local-only, centralized MTL),
-so the numbers are computed identically and stay comparable. No prediction-refining is applied
-(refino is a separate ablation), and segmentation slices already exclude the `normal` class.
+so the numbers are computed identically and stay comparable. No prediction-refining is applied. Valid empty targets participate in segmentation;
+positive overlap and false positives on empty targets are reported separately.
 
 `evaluate(model, loader, task, num_classes, device, class_names=None)` returns:
     - metrics: flat dict of scalar metrics (NaN where undefined) plus optional class-name metadata
@@ -22,7 +22,8 @@ import pandas as pd
 import torch
 from sklearn.metrics import balanced_accuracy_score, roc_auc_score
 
-from src.utils.metrics import calculate_metrics, multiclass_classification_metrics
+from src.utils.metrics import calculate_metrics, multiclass_classification_metrics, summarize_segmentation_strata
+from src.utils.supervision import _supervised
 from src.utils.training_runtime import PrecisionPolicy
 
 # metrics.py key -> short column name kept for segmentation (Hausdorff/pixel-accuracy dropped)
@@ -46,6 +47,8 @@ def evaluate(model, loader, task, num_classes, device, class_names=None, precisi
         out = {"n_test": 0}
         if task == "cls":
             _add_class_name_metadata(out, class_names)
+        elif task == "seg":
+            out.update(summarize_segmentation_strata([]))
         return out, None
     if task == "seg":
         return _evaluate_seg(model, loader, device, n, precision), None
@@ -74,6 +77,7 @@ def _add_class_name_metadata(target, class_names):
 
 def _evaluate_seg(model, loader, device, n, precision):
     acc = {short: [] for short in _SEG_KEYS.values()}
+    strata = []
     for data in loader:
         with precision.autocast():
             _, outputs = model(precision.move(data["image"]))
@@ -81,12 +85,18 @@ def _evaluate_seg(model, loader, device, n, precision):
         seg = (torch.sigmoid(seg.float()) > 0.5).float().cpu().numpy()
         mask = data["mask"].cpu().numpy()
         patient_ids = data["patient_id"].reshape(-1).cpu().tolist()
+        keep = _supervised(data, "seg", "cpu", len(patient_ids)).tolist()
         for index, patient_id in enumerate(patient_ids):
+            if not keep[index]:
+                continue
             m = calculate_metrics(mask[index:index + 1], seg[index:index + 1], str(patient_id))
+            strata.append(m)
             for key, short in _SEG_KEYS.items():
                 acc[short].append(m[key])
-    out = {short: float(np.nanmean(v)) for short, v in acc.items()}
-    out["n_test"] = n
+    out = {short: float(np.mean([x for x in v if np.isfinite(x)]))
+           if any(np.isfinite(x) for x in v) else np.nan for short, v in acc.items()}
+    out.update(summarize_segmentation_strata(strata))
+    out["n_test"] = len(strata)
     return out
 
 
@@ -96,21 +106,27 @@ def _evaluate_cls(model, loader, device, num_classes, n, class_names, precision)
         with precision.autocast():
             logits, _ = model(precision.move(data["image"]))
         pl = torch.mean(torch.stack(logits, dim=0), dim=0) if isinstance(logits, list) else logits
-        p = torch.softmax(pl.float(), dim=1).cpu().numpy()
-        label = data["label"].flatten().to(torch.int64).cpu().numpy()
-        patients.extend(data["patient_id"].cpu().numpy().tolist())
+        keep = _supervised(data, "cls", device, len(data["image"]))
+        pl = pl[keep].float()
+        if num_classes == 2 and pl.shape[1] == 1:
+            positive = pl.sigmoid()
+            p = torch.cat([1 - positive, positive], dim=1).cpu().numpy()
+        else:
+            p = torch.softmax(pl, dim=1).cpu().numpy()
+        label = data["label"][keep.cpu()].flatten().to(torch.int64).cpu().numpy()
+        patients.extend(data["patient_id"][keep.cpu()].cpu().numpy().tolist())
         gt.extend(label.tolist())
         pred.extend(p.argmax(axis=1).tolist())
         probs.extend(p.tolist())
 
     labels = list(range(num_classes))
-    m = multiclass_classification_metrics(gt, pred, labels=labels)
+    m = multiclass_classification_metrics(gt, pred, labels=labels) if gt else {}
     out = {
-        "acc": float(m["accuracy"]),
-        "macro_f1": float(m["f1_macro"]),
-        "balanced_acc": float(balanced_accuracy_score(gt, pred)),
-        "auc": _safe_auc(gt, np.asarray(probs), labels),
-        "n_test": n,
+        "acc": float(m.get("accuracy", np.nan)),
+        "macro_f1": float(m.get("f1_macro", np.nan)),
+        "balanced_acc": float(balanced_accuracy_score(gt, pred)) if gt else np.nan,
+        "auc": _safe_auc(gt, np.asarray(probs), labels) if gt else np.nan,
+        "n_test": len(gt),
     }
     for c in range(num_classes):
         out[f"precision_class_{c}"] = float(m.get(f"precision_class_{c}", np.nan))
@@ -118,7 +134,8 @@ def _evaluate_cls(model, loader, device, num_classes, n, class_names, precision)
     _add_class_name_metadata(out, class_names)
 
     preds = pd.DataFrame({"patient_id": patients, "ground_truth": gt, "predicted": pred})
-    preds[[f"prob_{c}" for c in range(num_classes)]] = probs
+    for c in range(num_classes):
+        preds[f"prob_{c}"] = [p[c] for p in probs]
     if class_names is not None:
         for c, name in enumerate(class_names):
             preds[f"class_name_{c}"] = name
@@ -128,6 +145,8 @@ def _evaluate_cls(model, loader, device, num_classes, n, class_names, precision)
 def _safe_auc(gt, probs, labels):
     """OvR macro AUC; NaN when the (small per-client) slice lacks a class so it is undefined."""
     try:
+        if len(labels) == 2:
+            return float(roc_auc_score(gt, probs[:, 1], labels=labels))
         return float(roc_auc_score(gt, probs, multi_class="ovr", average="macro", labels=labels))
     except ValueError as e:
         logging.info(f"AUC undefined for this slice ({e}); recording NaN")

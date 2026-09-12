@@ -18,103 +18,15 @@ import torch
 import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
 
-from src.utils.metrics import dice_score_from_tensor
+from src.utils.metrics import (dice_score_from_tensor, segmentation_strata_metrics,
+                               summarize_segmentation_strata, metric_sample_count)
 from src.utils.training_runtime import PrecisionPolicy, move_to_device
 
 
-def _seg_loss(criterion, masks, outputs, inversely_weighted):
-    if isinstance(outputs, list):
-        if inversely_weighted:
-            return torch.sum(torch.stack(
-                [criterion(s, masks) / (n + 1) for n, s in enumerate(reversed(outputs))]))
-        return torch.sum(torch.stack([criterion(s, masks) for s in outputs]))
-    return criterion(outputs, masks)
-
-
-def _cls_loss(criterion, label, logits):
-    if isinstance(logits, list):
-        return torch.sum(torch.stack([criterion(c, label) for c in logits]))
-    return criterion(logits, label)
-
-
-def _prep_label(label, num_classes):
-    if num_classes > 2:
-        return F.one_hot(label.flatten().to(torch.int64), num_classes=num_classes).to(torch.float)
-    return label
-
-
-def _avg_logits(logits):
-    """Collapse a deep-supervision list of class logits into a single tensor."""
-    if isinstance(logits, list):
-        return torch.mean(torch.stack(logits, dim=0), dim=0)
-    return logits
-
-
-def resolve_tasks(task=None, tasks=None) -> tuple:
-    """Normalise the legacy ``task`` argument and the multi-task ``tasks`` argument into a tuple."""
-    if tasks is None:
-        if task is None:
-            raise ValueError("Either task or tasks must be provided")
-        tasks = (task,)
-    tasks = tuple(dict.fromkeys(tasks))
-    if not tasks:
-        raise ValueError("tasks must contain at least one task")
-    unknown = [item for item in tasks if item not in {"seg", "cls"}]
-    if unknown:
-        raise ValueError(f"Unknown task(s) {unknown}; expected 'seg' and/or 'cls'")
-    return tasks
-
-
-def resolve_task_lambdas(tasks, task_lambdas=None) -> dict:
-    """Per-task loss weights, defaulting to a uniform split (1.0 for a single-task client)."""
-    if task_lambdas is None:
-        return {name: 1.0 / len(tasks) for name in tasks}
-    missing = [name for name in tasks if name not in task_lambdas]
-    if missing:
-        raise ValueError(f"task_lambdas is missing weights for {missing}")
-    return {name: float(task_lambdas[name]) for name in tasks}
-
-
-_SUPERVISION_FLAG = {"seg": "has_mask", "cls": "has_label"}
-
-
-def _supervised(data, task, device, batch_size):
-    """Boolean selector of the samples in this batch that supervise ``task``.
-
-    Falls back to "everything is supervised" when the flag is absent, which keeps loaders built by
-    older callers (and hand-made test fixtures) working.
-    """
-    flag = data.get(_SUPERVISION_FLAG[task])
-    if flag is None:
-        return torch.ones(batch_size, dtype=torch.bool, device=device)
-    return move_to_device(flag.reshape(-1), device).to(dtype=torch.bool)
-
-
-def _combined_loss(data, logits, outputs, tasks, lambdas, device, num_classes,
-                   seg_criterion, cls_criterion, inversely_weighted):
-    """``sum_t lambda_t * L_t`` over supervised samples plus raw per-task terms."""
-    batch_size = int(data["image"].shape[0])
-    terms, counted, raw_terms = [], [], {}
-    for task in tasks:
-        keep = _supervised(data, task, device, batch_size)
-        if not bool(keep.any()):
-            continue
-        if task == "seg":
-            masks = move_to_device(data["mask"], device)[keep]
-            selected = [item[keep] for item in outputs] if isinstance(outputs, list) else outputs[keep]
-            term = _seg_loss(seg_criterion, masks, selected, inversely_weighted)
-        else:
-            label = _prep_label(move_to_device(data["label"], device)[keep], num_classes)
-            selected = [item[keep] for item in logits] if isinstance(logits, list) else logits[keep]
-            term = _cls_loss(cls_criterion, label, selected)
-        terms.append(lambdas[task] * term)
-        counted.append(task)
-        raw_terms[task] = term
-    if not terms:
-        raise RuntimeError(
-            "A batch carried no supervision for any owned task; the client partition is malformed"
-        )
-    return torch.sum(torch.stack(terms)), counted, raw_terms
+from src.utils.supervision import (
+    _seg_loss, _cls_loss, _prep_label, _avg_logits, resolve_tasks,
+    resolve_task_lambdas, _supervised, _combined_loss,
+)
 
 
 def _empty_task_stats(tasks):
@@ -126,6 +38,7 @@ def _empty_task_stats(tasks):
             "fn": 0.0,
             "predicted_positive": 0.0,
             "ground_truth_positive": 0.0,
+            "strata": [],
             "ground_truth": [],
             "predicted": [],
         }
@@ -150,6 +63,8 @@ def _update_task_stats(stats, data, logits, outputs, task, device, num_classes):
         current["fn"] += float(torch.logical_and(torch.logical_not(predicted), masks).sum().item())
         current["predicted_positive"] += float(predicted.sum().item())
         current["ground_truth_positive"] += float(masks.sum().item())
+        current['strata'].extend(segmentation_strata_metrics(mask, prediction)
+                                 for mask, prediction in zip(masks.cpu().numpy(), predicted.cpu().numpy()))
         return
 
     label = _prep_label(move_to_device(data["label"], device)[keep], num_classes)
@@ -182,7 +97,8 @@ def _finalize_task_metrics(stats, task, num_classes):
         else:
             dice = (2.0 * tp) / max(2.0 * tp + fp + fn, 1.0)
             iou = tp / max(tp + fp + fn, 1.0)
-        return {"dice": float(dice), "iou": float(iou)}
+        return {"dice": float(dice), "iou": float(iou),
+                **summarize_segmentation_strata(current["strata"])}
 
     ground_truth = current["ground_truth"]
     predicted = current["predicted"]
@@ -213,12 +129,12 @@ def _history_rows(tasks, task_stats, task_loss_sums, task_loss_counts,
                 "value": task_loss_sums[task] / task_loss_counts[task],
                 "n_samples": task_stats[task]["n_samples"],
             })
-        for metric_name, value in _finalize_task_metrics(
-            task_stats, task, num_classes=task_stats[task].get("num_classes", 2)
-        ).items():
+        metrics = _finalize_task_metrics(
+            task_stats, task, num_classes=task_stats[task].get("num_classes", 2))
+        for metric_name, value in metrics.items():
             rows.append({
                 "task": task, "metric_name": metric_name, "value": value,
-                "n_samples": task_stats[task]["n_samples"],
+                "n_samples": metric_sample_count(metrics, metric_name, task_stats[task]["n_samples"]),
             })
     for row in rows:
         row.update({
@@ -461,7 +377,7 @@ def _evaluate_multitask(model, loader, tasks, lambdas, device, num_classes,
     """Combined-objective evaluation with one metric per owned task.
 
     Dice is averaged over the mask-supervised samples only, and accuracy over the label-supervised
-    ones, so BUSI's ``normal`` images count towards classification without ever entering Dice.
+    ones. Valid BUSI normal masks supervise both tasks under the new protocol.
     """
     total_loss, n_batches = 0.0, 0
     dice_sum, dice_batches = 0.0, 0

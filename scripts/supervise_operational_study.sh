@@ -3,9 +3,9 @@
 set -euo pipefail
 
 STUDY_HOME="/home/lucas/fed_multi_task_breast_cancer"
-# Override with STUDY_ID=<study_id> to supervise a different manifest in studies/.
-STUDY_ID="${STUDY_ID:-example_multi_dataset}"
-MANIFEST="studies/$STUDY_ID.yaml"
+# Override MANIFEST and STUDY_ID together when supervising another study.
+STUDY_ID="${STUDY_ID:-example_multi_dataset_dice_bce}"
+MANIFEST="${MANIFEST:-studies/example_multi_dataset.yaml}"
 STUDY_DIR="$STUDY_HOME/runs/studies/$STUDY_ID"
 SUPERVISOR_LOG="$STUDY_DIR/supervisor.log"
 

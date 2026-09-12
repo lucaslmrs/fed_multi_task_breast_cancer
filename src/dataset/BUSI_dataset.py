@@ -79,6 +79,8 @@ class BUSI(Dataset):
         # images/masks).  ``records`` normalises pandas scalar access and makes lazy reads cheap.
         self.mapping_file = mapping_file.copy().reset_index(drop=True)
         self.data = self.mapping_file.to_dict(orient="records")
+        if any(_missing(row.get('mask_path')) and _missing(row.get('class')) for row in self.data):
+            raise ValueError('Every image must have at least one valid annotation')
         self.transforms = transforms
         self.semantic_segmentation = semantic_segmentation
         self.channels = channels
@@ -198,7 +200,7 @@ class BUSI(Dataset):
             "class": class_name,
             # Per-sample supervision flags.  A multi-task client owns rows whose mask or label is
             # absent, and its loss must skip the corresponding term instead of training against the
-            # safe placeholders (an all-zero mask is a legitimate target only for BUSI's `normal`).
+            # safe placeholders (an all-zero mask is a legitimate fully annotated negative target).
             "has_mask": torch.tensor(not _missing(patient_info.get("mask_path"))),
             "has_label": torch.tensor(not _missing(patient_info.get("class"))),
             "image": image,

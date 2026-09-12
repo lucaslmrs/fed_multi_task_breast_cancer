@@ -71,6 +71,7 @@ def calculate_metrics(ground_truth: np.ndarray, segmentation: np.ndarray, patien
     metrics[JACC] = jaccard_index(tp, fp, fn, gt, seg)
     metrics[PREC] = precision(tp, fp)
 
+    metrics.update(segmentation_strata_metrics(ground_truth, segmentation))
     return metrics
 
 
@@ -378,7 +379,7 @@ def binary_classification_metrics(ground_truth, predictions):
     metrics = {}
 
     # getting confusion matrix
-    cm = confusion_matrix(y_true=ground_truth, y_pred=predictions).ravel()
+    cm = confusion_matrix(y_true=ground_truth, y_pred=predictions, labels=[0, 1]).ravel()
     tn, fp, fn, tp = cm.ravel()
 
     metrics["Precision"] = precision(tp, fp)
@@ -446,3 +447,46 @@ def calculate_f1_multiclass(ground_truth, predictions, labels):
     f1_scores['f1_weighted'] = f1(ground_truth, predictions, labels=labels, average='weighted')
 
     return f1_scores
+
+
+SEGMENTATION_STRATA_METRICS = (
+    'dice_positive', 'iou_positive', 'empty_fp_image_rate',
+    'empty_predicted_area_fraction',
+)
+
+
+def segmentation_strata_metrics(ground_truth, prediction):
+    """One image, with a real binary target. An empty annotation is a valid negative."""
+    nonempty = bool(np.asarray(ground_truth).astype(bool).any())
+    pred = np.asarray(prediction).astype(bool)
+    gt = np.asarray(ground_truth).astype(bool)
+    tp = float(np.logical_and(gt, pred).sum())
+    fp = float(np.logical_and(~gt, pred).sum())
+    fn = float(np.logical_and(gt, ~pred).sum())
+    return {
+        'dice_positive': 2*tp/(2*tp+fp+fn) if nonempty else np.nan,
+        'iou_positive': tp/(tp+fp+fn) if nonempty else np.nan,
+        'empty_fp_image_rate': float(pred.any()) if not nonempty else np.nan,
+        'empty_predicted_area_fraction': float(pred.mean()) if not nonempty else np.nan,
+        'n_positive': int(nonempty), 'n_empty': int(not nonempty),
+    }
+
+
+def summarize_segmentation_strata(rows):
+    """Macro means within each target stratum, plus actual image counts."""
+    out = {}
+    for key in SEGMENTATION_STRATA_METRICS:
+        values = [float(row[key]) for row in rows if key in row and np.isfinite(row[key])]
+        out[key] = float(np.mean(values)) if values else np.nan
+    for key in ('n_positive', 'n_empty'):
+        out[key] = sum(int(row.get(key, 0)) for row in rows)
+    return out
+
+
+
+def metric_sample_count(metrics, name, total):
+    if name in {'dice_positive', 'iou_positive'}:
+        return int(metrics.get('n_positive', 0))
+    if name.startswith('empty_'):
+        return int(metrics.get('n_empty', 0))
+    return int(total)

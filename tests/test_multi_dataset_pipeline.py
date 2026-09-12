@@ -201,6 +201,8 @@ class MultiTaskClientTopologyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         config = yaml.safe_load((ROOT / "src/config.yaml").read_text(encoding="utf-8"))
+        config["datasets"]["Curated_BUSI"]["seg_exclude_classes"] = ["normal"]
+        # Explicit legacy exclusion remains supported.
         # BUSI alone keeps the fixture fast; ISIC cannot host this topology anyway.
         config["federated"]["datasets"] = ["Curated_BUSI"]
         config["datasets"]["Curated_BUSI"]["client_topology"] = "multi_task"

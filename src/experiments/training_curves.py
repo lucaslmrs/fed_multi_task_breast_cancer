@@ -46,6 +46,12 @@ SECONDARY_METRICS = {
 }
 
 
+def _primary_metric(task, frame):
+    if task == 'seg' and 'dice_positive' in set(frame.loc[frame.task == task, 'metric_name']):
+        return 'dice_positive'
+    return PRIMARY_METRIC.get(task)
+
+
 def _safe_name(value):
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value)).strip("_") or "item"
 
@@ -283,10 +289,11 @@ def _plot_group(frame, dataset, task, title):
 
 def _aggregate_primary(frame, extra_group=()):
     rows = []
+    primary = {task: _primary_metric(task, frame) for task in PRIMARY_METRIC}
     selected = frame[
         (frame.phase == "post_aggregation_round")
         & (frame.split == "val")
-        & frame.apply(lambda row: row.metric_name == PRIMARY_METRIC.get(row.task), axis=1)
+        & frame.apply(lambda row: row.metric_name == primary.get(row.task), axis=1)
     ]
     keys = list(extra_group) + ["dataset", "task", "fold", "round", "metric_name"]
     for values, group in selected.groupby(keys, dropna=False, sort=True):
@@ -323,8 +330,9 @@ def _plot_overview(frame, title="Visão geral do treinamento"):
                 color=line_style["color"], alpha=0.12,
             )
             fold_points.append(fold_frame[["round", "value"]])
-        _plot_fold_mean(ax, fold_points, PRIMARY_METRIC[task])
-        ax.set_title(f"{dataset} / {task} / {PRIMARY_METRIC[task]}")
+        metric = _primary_metric(task, frame)
+        _plot_fold_mean(ax, fold_points, metric)
+        ax.set_title(f"{dataset} / {task} / {metric}")
         ax.set_xlabel("round")
         ax.set_ylim(-0.03, 1.03)
         style_axis(ax)

@@ -35,7 +35,7 @@ congelada usada pelos estudos de cross-validation.
 Artefatos do smoke:
 
 ```text
-runs/studies/example_multi_dataset/smoke/
+runs/studies/example_multi_dataset_dice_bce/smoke/
 ├── execution_plan.csv
 ├── run_index.csv
 ├── runs/seed_1993/<arm_id>/
@@ -138,11 +138,11 @@ final.
 ## Acompanhar execução
 
 ```bash
-column -s, -t < runs/studies/example_multi_dataset/run_index.csv | less -S
-tail -f runs/studies/example_multi_dataset/runs/seed_1993/primary/execution.log
+column -s, -t < runs/studies/example_multi_dataset_dice_bce/run_index.csv | less -S
+tail -f runs/studies/example_multi_dataset_dice_bce/runs/seed_1993/primary/execution.log
 ```
 
-No smoke, acrescente `/smoke` depois de `example_multi_dataset`.
+No smoke, acrescente `/smoke` depois de `example_multi_dataset_dice_bce`.
 
 ## Executar uma configuração isolada
 
@@ -286,3 +286,8 @@ Todos os braços usam 10 passos por rodada e CE + `balanced_fold` nos dois datas
   classificação não representam um treino centralizado pareado equivalente.
 - A matriz operacional completa pode levar muitas horas; execute primeiro os dois braços
   principais e use `run_index.csv` para retomada segura.
+
+
+O estudo padrão agora usa `study_id: example_multi_dataset_dice_bce`, com Dice+BCE e máscaras
+vazias supervisionadas. Consulte [o protocolo de supervisão](docs/DICE_BCE_SUPERVISION.md) para os comandos e as métricas
+separadas de alvos vazios e não vazios.

@@ -30,7 +30,8 @@ python -m src.experiments.study_runner --analyze-only                     # só 
 python -m src.experiments.training_curves <diretorio_da_run>              # reconstrói CSV/HTML/PNG
 ```
 
-O manifesto padrão é `studies/example_multi_dataset.yaml`: BF16, holdout 70/30 determinístico,
+O manifesto padrão é `studies/example_multi_dataset.yaml` (`study_id: example_multi_dataset_dice_bce`):
+Dice+BCE, máscaras vazias supervisionadas, BF16 e holdout 70/30 determinístico,
 clientes BUSI multitarefa e dois clientes concorrentes por GPU. Ele fixa o protocolo científico em
 `config_overrides` em vez de herdá-lo de `src/config.yaml`; copie-o para criar um estudo novo e
 mude `study_id`. Precisão entra no hash científico, então não há resume entre FP32 e BF16.
@@ -141,3 +142,12 @@ Aceita dois ou três conjuntos. Sem `--manifest` ele não sabe quais braços for
 - **NÃO** leia `per_client_deltas.csv` entre topologias diferentes como delta pareado: as fatias de
   teste por cliente mudam. Dentro de uma topologia (federado vs local) ele continua válido.
 - **NÃO** descreva um p-valor deste estudo como "estatisticamente significativo".
+
+
+## Máscaras vazias e supervisão parcial
+
+No protocolo Dice+BCE, imagens normais do BUSI participam de segmentação e classificação.
+A tarefa é omitida apenas quando sua anotação não foi concedida pela partição. Uma máscara
+vazia válida não é uma anotação ausente. `dice_positive` mede alvos não vazios; relate também
+`empty_fp_image_rate`, `empty_predicted_area_fraction`, `n_positive` e `n_empty`.
+As métricas globais históricas permanecem disponíveis. Consulte `docs/DICE_BCE_SUPERVISION.md`.

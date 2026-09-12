@@ -1,5 +1,5 @@
 import logging
-import shutil
+import yaml
 import sys
 import time
 from datetime import datetime
@@ -14,6 +14,7 @@ from sklearn.metrics import f1_score as f1
 from torchvision.transforms import RandomRotation, RandomHorizontalFlip, RandomVerticalFlip
 
 from src.dataset.BUSI_dataloader import load_datasets
+from src.dataset.classic_dataloader import classic_data_config
 from src.utils.criterions import apply_criterion_classification
 from src.utils.experiment_init import device_setup
 from src.utils.experiment_init import load_classification_experiment_artefacts
@@ -42,7 +43,7 @@ def train_one_epoch():
     for k, data in enumerate(training_loader):
         inputs, label = precision.move(data['image']), precision.move(data['label'])
         if len(config_data['classes']) > 2:
-            label = torch.nn.functional.one_hot(label.flatten().to(torch.int64), num_classes=3).to(torch.float)
+            label = torch.nn.functional.one_hot(label.flatten().to(torch.int64), num_classes=len(config_data["classes"])).to(torch.float)
 
         # Zero your gradients for every batch!
         optimizer.zero_grad(set_to_none=True)
@@ -93,8 +94,8 @@ def train_one_epoch():
         ground_truth_label = [tensor.item() for tensor in ground_truth_label]
         predicted_label = [tensor.item() for tensor in predicted_label]
         running_acc = accuracy_score(ground_truth_label, predicted_label)
-        running_f1_score = f1(y_true=ground_truth_label, y_pred=predicted_label, labels=[0, 1, 2], average='micro')
-        # macro_f1 = f1_score(y_true=ground_truth_label, y_pred=predicted_label, labels=[0, 1, 2], average='macro')
+        running_f1_score = f1(y_true=ground_truth_label, y_pred=predicted_label, labels=list(range(len(config_data["classes"]))), average='micro')
+        # macro_f1 = f1_score(y_true=ground_truth_label, y_pred=predicted_label, labels=list(range(len(config_data["classes"]))), average='macro')
     else:
         running_acc = accuracy_from_tensor(torch.Tensor(ground_truth_label), torch.Tensor(predicted_label))
         running_f1_score = f1_score_from_tensor(torch.Tensor(ground_truth_label), torch.Tensor(predicted_label))
@@ -113,7 +114,7 @@ def validate_one_epoch():
         validation_images = precision.move(validation_data['image'])
         validation_label = precision.move(validation_data['label'])
         if len(config_data['classes']) > 2:
-            validation_label = torch.nn.functional.one_hot(validation_label.flatten().to(torch.int64), num_classes=3).to(torch.float)
+            validation_label = torch.nn.functional.one_hot(validation_label.flatten().to(torch.int64), num_classes=len(config_data["classes"])).to(torch.float)
 
         with precision.autocast():
             pred_val_class = model(validation_images)
@@ -159,8 +160,8 @@ def validate_one_epoch():
         val_ground_truth_label = [tensor.item() for tensor in val_ground_truth_label]
         val_predicted_label = [tensor.item() for tensor in val_predicted_label]
         running_acc = accuracy_score(val_ground_truth_label, val_predicted_label)
-        running_f1_score = f1(y_true=val_ground_truth_label, y_pred=val_predicted_label, labels=[0, 1, 2], average='micro')
-        # macro_f1 = f1_score(y_true=ground_truth_label, y_pred=predicted_label, labels=[0, 1, 2], average='macro')
+        running_f1_score = f1(y_true=val_ground_truth_label, y_pred=val_predicted_label, labels=list(range(len(config_data["classes"]))), average='micro')
+        # macro_f1 = f1_score(y_true=ground_truth_label, y_pred=predicted_label, labels=list(range(len(config_data["classes"]))), average='macro')
     else:
         running_acc = accuracy_from_tensor(torch.Tensor(val_ground_truth_label), torch.Tensor(val_predicted_label))
         running_f1_score = f1_score_from_tensor(torch.Tensor(val_ground_truth_label), torch.Tensor(val_predicted_label))
@@ -179,6 +180,8 @@ def run(config_path="./src/config.yaml", run_path=None):
     # loading config file
     full_config = load_config(config_path)
     config_model, config_opt, config_loss, config_training, config_data = load_config_file(path=config_path)
+    config_data = classic_data_config(full_config)
+    config_model["sequences"] = config_data.get("channels", config_model["sequences"])
     if config_training['CV'] < 1:
         sys.exit("training.CV must be at least 1 (CV=1 selects deterministic holdout)")
 
@@ -196,7 +199,9 @@ def run(config_path="./src/config.yaml", run_path=None):
     resolved_run_path = Path(run_path)
     resolved_run_path.mkdir(parents=True, exist_ok=True)
     init_log(log_name=str(resolved_run_path / "execution.log"))
-    shutil.copyfile(config_path, resolved_run_path / "config.yaml")
+    full_config['data'], full_config['model'] = config_data, config_model
+    (resolved_run_path / 'config.yaml').write_text(
+        yaml.safe_dump(full_config, sort_keys=False), encoding='utf-8')
     run_path = str(resolved_run_path)
     gpu_telemetry = start_gpu_telemetry(full_config, run_path)
     runtime_events = RuntimeEvents(Path(run_path) / "runtime_events.csv", dev)
@@ -210,7 +215,7 @@ def run(config_path="./src/config.yaml", run_path=None):
         RandomRotation(degrees=360),
     )
     train_loaders, val_loaders, test_loaders = load_datasets(
-        config_training, config_data, transforms, mode='CV',
+        config_training, config_data, transforms, mode='CV', tasks=('cls',),
         runtime={
             "loader_options": dataloader_kwargs(full_config),
             "inference_batch_size": full_config.get("runtime", {}).get(
@@ -327,7 +332,7 @@ def run(config_path="./src/config.yaml", run_path=None):
         if len(config_data['classes']) <= 2:
             logging.info(f"\nClassification metrics:\n\n{pformat(binary_classification_metrics(test_results_classification.ground_truth, test_results_classification.predicted_label))}")
         else:
-            logging.info(f"\nClassification metrics:\n\n{pformat(multiclass_classification_metrics(test_results_classification.ground_truth, test_results_classification.predicted_label))}")
+            logging.info(f"\nClassification metrics:\n\n{pformat(multiclass_classification_metrics(test_results_classification.ground_truth, test_results_classification.predicted_label, labels=list(range(len(config_data['classes'])))))}")
 
         # Clear the GPU memory after evaluating on the test data for this fold
         torch.cuda.empty_cache()
