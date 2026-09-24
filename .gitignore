@@ -54,6 +54,9 @@ venv.bak/
 .idea/
 *.DS_*
 
+# Windows download metadata (alternate data streams copied into WSL)
+*:Zone.Identifier
+
 # Claude Code local settings
 .claude/settings.local.json
 
