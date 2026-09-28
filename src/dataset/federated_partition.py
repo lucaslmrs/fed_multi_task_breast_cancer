@@ -36,6 +36,7 @@ from src.dataset.splitting import (
 
 CLASS_COL = "class"
 GROUP_COL = "lesion_id"
+STRATUM_COL = "_stratum"  # transient per-group stratification key; never written
 TASKS = ("seg", "cls")
 
 
@@ -58,22 +59,46 @@ def _label_mask(series: pd.Series, label) -> pd.Series:
     return series.isna() if label is None else series == label
 
 
-def _group_summary(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
+def _group_summary(
+    df: pd.DataFrame, group_col: str, label_col: str = CLASS_COL
+) -> pd.DataFrame:
+    """One row per group: its label (exposed as ``CLASS_COL``) and its row count ``_size``.
+
+    ``label_col`` must be constant within a group.  It is ``class`` for ISIC lesions, and a
+    per-group stratum for datasets whose groups legitimately span classes (TCGA-LGG patients).
+    """
     if group_col not in df.columns:
         raise ValueError(f"Grouped partition requires column '{group_col}'")
     if df[group_col].isna().any():
         raise ValueError(f"Grouped partition requires non-null '{group_col}' values")
 
-    conflicts = df.groupby(group_col, sort=False)[CLASS_COL].nunique(dropna=False)
+    conflicts = df.groupby(group_col, sort=False)[label_col].nunique(dropna=False)
     if (conflicts > 1).any():
         bad = conflicts[conflicts > 1].index.tolist()[:5]
         raise ValueError(f"Groups span multiple classes in '{group_col}': {bad}")
 
     summary = (
         df.groupby(group_col, sort=False, as_index=False)
-        .agg(**{CLASS_COL: (CLASS_COL, "first"), "_size": (group_col, "size")})
+        .agg(**{CLASS_COL: (label_col, "first"), "_size": (group_col, "size")})
     )
     return summary
+
+
+def _group_strata(df: pd.DataFrame, group_col: str, n_bins: int) -> pd.Series:
+    """Per-row stratum: quantile bin of the group's fraction of rows with a non-empty mask.
+
+    Used when a group spans classes by construction (every TCGA-LGG patient has tumour and
+    non-tumour slices), so class purity cannot be the stratification key.
+    """
+    if n_bins < 1:
+        raise ValueError(f"group_strata must be >= 1, got {n_bins}")
+    if "tumor_pixels" not in df.columns:
+        raise ValueError("Patient-level strata require the 'tumor_pixels' column")
+    if df[group_col].isna().any():
+        raise ValueError(f"Grouped partition requires non-null '{group_col}' values")
+    fraction = (df["tumor_pixels"] > 0).groupby(df[group_col], sort=False).mean()
+    bins = pd.qcut(fraction.rank(method="first"), q=min(n_bins, len(fraction)), labels=False)
+    return df[group_col].map(bins).astype(int)
 
 
 def _grouped_dirichlet_partition(
@@ -82,10 +107,11 @@ def _grouped_dirichlet_partition(
     alpha: float,
     seed: int,
     group_col: str,
+    label_col: str = CLASS_COL,
 ) -> list:
     """Label-Dirichlet partition in which every group is allocated as one atomic unit."""
     rng = np.random.default_rng(seed)
-    summary = _group_summary(df, group_col)
+    summary = _group_summary(df, group_col, label_col)
     assignments = {c: [] for c in range(n_clients)}
 
     for cls in _label_values(summary[CLASS_COL]):
@@ -111,6 +137,7 @@ def dirichlet_partition(
     alpha: float,
     seed: int,
     group_col: str = None,
+    label_col: str = CLASS_COL,
 ) -> list:
     """Partition rows by label-distribution Dirichlet.
 
@@ -119,7 +146,7 @@ def dirichlet_partition(
     """
     _validate_partition_args(n_clients, alpha)
     if group_col is not None:
-        return _grouped_dirichlet_partition(df, n_clients, alpha, seed, group_col)
+        return _grouped_dirichlet_partition(df, n_clients, alpha, seed, group_col, label_col)
 
     rng = np.random.default_rng(seed)
     client_idx = [[] for _ in range(n_clients)]
@@ -138,9 +165,10 @@ def _grouped_uniform_partition(
     n_clients: int,
     seed: int,
     group_col: str,
+    label_col: str = CLASS_COL,
 ) -> list:
     rng = np.random.default_rng(seed)
-    summary = _group_summary(df, group_col)
+    summary = _group_summary(df, group_col, label_col)
     assignments = {c: [] for c in range(n_clients)}
 
     for cls in _label_values(summary[CLASS_COL]):
@@ -160,11 +188,12 @@ def stratified_uniform_partition(
     n_clients: int,
     seed: int,
     group_col: str = None,
+    label_col: str = CLASS_COL,
 ) -> list:
     """Spread each class as evenly as possible, optionally keeping groups atomic."""
     _validate_partition_args(n_clients)
     if group_col is not None:
-        return _grouped_uniform_partition(df, n_clients, seed, group_col)
+        return _grouped_uniform_partition(df, n_clients, seed, group_col, label_col)
 
     rng = np.random.default_rng(seed)
     client_idx = [[] for _ in range(n_clients)]
@@ -181,6 +210,7 @@ def carve_validation(
     val_size: float,
     seed: int,
     group_col: str = None,
+    label_col: str = CLASS_COL,
 ):
     """Split a client pool into train/validation without ever splitting an optional group."""
     if not 0 <= val_size < 1:
@@ -189,7 +219,7 @@ def carve_validation(
         return df, df.iloc[0:0]
 
     if group_col is not None:
-        groups = _group_summary(df, group_col)
+        groups = _group_summary(df, group_col, label_col)
         if len(groups) < 2:
             return df, df.iloc[0:0]
         counts = groups[CLASS_COL].value_counts(dropna=False)
@@ -390,6 +420,7 @@ def _build_multitask_dataset(
     dirichlet_alpha: float,
     val_size: float,
     holdout_test_size: float,
+    group_col: str = None,
 ) -> pd.DataFrame:
     """Build a topology in which one client owns SEVERAL tasks over the SAME images.
 
@@ -400,6 +431,10 @@ def _build_multitask_dataset(
 
     The master schema is unchanged: each client emits one row per ``(image, task)`` it is
     supervised for, and ``seg_exclude_classes`` simply drops those images from the ``seg`` rows.
+
+    With ``group_col`` (``fold_strategy: stratified_group``) every group -- a TCGA-LGG patient --
+    is atomic in the outer split, the client allocation and the validation carve.  Groups span
+    classes there, so stratification uses a per-group stratum (``_group_strata``) instead.
     """
     counts = {n_clients[task] for task in TASKS}
     if len(counts) != 1:
@@ -411,27 +446,43 @@ def _build_multitask_dataset(
     _validate_partition_args(n_multitask_clients, dirichlet_alpha)
     excluded = dataset_cfg.get("seg_exclude_classes", [])
 
+    label_col = CLASS_COL
+    if group_col is not None:
+        mapping = mapping.copy()
+        mapping[STRATUM_COL] = _group_strata(
+            mapping, group_col, int(dataset_cfg.get("group_strata", 3))
+        )
+        label_col = STRATUM_COL
+    grouping = dict(group_col=group_col, label_col=label_col)
+
     rows = []
     outer_splits = outer_split_indices(
         mapping,
         n_splits=n_folds,
         seed=seed,
-        strategy="stratified",
+        strategy="stratified" if group_col is None else "stratified_group",
         holdout_test_size=holdout_test_size,
-        label_col=CLASS_COL,
+        label_col=label_col,
+        group_col=group_col,
     )
     for fold, (train_ix, test_ix) in enumerate(outer_splits):
         train_pool, test_pool = mapping.iloc[train_ix], mapping.iloc[test_ix]
         fold_seed = seed + fold
         client_train = dirichlet_partition(
-            train_pool.reset_index(drop=True), n_multitask_clients, dirichlet_alpha, fold_seed
+            train_pool.reset_index(drop=True),
+            n_multitask_clients,
+            dirichlet_alpha,
+            fold_seed,
+            **grouping,
         )
         client_test = stratified_uniform_partition(
-            test_pool.reset_index(drop=True), n_multitask_clients, fold_seed
+            test_pool.reset_index(drop=True), n_multitask_clients, fold_seed, **grouping
         )
         for client in range(n_multitask_clients):
             client_id = f"{dataset}_mt_{client}"
-            train_df, val_df = carve_validation(client_train[client], val_size, fold_seed)
+            train_df, val_df = carve_validation(
+                client_train[client], val_size, fold_seed, **grouping
+            )
             for task in TASKS:
                 for split, frame in (
                     ("train", train_df), ("val", val_df), ("test", client_test[client]),
@@ -439,7 +490,7 @@ def _build_multitask_dataset(
                     if task == "seg":
                         frame = frame[~frame[CLASS_COL].isin(excluded)]
                     rows.append(_tag(frame, fold, client_id, task, split, dataset))
-    return pd.concat(rows, ignore_index=True)
+    return pd.concat(rows, ignore_index=True).drop(columns=[STRATUM_COL], errors="ignore")
 
 
 def _build_per_task_dataset(
@@ -549,7 +600,7 @@ def _multi_output_path(config: dict, output_path: str = None) -> Path:
     return candidate
 
 
-def _validate_multi_master(master: pd.DataFrame) -> None:
+def _validate_multi_master(master: pd.DataFrame, grouped_datasets: dict = None) -> None:
     required = {"dataset", "fold", "client_id", "task", "split", "img_path"}
     missing = required.difference(master.columns)
     if missing:
@@ -587,6 +638,18 @@ def _validate_multi_master(master: pd.DataFrame) -> None:
                 f"{len(violations)} lesion groups cross clients or splits in the master partition"
             )
 
+    # Datasets split on a group (patients) must keep it atomic across EVERY task, not only cls.
+    for dataset, group_col in (grouped_datasets or {}).items():
+        rows = master[master["dataset"] == dataset]
+        crossing = rows.groupby(["fold", group_col]).agg(
+            client_ids=("client_id", "nunique"), splits=("split", "nunique")
+        )
+        crossing = crossing[(crossing["client_ids"] > 1) | (crossing["splits"] > 1)]
+        if not crossing.empty:
+            raise AssertionError(
+                f"{len(crossing)} '{group_col}' groups of '{dataset}' cross clients or splits"
+            )
+
 
 def build_multi_dataset_partition(
     config: dict,
@@ -611,6 +674,7 @@ def build_multi_dataset_partition(
 
     output = _multi_output_path(config, output_path)
     frames = []
+    grouped_datasets = {}
     for dataset in active:
         if dataset not in config["datasets"]:
             raise ValueError(f"Dataset '{dataset}' is not present in the datasets registry")
@@ -645,7 +709,21 @@ def build_multi_dataset_partition(
                 f"datasets.{dataset}.client_topology must be 'single_task' or 'multi_task', "
                 f"got {topology!r}"
             )
-        if topology == "multi_task":
+        if strategy == "stratified_group":
+            group_col = dataset_cfg.get("group_col")
+            if not group_col:
+                raise ValueError(
+                    f"Dataset '{dataset}' uses fold_strategy 'stratified_group', which requires "
+                    f"datasets.{dataset}.group_col (e.g. the patient id column)"
+                )
+            if topology != "multi_task":
+                raise ValueError(
+                    f"Dataset '{dataset}': fold_strategy 'stratified_group' is only implemented "
+                    "for client_topology 'multi_task'"
+                )
+            frames.append(_build_multitask_dataset(**common, group_col=group_col))
+            grouped_datasets[dataset] = group_col
+        elif topology == "multi_task":
             if strategy != "stratified":
                 raise ValueError(
                     f"Dataset '{dataset}' uses fold_strategy '{strategy}', whose tasks are "
@@ -664,7 +742,7 @@ def build_multi_dataset_partition(
     metadata = ["dataset", "fold", "client_id", "task", "split"]
     source_columns = [column for column in master.columns if column not in metadata]
     master = master[source_columns + metadata]
-    _validate_multi_master(master)
+    _validate_multi_master(master, grouped_datasets)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     master.to_csv(output, index=False)

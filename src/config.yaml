@@ -41,7 +41,7 @@ data:
   # and {root}/{dataset}/federated/ holds the master partition.
   # Switching datasets is a one-line change here; see src/dataset/paths.py.
   root: data
-  dataset: Curated_BUSI    # folder under data/ (e.g. Curated_BUSI, ISIC_2018)
+  dataset: Curated_BUSI    # folder under data/ (e.g. Curated_BUSI, ISIC_2018, TCGA_LGG)
   variant: processed_128   # preprocessed variant read by training
   image_size: 128          # side of the square the preprocessing resizes to; defines the variant
   batch_size: 32
@@ -133,6 +133,30 @@ datasets:
     oversampling:
       seg: False
       cls: False
+  TCGA_LGG:
+    variant: processed_128
+    channels: 3              # pre-contrast, FLAIR, post-contrast co-registered; not colour
+    # Every slice carries a mask AND a class, so both tasks live on the same images.
+    # `class` is DERIVED from the mask (tumor iff the mask has a positive pixel): the release
+    # ships no per-slice label, so the classification target is a deterministic function of the
+    # segmentation target.  See data/TCGA_LGG/PAPER_NOTES.md before reporting anything from it.
+    classes:
+      - no_tumor   # slices that do not intersect the tumour (every patient has a glioma)
+      - tumor
+    seg_exclude_classes: []  # an empty mask is a valid target under the Dice+BCE protocol
+    # 110 patients contribute ~3,929 near-duplicate slices, so `lesion_id` holds the patient id
+    # and every split groups on it: a patient is atomic in the outer split, the Dirichlet client
+    # allocation and the validation carve.  Every patient spans both classes, so stratification
+    # uses quantile bins of the patient's tumour-slice fraction instead of the class.
+    fold_strategy: stratified_group
+    group_col: lesion_id
+    group_strata: 3
+    client_topology: multi_task
+    class_weighting: balanced_fold
+    classification_criterion: CE
+    oversampling:
+      seg: False
+      cls: False  # multi-task clients cannot oversample cls without duplicating masks
 
 federated:  # FedPer: shared encoder is federated, heads stay personalized per client
   datasets: [Curated_BUSI, ISIC_2018]
