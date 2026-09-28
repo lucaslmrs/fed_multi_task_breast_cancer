@@ -1,0 +1,11 @@
+- .venv/**
+- .git/**
+- **/__pycache__/**
+- .claude/worktrees/**
+- data.zip
+- data/*/archives/**
+- data/*/raw/**
+- data/*/processed_128/**
+- data/*/curated/**
+- runs/**/*.pt
++ **
