@@ -18,13 +18,23 @@ def present(series):
 def classic_data_config(config):
     data = copy.deepcopy(config['data'])
     registry = config.get('datasets', {}).get(data['dataset'], {})
-    for key in ('channels', 'cls_source_split'):
+    for key in ('channels', 'cls_source_split', 'class_weighting'):
         if key in registry:
             data[key] = registry[key]
     # Retain explicit class subsets; replacing data.dataset alone must not retain BUSI labels.
     if registry.get('classes') and not set(data.get('classes', [])).issubset(registry['classes']):
         data['classes'] = list(registry['classes'])
     return data
+
+
+def classic_loss_config(config):
+    """Global ``loss`` with the active dataset's classification overrides, as the federated client."""
+    loss = copy.deepcopy(config['loss'])
+    registry = config.get('datasets', {}).get(config['data']['dataset'], {})
+    for key in ('classification_criterion', 'focal_gamma'):
+        if key in registry:
+            loss[key] = registry[key]
+    return loss
 
 
 def supervision_frame(frame, data, tasks):

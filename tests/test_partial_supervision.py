@@ -10,12 +10,12 @@ import yaml
 from torch.utils.data import DataLoader
 
 from src.dataset import paths
-from src.dataset.classic_dataloader import (classic_data_config, load_classic_datasets,
+from src.dataset.classic_dataloader import (classic_data_config, classic_loss_config, load_classic_datasets,
     class_weights_from_training, split_supervised_frame, supervision_frame)
 from src.utils.segmentation_loss import DiceBCELoss
 from src.utils.supervision import _combined_loss
 from src.utils.metrics import segmentation_strata_metrics, summarize_segmentation_strata
-from src.utils.experiment_init import init_criterion_segmentation
+from src.utils.experiment_init import init_criterion_segmentation, load_classification_experiment_artefacts
 from src.experiments.study_runner import load_manifest, build_execution_plan, _config_signature, _partition_signature
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -150,6 +150,32 @@ class ClassicDatasetTests(unittest.TestCase):
         frame.loc[0, 'mask_path'] = None
         with self.assertRaisesRegex(ValueError, 'without mask'):
             supervision_frame(frame, self.config['data'], ('seg','cls'))
+
+    def test_dataset_registry_overrides_reach_classic_loss_and_data(self):
+        cfg = copy.deepcopy(self.config)
+        cfg['loss']['classification_criterion'] = 'Focal'
+        cfg['data']['dataset'] = 'ISIC_2018'
+        cfg['datasets']['ISIC_2018'].update(classification_criterion='CE', focal_gamma=3.5,
+                                            class_weighting='none')
+        loss = classic_loss_config(cfg)
+        self.assertEqual(loss['classification_criterion'], 'CE')
+        self.assertEqual(loss['focal_gamma'], 3.5)
+        self.assertEqual(classic_data_config(cfg)['class_weighting'], 'none')
+        self.assertEqual(cfg['loss']['classification_criterion'], 'Focal')  # global untouched
+
+        cfg['data']['dataset'] = 'Unregistered'
+        self.assertEqual(classic_loss_config(cfg), cfg['loss'])
+
+    def test_classification_artefacts_apply_fold_class_weights(self):
+        data = {'classes': ['benign', 'malignant', 'normal'], 'class_weights': [0.5, 1.0, 2.0]}
+        model = {'architecture': 'BTSUNetClassifier', 'sequences': 1, 'width': 4}
+        opt = {'opt': 'Adam', 'lr': 1e-3, 'scheduler': 'cosine', 't_max': 1, 'patience': 1,
+               'min_lr': 1e-6, 'decrease_factor': 0.5}
+        loss = {'classification_criterion': 'CE'}
+        with tempfile.TemporaryDirectory() as run_path:
+            _, _, criterion, _ = load_classification_experiment_artefacts(
+                data, model, opt, loss, 0, run_path, device='cpu')
+        self.assertTrue(torch.allclose(criterion.weight, torch.tensor([0.5, 1.0, 2.0])))
 
     def test_multitask_oversampling_is_refused(self):
         data = copy.deepcopy(self.config['data']); data['oversampling'] = True

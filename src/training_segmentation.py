@@ -12,7 +12,7 @@ from torchvision import transforms
 from torchvision.transforms.v2 import RandomResizedCrop, ElasticTransform
 
 from src.dataset.BUSI_dataloader import load_datasets
-from src.dataset.classic_dataloader import classic_data_config
+from src.dataset.classic_dataloader import classic_data_config, classic_loss_config
 from src.utils.metrics import dice_score_from_tensor
 from src.utils.miscellany import init_log
 from src.utils.miscellany import seed_everything
@@ -107,6 +107,7 @@ def run(config_path="./src/config.yaml", run_path=None):
     full_config = load_config(config_path)
     config_model, config_opt, config_loss, config_training, config_data = load_config_file(path=config_path)
     config_data = classic_data_config(full_config)
+    config_loss = classic_loss_config(full_config)
     config_model["sequences"] = config_data.get("channels", config_model["sequences"])
     if config_training['CV'] < 1:
         sys.exit("training.CV must be at least 1 (CV=1 selects deterministic holdout)")

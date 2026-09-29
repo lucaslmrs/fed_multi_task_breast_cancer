@@ -14,7 +14,7 @@ from sklearn.metrics import f1_score as f1
 from torchvision.transforms import RandomRotation, RandomHorizontalFlip, RandomVerticalFlip
 
 from src.dataset.BUSI_dataloader import load_datasets
-from src.dataset.classic_dataloader import classic_data_config
+from src.dataset.classic_dataloader import classic_data_config, classic_loss_config
 from src.utils.criterions import apply_criterion_classification
 from src.utils.experiment_init import device_setup
 from src.utils.experiment_init import load_classification_experiment_artefacts
@@ -181,6 +181,7 @@ def run(config_path="./src/config.yaml", run_path=None):
     full_config = load_config(config_path)
     config_model, config_opt, config_loss, config_training, config_data = load_config_file(path=config_path)
     config_data = classic_data_config(full_config)
+    config_loss = classic_loss_config(full_config)
     config_model["sequences"] = config_data.get("channels", config_model["sequences"])
     if config_training['CV'] < 1:
         sys.exit("training.CV must be at least 1 (CV=1 selects deterministic holdout)")
@@ -236,8 +237,18 @@ def run(config_path="./src/config.yaml", run_path=None):
         Path(f"{run_path}/fold_{n}/features_map/").mkdir(parents=True, exist_ok=True)
 
         # artefacts initialization
-        model, optimizer, classification_criterion, scheduler = load_classification_experiment_artefacts(config_data, config_model, config_opt, config_loss, n_augments, run_path)
+        if config_data.get('class_weighting', 'balanced_fold') == 'balanced_fold':
+            config_data['classes_weighted'] = None
+            config_data['class_weights'] = training_loader.dataset.class_weights
+        model, optimizer, classification_criterion, scheduler = load_classification_experiment_artefacts(config_data, config_model, config_opt, config_loss, n_augments, run_path, device=dev)
         model = model.to(dev)
+        (Path(run_path) / f'fold_{n}/supervision_metadata.yaml').write_text(yaml.safe_dump({
+            'class_names': config_data['classes'],
+            'class_weights': config_data.get('class_weights'),
+            'class_weight_source': 'supervised_training_rows_only',
+            'classification_criterion': config_loss['classification_criterion'],
+            'oversampling': False,
+        }), encoding='utf-8')
 
         # init metrics file
         write_metrics_file(path_file=f'{run_path}/fold_{n}/metrics.csv',

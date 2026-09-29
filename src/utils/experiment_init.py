@@ -349,6 +349,7 @@ def load_multitask_experiment_artefacts(
                                                              classes_weighted=config_data.get("classes_weighted"),
                                                              class_weights=config_data.get("class_weights"),
                                                              classification_criterion=config_loss['classification_criterion'],
+                                                             focal_gamma=config_loss.get('focal_gamma', 2.0),
                                                              device=device)
     scheduler = init_lr_scheduler(optimizer=optimizer, scheduler=config_opt['scheduler'],
                                   t_max=int(config_opt['t_max']), patience=int(config_opt['patience']),
@@ -370,6 +371,7 @@ def load_classification_experiment_artefacts(
                                                              classes_weighted=config_data.get("classes_weighted"),
                                                              class_weights=config_data.get("class_weights"),
                                                              classification_criterion=config_loss['classification_criterion'],
+                                                             focal_gamma=config_loss.get('focal_gamma', 2.0),
                                                              device=device)
     scheduler = init_lr_scheduler(optimizer=optimizer, scheduler=config_opt['scheduler'],
                                   t_max=int(config_opt['t_max']), patience=int(config_opt['patience']),
