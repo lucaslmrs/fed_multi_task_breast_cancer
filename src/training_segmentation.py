@@ -1,5 +1,5 @@
 import logging
-import shutil
+import yaml
 import time
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +12,7 @@ from torchvision import transforms
 from torchvision.transforms.v2 import RandomResizedCrop, ElasticTransform
 
 from src.dataset.BUSI_dataloader import load_datasets
+from src.dataset.classic_dataloader import classic_data_config, classic_loss_config
 from src.utils.metrics import dice_score_from_tensor
 from src.utils.miscellany import init_log
 from src.utils.miscellany import seed_everything
@@ -105,6 +106,9 @@ def run(config_path="./src/config.yaml", run_path=None):
     # loading config file
     full_config = load_config(config_path)
     config_model, config_opt, config_loss, config_training, config_data = load_config_file(path=config_path)
+    config_data = classic_data_config(full_config)
+    config_loss = classic_loss_config(full_config)
+    config_model["sequences"] = config_data.get("channels", config_model["sequences"])
     if config_training['CV'] < 1:
         sys.exit("training.CV must be at least 1 (CV=1 selects deterministic holdout)")
 
@@ -120,7 +124,10 @@ def run(config_path="./src/config.yaml", run_path=None):
     resolved_run_path = Path(run_path)
     resolved_run_path.mkdir(parents=True, exist_ok=True)
     init_log(log_name=str(resolved_run_path / "execution.log"))
-    shutil.copyfile(config_path, resolved_run_path / "config.yaml")
+    # Persist the EFFECTIVE protocol: dataset registry overrides of data and loss included.
+    full_config['data'], full_config['model'], full_config['loss'] = config_data, config_model, config_loss
+    (resolved_run_path / 'config.yaml').write_text(
+        yaml.safe_dump(full_config, sort_keys=False), encoding='utf-8')
     run_path = str(resolved_run_path)
     gpu_telemetry = start_gpu_telemetry(full_config, run_path)
     runtime_events = RuntimeEvents(Path(run_path) / "runtime_events.csv", dev)
@@ -136,7 +143,7 @@ def run(config_path="./src/config.yaml", run_path=None):
         # transforms.RandomCrop(64)
     )
     train_loaders, val_loaders, test_loaders = load_datasets(
-        config_training, config_data, training_transforms, mode='CV',
+        config_training, config_data, training_transforms, mode='CV', tasks=('seg',),
         runtime={
             "loader_options": dataloader_kwargs(full_config),
             "inference_batch_size": full_config.get("runtime", {}).get(

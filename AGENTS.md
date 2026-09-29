@@ -102,7 +102,8 @@ data/<dataset>/
   federated/     # federated_mapping.csv, the frozen master partition
 ```
 
-Currently present: `data/Curated_BUSI/` and `data/ISIC_2018/`, both with a `processed_128` variant.
+Currently present: `data/Curated_BUSI/`, `data/ISIC_2018/` and `data/TCGA_LGG/`, all with a
+`processed_128` variant.
 The variant's resolution comes from `data.image_size`; the preprocessing refuses to write a
 different size into an existing variant.
 
@@ -119,6 +120,7 @@ columns, resize helpers, the guards). All of them emit the same contract: `<vari
 
 - **Curated BUSI** — `src/dataset/Curated_BUSI_preprocessing.py`. Raw at `data/Curated_BUSI/raw/`; images resized to `data.image_size`, multiple masks merged, `mapping.csv` generated. `CURATED` filters through `data/Curated_BUSI/curation_list.csv`, leaving 450 images (222 benign, 164 malignant, 64 normal) after SSIM duplicate removal. It resizes with `INTER_NEAREST` — **do not "fix" this to INTER_AREA**: it would change the curated images and invalidate the frozen federated partition and every result derived from it.
 - **ISIC 2018** — `src/dataset/ISIC_2018_preprocessing.py`. Ingests BOTH challenge tasks into one mapping: Task 1 (3,694 images with masks) and Task 3/HAM10000 (11,720 images with labels). Images written RGB with `INTER_AREA`, masks nearest-neighbour + re-binarized. See `data/ISIC_2018/PAPER_NOTES.md` for the measured facts.
+- **TCGA-LGG** — `src/dataset/TCGA_LGG_preprocessing.py`. Brain MRI (Buda et al. 2019 masks over the TCIA collection): 3,929 axial slices from 110 patients, every slice carrying a mask and a class. Images written 3-channel (pre-contrast/FLAIR/post-contrast) with `INTER_AREA`. **`class` is derived from the mask** (`tumor` iff non-empty), so the classification target is a deterministic function of the segmentation target; `lesion_id` holds the patient id and splits group on it via `fold_strategy: stratified_group` (patient-atomic, stratified on binned per-patient tumour-slice fraction, `multi_task` only) — see `data/TCGA_LGG/PAPER_NOTES.md`.
 - `BUSI_dataloader.py` reads `mapping.csv`, performs stratified K-fold splitting, then applies deterministic oversampling on the training fold to balance classes before constructing `DataLoader`s.
 
 #### `mapping.csv` schema
@@ -168,11 +170,11 @@ Models live under `src/models/` in three sub-packages:
 
 Multi-task loss: `total = α * seg_loss + (1-α) * cls_loss`  
 - `α` is `training.alpha` in config (default 0.85, so segmentation dominates).
-- Segmentation criterion: DICE (MONAI), with sigmoid applied inside the criterion — **do not apply sigmoid before passing to the loss**.
+- Segmentation criterion: configurable `DiceBCE` (default 0.5 Dice + 0.5 BCEWithLogitsLoss); Dice applies sigmoid internally — **pass logits to both terms**. Legacy Dice and other criteria remain selectable.
 - Classification criterion: Focal loss for multiclass, BCE for binary.
 - Early stopping via `training.max_patience`; best checkpoint saved per fold.
 
-In the federated path `training.alpha` is not used. A `single_task` client optimizes Dice **or** the
+In the federated path `training.alpha` is not used. A `single_task` client optimizes the configured segmentation loss **or** the
 classification criterion, never a weighted sum. A `multi_task` client optimizes
 `L = Σ_t λ_t · L_t` with `λ_t = aggregation.task_weights[t] / Σ task_weights`, evaluated only over
 the samples each task actually supervises (per-sample `has_mask` / `has_label` flags). A task with
@@ -202,7 +204,7 @@ runs/{timestamp}_{arch}_{width}_alpha_{α}_batch_{B}_{classes}/
 | `training.alpha` | Weight on seg loss (0=cls only, 1=seg only) |
 | `data.root` / `data.dataset` / `data.variant` | Select the dataset folder + preprocessed variant (see "Dataset layout") |
 | `data.classes` | Which classes to include; determines binary vs. multiclass mode |
-| `data.seg_exclude_classes` | Classes dropped from the segmentation task (empty masks); `[normal]` for BUSI |
+| `data.seg_exclude_classes` | Explicit exclusion policy; `[]` in the new BUSI protocol, so valid empty masks supervise segmentation |
 | `data.oversampling` | Enables deterministic oversampling in train folds |
 | `loss.inversely_weighted` | Weight deep supervision outputs by `1/(n+1)` |
 
@@ -244,7 +246,7 @@ ISIC 2018 (3-channel dermoscopy). `encoder1` is a personalized modality stem; th
 3. `src/federated/model_split.py` — splits MTnnUNet into the shared trunk (`encoder2..5` +
    `bottleneck`) vs personalized stem/decoders/outputs/classifier. Legacy `share_stem=True` also
    federates `encoder1`.
-4. `src/federated/local_trainer.py` — per-task local train/eval (seg → Dice only, cls → Focal only).
+4. `src/federated/local_trainer.py` — per-task local train/eval using the configured segmentation or classification criterion.
 5. `src/federated/client.py` — Flower `NumPyClient`; persists the latest personalized state +
    optimizer **to disk per client** (simulation clients are ephemeral). Stable worker seeds pair
    model initialization, shuffling, and transforms between federated and local-only runs. A
@@ -340,11 +342,11 @@ error if it is missing (generate it once with `federated_partition`, then freeze
 the same initial shared trunk and deterministic per-client/fold/round seeds; therefore local stems,
 heads, batch shuffles, and geometric transforms are paired across arms.
 Prediction-refining is OFF
-(`unified_eval` never applies it) and `normal` is absent from BUSI seg test slices. In the legacy
+(`unified_eval` never applies it). The Dice+BCE protocol includes valid BUSI normal masks in segmentation train/validation/test; historical masters retain their original exclusions. In the legacy
 BUSI-only experiment, the centralized model is trained/evaluated on the same frozen folds; this
 centralized path is not used for the multi-dataset study.
 
-**Metrics:** seg → Dice, IoU, Sensitivity, Specificity, Precision; cls → Accuracy, macro-F1,
+**Metrics:** seg → positive-target Dice/IoU, false-positive image rate and predicted area on empty targets, stratum counts, plus explicitly global Dice/IoU/Sensitivity/Specificity/Precision; cls → Accuracy, macro-F1,
 balanced accuracy, dynamic per-class precision/recall, OvR-macro AUC. All outputs and analysis are
 isolated by `dataset`; 3-class BUSI probabilities are never mixed with 7-class ISIC probabilities.
 
@@ -381,3 +383,19 @@ aggregation) in `config_overrides` instead of inheriting it from `src/config.yam
 working default that drifts between experiments. Precision and `cuda_benchmark` are scientific hash
 inputs; `runtime` and NVML telemetry are operational and excluded. See
 `docs/TRAINING_ACCELERATION.md`.
+
+
+## Dice+BCE and partial supervision
+
+The default manifest keeps its filename and uses `study_id: example_multi_dataset_dice_bce`.
+The new base and single-task masters are independent of previous protocols. `DiceBCE` accepts
+binary logits and configured `loss.dice_weight` / `loss.bce_weight` (default 0.5 each).
+Valid empty targets supervise segmentation; unavailable targets are omitted via `has_mask` and
+`has_label`. Never infer a negative mask from a missing annotation or a diagnosis label.
+
+Classic multitask training now supports one dataset with joint or disjoint supervision pools,
+including ISIC, using group-safe splits, configurable class counts/channels, no multitask
+oversampling, and classification weights computed from supervised training rows only.
+The existing centralized benchmark remains BUSI-only. Pixel-partial annotation and multiclass
+segmentation are outside the new binary contract. See `docs/DICE_BCE_SUPERVISION.md` for loss,
+evaluation, migration, and executable validation commands.

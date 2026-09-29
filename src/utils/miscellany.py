@@ -141,7 +141,15 @@ def save_segmentation_results(path: str, n_splits=None):
         results.append(df)
 
     df = pd.concat(results)
-    df_grouped = df.drop(columns="patient_id").groupby('fold').mean().reset_index().drop(columns='fold').T
+    from src.utils.metrics import summarize_segmentation_strata
+    summaries = []
+    for fold, group in df.groupby('fold'):
+        summary = group.mean(numeric_only=True).to_dict()
+        summary.update(summarize_segmentation_strata(group.to_dict('records')))
+        summary.pop('patient_id', None)
+        summary.pop('fold', None)
+        summaries.append(summary)
+    df_grouped = pd.DataFrame(summaries).T
     df_grouped.columns = [f"fold {c}" for c in df_grouped.columns]
     fold_columns = list(df_grouped.columns)
     df_grouped["mean"] = df_grouped[fold_columns].mean(axis=1)
@@ -164,10 +172,12 @@ def save_classification_results(path: str, n_classes: int, n_splits=None):
     for n, f in enumerate(sorted(glob.glob(path + "/fold*/results_classification.csv"))):
         df = pd.read_csv(f)
 
-        if n_classes <= 2:
+        if df.empty:
+            metric = {'accuracy': float('nan'), 'f1_macro': float('nan')}
+        elif n_classes <= 2:
             metric = binary_classification_metrics(df.ground_truth, df.predicted_label)
         else:
-            metric = multiclass_classification_metrics(df.ground_truth, df.predicted_label)
+            metric = multiclass_classification_metrics(df.ground_truth, df.predicted_label, labels=list(range(n_classes)))
 
         results.append(pd.DataFrame([metric]))
 

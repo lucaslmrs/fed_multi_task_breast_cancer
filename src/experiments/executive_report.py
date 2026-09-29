@@ -11,7 +11,7 @@ import pandas as pd
 import yaml
 
 
-STUDY_ROOT = Path("runs/studies/example_multi_dataset")
+STUDY_ROOT = Path("runs/studies/example_multi_dataset_dice_bce")
 DEFAULT_OUTPUT = Path("RELATORIO_EXECUTIVO_FEDERACAO_MULTI_DATASET.html")
 # Display names for the arms of studies/example_multi_dataset.yaml; unknown ids are shown raw.
 METHOD_LABELS = {
@@ -22,8 +22,12 @@ METHOD_LABELS = {
     "single_task_local": "Local — clientes monotarefa",
 }
 METRIC_LABELS = {
-    "dice": "Dice",
-    "iou": "IoU",
+    "dice": "Dice global",
+    "dice_positive": "Dice (alvos não vazios)",
+    "iou_positive": "IoU (alvos não vazios)",
+    "empty_fp_image_rate": "Falsos positivos em imagens vazias",
+    "empty_predicted_area_fraction": "Área prevista em imagens vazias",
+    "iou": "IoU global",
     "sensitivity": "Sensibilidade",
     "specificity": "Especificidade",
     "precision": "Precisão",
@@ -72,16 +76,18 @@ def _table(headers, rows, numeric=None):
 
 
 def _comparison_chart(summary: pd.DataFrame):
+    if summary.empty:
+        return '<p class="muted">Resultados ainda indisponíveis.</p>'
     selected = []
     for dataset in ("Curated_BUSI", "ISIC_2018"):
-        for task, metric in (("seg", "dice"), ("cls", "balanced_acc"), ("cls", "auc")):
+        for task, metric in (("seg", "dice_positive" if "dice_positive" in set(summary.metric) else "dice"), ("cls", "balanced_acc"), ("cls", "auc")):
             rows = summary[
                 (summary.dataset == dataset)
                 & (summary.task == task)
                 & (summary.metric == metric)
                 & (summary.method_id.isin(["primary", "local_only"]))
             ]
-            values = {row.method_id: float(row.mean) for row in rows.itertuples()}
+            values = {row.method_id: float(row.mean) for row in rows.itertuples() if pd.notna(row.mean)}
             if values:
                 selected.append((dataset, task, metric, values))
     if not selected:
@@ -100,7 +106,8 @@ def _comparison_chart(summary: pd.DataFrame):
         parts.append(f'<text class="tick" x="{x}" y="25" text-anchor="middle">{tick/5:.1f}</text>')
     for index, (dataset, task, metric, values) in enumerate(selected):
         y = 68 + 80 * index
-        label = f"{dataset} · {'seg.' if task == 'seg' else 'cls.'} · {METRIC_LABELS[metric]}"
+        metric_label = 'Dice positivo' if metric == 'dice_positive' else METRIC_LABELS[metric]
+        label = f"{dataset} · {'seg.' if task == 'seg' else 'cls.'} · {metric_label}"
         parts.append(f'<text class="label" x="0" y="{y+17}">{_esc(label)}</text>')
         for offset, method in ((0, "primary"), (26, "local_only")):
             value = values.get(method)
@@ -217,8 +224,11 @@ def _running_fold_progress(run_index: pd.DataFrame, n_splits: int, scheme: str):
 
 
 def _results_table(summary: pd.DataFrame):
+    if summary.empty:
+        return '<p class="muted">Resultados ainda indisponíveis.</p>'
     wanted = {
-        "seg": ["dice", "iou", "sensitivity", "specificity"],
+        "seg": ["dice_positive", "iou_positive", "empty_fp_image_rate",
+                "empty_predicted_area_fraction", "dice", "iou", "sensitivity", "specificity"],
         "cls": ["acc", "balanced_acc", "macro_f1", "auc"],
     }
     rows = []
@@ -250,9 +260,11 @@ def _results_table(summary: pd.DataFrame):
 
 
 def _primary_deltas(comparisons: pd.DataFrame):
+    if comparisons.empty:
+        return '<p class="muted">Resultados ainda indisponíveis.</p>'
     subset = comparisons[comparisons.comparison_id == "primary_vs_local"]
     rows = []
-    wanted = {"seg": ["dice", "iou"], "cls": ["acc", "balanced_acc", "macro_f1", "auc"]}
+    wanted = {"seg": (["dice_positive", "iou_positive"] if "dice_positive" in set(comparisons.metric) else ["dice", "iou"]), "cls": ["acc", "balanced_acc", "macro_f1", "auc"]}
     for dataset in ("Curated_BUSI", "ISIC_2018"):
         for task in ("seg", "cls"):
             for metric in wanted[task]:
@@ -285,35 +297,20 @@ def _primary_deltas(comparisons: pd.DataFrame):
 
 
 def _interpretation_notice(all_complete: bool, scheme: str):
-    if all_complete:
-        evidence = (
-            "os deltas entre clientes no único holdout são estritamente descritivos e não "
-            "possuem teste de Wilcoxon"
-            if scheme == "holdout"
-            else "os deltas por cliente × fold permanecem evidência exploratória"
-        )
-        return (
-            '<div class="notice"><strong>Leitura da matriz operacional:</strong> '
-            "a tabela mostra o contraste principal sob orçamento fixo, enquanto a matriz abaixo "
-            "inclui os contrastes de orçamento, cardinalidade, agregação flat e focal. Esta é uma "
-            f"única seed operacional: {evidence} "
-            "e não sustentam alegação confirmatória de superioridade.</div>"
-        )
-    return (
-        '<div class="notice"><strong>Leitura provisória:</strong> na seed 1993, o federado principal '
-        "não superou o local-only na maioria dos desfechos primários. Houve pequenos ganhos em AUC e "
-        "acurácia balanceada no BUSI classificação, mas perdas em Dice de segmentação e nos desfechos "
-        "de classificação do ISIC. Isso não invalida a arquitetura; indica que, neste orçamento e nesta "
-        "seed, o compartilhamento do trunk produziu transferência predominantemente negativa. A conclusão "
-        "deve ser revista após as ablações e seeds finais.</div>"
-    )
+    evidence = ('os contrastes no holdout são somente descritivos, sem Wilcoxon'
+                if scheme == 'holdout' else 'os contrastes por cliente e fold são exploratórios')
+    status = 'Matriz completa' if all_complete else 'Resultados parciais'
+    return (f'<div class="notice"><strong>{status}:</strong> {evidence}. '
+            'Compare apenas os braços concluídos e os pares declarados no manifesto. '
+            'Alvos vazios e não vazios têm métricas separadas; nenhuma conclusão é inferida '
+            'para execuções pendentes.</div>')
 
 
 def _selected_effects(comparisons: pd.DataFrame):
     if comparisons.empty:
         return comparisons
     selected = comparisons[
-        ((comparisons.task == "seg") & (comparisons.metric == "dice"))
+        ((comparisons.task == "seg") & (comparisons.metric == ("dice_positive" if "dice_positive" in set(comparisons.metric) else "dice")))
         | ((comparisons.task == "cls") & comparisons.metric.isin(["balanced_acc", "auc"]))
     ].copy()
     order = {key: index for index, key in enumerate(COMPARISON_LABELS)}
@@ -362,11 +359,11 @@ def _effects_table(comparisons: pd.DataFrame):
 
 
 def _effects_chart(comparisons: pd.DataFrame):
+    if comparisons.empty:
+        return ""
     mechanisms = [
-        "effect_local_budget",
-        "effect_uniform_weighting",
-        "effect_hierarchy",
-        "effect_ce_vs_focal",
+        "effect_flat_aggregation",
+        "effect_client_topology",
     ]
     selected = _selected_effects(comparisons)
     selected = selected[selected.comparison_id.isin(mechanisms)]
@@ -374,26 +371,25 @@ def _effects_chart(comparisons: pd.DataFrame):
         return ""
 
     short_comparison = {
-        "effect_local_budget": "Orçamento",
-        "effect_uniform_weighting": "Peso cliente",
-        "effect_hierarchy": "Hierarquia",
-        "effect_ce_vs_focal": "Loss",
+        "effect_flat_aggregation": "Agregação",
+        "effect_client_topology": "Topologia",
     }
-    short_metric = {"dice": "Dice", "balanced_acc": "BAcc", "auc": "AUC"}
+    short_metric = {"dice": "Dice global", "dice_positive": "Dice positivo",
+                    "balanced_acc": "BAcc", "auc": "AUC"}
     width = 1000
     row_height = 34
     top = 45
     height = top + row_height * len(selected) + 45
     center = 690
     half_width = 270
-    limit = 0.30
+    limit = max(0.30, float(selected.mean_delta.abs().max()) * 1.1)
     parts = [
         f'<svg class="effect-chart" viewBox="0 0 {width} {height}" role="img" '
-        'aria-label="Efeitos pareados das quatro ablações principais">',
+        'aria-label="Efeitos das ablações disponíveis">',
         "<title>Efeitos pareados das ablações</title>",
         "<desc>Valores positivos favorecem a primeira condição do contraste e valores negativos favorecem a segunda.</desc>",
     ]
-    for tick in (-0.30, -0.15, 0.0, 0.15, 0.30):
+    for tick in (-limit, -limit/2, 0.0, limit/2, limit):
         x = center + (tick / limit) * half_width
         parts.append(f'<line class="grid" x1="{x}" x2="{x}" y1="25" y2="{height-28}"/>')
         parts.append(f'<text class="tick" x="{x}" y="18" text-anchor="middle">{tick:+.2f}</text>')
@@ -421,6 +417,8 @@ def _effects_chart(comparisons: pd.DataFrame):
 
 
 def _descriptive_rankings(summary: pd.DataFrame):
+    if summary.empty:
+        return '<p class="muted">Resultados ainda indisponíveis.</p>'
     outcomes = [
         ("Curated_BUSI", "seg", "dice"),
         ("Curated_BUSI", "cls", "balanced_acc"),
@@ -431,9 +429,11 @@ def _descriptive_rankings(summary: pd.DataFrame):
     ]
     rows = []
     for dataset, task, metric in outcomes:
+        if task == 'seg' and 'dice_positive' in set(summary.metric):
+            metric = 'dice_positive'
         subset = summary[
             (summary.dataset == dataset) & (summary.task == task) & (summary.metric == metric)
-        ].sort_values("mean", ascending=False)
+        ].dropna(subset=["mean"]).sort_values("mean", ascending=False)
         if subset.empty:
             continue
         # BUSI outcomes are intentionally unchanged by the ISIC-only focal local arm. Collapse
@@ -495,40 +495,16 @@ def _comparison_delta(comparisons: pd.DataFrame, comparison_id, dataset, task, m
 
 
 def _key_findings(comparisons: pd.DataFrame):
-    budget_bacc = _comparison_delta(
-        comparisons, "effect_local_budget", "ISIC_2018", "cls", "balanced_acc"
-    )
-    budget_auc = _comparison_delta(comparisons, "effect_local_budget", "ISIC_2018", "cls", "auc")
-    budget_dice = _comparison_delta(comparisons, "effect_local_budget", "ISIC_2018", "seg", "dice")
-    hierarchy_busi = _comparison_delta(
-        comparisons, "effect_hierarchy", "Curated_BUSI", "seg", "dice"
-    )
-    hierarchy_isic_auc = _comparison_delta(
-        comparisons, "effect_hierarchy", "ISIC_2018", "cls", "auc"
-    )
-    focal_bacc = _comparison_delta(
-        comparisons, "effect_ce_vs_focal", "ISIC_2018", "cls", "balanced_acc"
-    )
-    focal_auc = _comparison_delta(comparisons, "effect_ce_vs_focal", "ISIC_2018", "cls", "auc")
-    flat_local_bacc = _comparison_delta(
-        comparisons, "flat_vs_local", "ISIC_2018", "cls", "balanced_acc"
-    )
-    flat_local_auc = _comparison_delta(comparisons, "flat_vs_local", "ISIC_2018", "cls", "auc")
-    flat_local_dice = _comparison_delta(comparisons, "flat_vs_local", "ISIC_2018", "seg", "dice")
-
-    def value(delta, invert=False):
-        if delta is None:
-            return "—"
-        delta = -delta if invert else delta
-        return f"{delta:+.3f}"
-
-    return f"""<ul class="key-findings">
-<li><strong>Orçamento local foi o maior efeito no ISIC.</strong> Duas épocas, comparadas a 10 passos fixos, elevaram a acurácia balanceada em {value(budget_bacc, True)}, a AUC em {value(budget_auc, True)} e o Dice em {value(budget_dice, True)} no braço federado.</li>
-<li><strong>Com orçamento por épocas, o federado tornou-se competitivo em classificação.</strong> O flat ficou {value(flat_local_bacc)} acima do local em acurácia balanceada do ISIC, {value(flat_local_auc)} em AUC e {value(flat_local_dice)} em Dice; isto é proximidade, não superioridade generalizada.</li>
-<li><strong>A hierarquia produziu o trade-off esperado.</strong> Contra o flat, preservou {value(hierarchy_busi)} de Dice BUSI, enquanto cedeu {value(hierarchy_isic_auc, True)} de AUC ISIC. A proteção 50/50 favoreceu a modalidade pequena em segmentação, mas limitou o ganho classificatório do dataset grande.</li>
-<li><strong>Focal sem pesos alterou ranking e decisão em direções opostas.</strong> No ISIC, ganhou {value(focal_auc, True)} de AUC sobre CE balanced_fold, mas perdeu {value(focal_bacc)} de acurácia balanceada. Logo, focal melhorou ordenação de risco, não o equilíbrio da decisão argmax.</li>
-<li><strong>Não houve benefício federado universal.</strong> O braço principal perdeu para local-only em segmentação de ambos os datasets e em classificação ISIC; os ganhos BUSI de classificação foram pequenos. Os resultados favorecem uma conclusão condicional ao orçamento, tarefa e política de agregação.</li>
-</ul>"""
+    selected = _selected_effects(comparisons)
+    if selected.empty:
+        return '<p>Contrastes concluídos ainda indisponíveis.</p>'
+    rows = []
+    for row in selected.itertuples():
+        rows.append(f'<li>{_esc(COMPARISON_LABELS.get(row.comparison_id, row.comparison_id))} '
+                    f'— {_esc(row.dataset)}, {_esc(METRIC_LABELS.get(row.metric, row.metric))}: '
+                    f'Δ = {float(row.mean_delta):+.4f} '
+                    f'({int(row.n_pairs)} observações pareadas).</li>')
+    return '<ul class="key-findings">' + ''.join(rows) + '</ul>'
 
 
 def _class_weight_table(balance: pd.DataFrame):
@@ -575,10 +551,10 @@ def _aggregation_audit(audit: pd.DataFrame):
     )
 
 
-def _report_design(run_index: pd.DataFrame, summary: pd.DataFrame):
+def _report_design(run_index: pd.DataFrame, summary: pd.DataFrame, study_root=None):
     scheme = "cross_validation"
-    n_splits = 4
-    rounds = 50
+    n_splits = 0
+    rounds = "não informado"
     if not summary.empty and "evaluation_scheme" in summary:
         schemes = summary["evaluation_scheme"].dropna().astype(str).unique()
         if len(schemes) == 1:
@@ -596,6 +572,11 @@ def _report_design(run_index: pd.DataFrame, summary: pd.DataFrame):
             if n_splits == 1:
                 scheme = "holdout"
             break
+    if study_root is not None and (Path(study_root) / 'config.yaml').is_file():
+        config = yaml.safe_load((Path(study_root) / 'config.yaml').read_text())
+        n_splits = int(config['training']['CV'])
+        rounds = config.get('federated', {}).get('rounds', rounds)
+        scheme = 'holdout' if n_splits == 1 else 'cross_validation'
     seeds = sorted(run_index["seed"].dropna().astype(str).unique()) if "seed" in run_index else []
     seed_label = ", ".join(seeds) if seeds else "não informada"
     return scheme, n_splits, rounds, seed_label
@@ -609,7 +590,9 @@ def build_report(study_root: Path, analysis_dir: Path, output: Path):
     audit = _read_csv(analysis_dir / "aggregation_audit.csv")
     pooled = _read_csv(analysis_dir / "pooled_auc.csv")
     run_index = _read_csv(study_root / "run_index.csv")
-    scheme, n_splits, rounds, seed_label = _report_design(run_index, summary)
+    if run_index.empty:
+        run_index = _read_csv(study_root / "execution_plan.csv")
+    scheme, n_splits, rounds, seed_label = _report_design(run_index, summary, study_root)
     split_label = "holdout 70/30" if scheme == "holdout" else f"{n_splits} folds"
     observation_label = "clientes no holdout" if scheme == "holdout" else "clientes/folds"
     inference_unit = "seed × cliente no holdout" if scheme == "holdout" else "seed × fold × cliente"
@@ -643,7 +626,7 @@ main{{max-width:1120px;margin:auto;padding:42px 24px 80px}} h1{{font-size:34px;l
 <h1>Federação multi-dataset BUSI + ISIC</h1>
 <p class="lead">Avaliação de transferência entre modalidades com stems e cabeças personalizados e trunk compartilhado (<code>encoder2..bottleneck</code>). O desfecho principal compara aprendizado federado e local-only dentro de cada dataset, sem alegar equivalência ao benchmark oficial do ISIC.</p>
 <p class="meta">Gerado em {generated} · seed(s) {seed_label} · {split_label} · {rounds} rodadas</p>
-    {'' if all_complete else '<div class="notice"><strong>Documento provisório, atualizado durante a execução.</strong> Houve uma interrupção anterior da GPU, mas o estudo foi retomado por fold. Os resultados abaixo incluem somente braços completos; ablações e folds pendentes não são inferidos nem substituídos por smoke tests.</div>'}
+    {'' if all_complete else '<div class="notice"><strong>Documento provisório, atualizado durante a execução.</strong> Os resultados abaixo incluem somente braços completos; ablações e folds pendentes não são inferidos nem substituídos por smoke tests.</div>'}
 
 <h2>1. Situação executiva</h2>{status_html}{running_html}
 
@@ -660,16 +643,16 @@ main{{max-width:1120px;margin:auto;padding:42px 24px 80px}} h1{{font-size:34px;l
 <div class="grid2"><div class="card"><h3>Personalizado</h3><p><strong>Stem</strong> específico para 1 ou 3 canais; decoders de segmentação e cabeças classificadoras específicas para 3 ou 7 classes. Esses parâmetros nunca são agregados entre modalidades.</p></div><div class="card"><h3>Compartilhado</h3><p>O trunk <code>encoder2..bottleneck</code> tem chaves e shapes idênticos entre os modelos. Configurações com <code>share_stem=true</code> e canais heterogêneos falham antes do Flower.</p></div></div>
 <h3>Agregação principal: hierárquica e sem cardinalidade do cliente</h3>
 <p class="formula">w<sub>i|d</sub> = task_weight<sub>i</sub> / Σ task_weight &nbsp;&nbsp; e &nbsp;&nbsp; w<sub>i</sub> = dataset_weight<sub>d</sub> / Σ dataset_weight × w<sub>i|d</sub></p>
-<p>Com pesos iguais de dataset e pesos de tarefa segmentação:classificação = 4:1, a participação esperada é BUSI 50% e ISIC 50%; dentro de cada dataset, segmentação 40% e classificação 10%. A cardinalidade não entra no peso do cliente no braço principal.</p>
+<p>Com pesos iguais de dataset e pesos de tarefa segmentação:classificação = 4:1, a participação esperada é BUSI 50% e ISIC 50%; nos clientes monotarefa, a contribuição se divide conforme os pesos de tarefa. Nos clientes multitarefa, a massa supervisionada de cada tarefa entra no cálculo. Consulte a auditoria para os pesos efetivos.</p>
 {_aggregation_audit(audit)}
 
 <h2>5. Desbalanceamento e orçamento</h2>
-<p><code>balanced_fold</code> calcula N/(K×n<sub>c</sub>) somente no pool de treino do fold e aplica o mesmo vetor aos clientes ISIC federados e local-only. A ablação focal usa focal loss sem pesos de classe para testar se a modulação pela dificuldade substitui o reweighting explícito. A ablação por épocas mede o efeito de permitir mais passos a clientes grandes; o principal fixa 10 passos por cliente e rodada.</p>
+<p><code>balanced_fold</code> calcula N/(K×n<sub>c</sub>) somente no pool de treino do fold e aplica o mesmo vetor aos clientes ISIC federados e local-only. O protocolo Dice+BCE inclui máscaras vazias válidas. O manifesto atual compara federação, agregação flat e topologia de cliente, mantendo 10 passos por cliente e rodada.</p>
 {_class_weight_table(balance)}
 
 <h2>6. Resultados disponíveis</h2>
 {_comparison_chart(summary)}
-<p class="meta"><span style="color:var(--fed)">■</span> federado principal &nbsp; <span style="color:var(--local)">■</span> local — passos/CE. Valores são médias de {observation_label}; consulte a tabela para dispersão e n.</p>
+<p class="meta"><span style="color:var(--fed)">■</span> federado principal &nbsp; <span style="color:var(--local)">■</span> local-only. Valores são médias de {observation_label}; consulte a tabela para dispersão e n.</p>
 <h3>Maiores médias descritivas por desfecho</h3>
 <p class="meta">Ranking descritivo entre protocolos diferentes; não deve ser interpretado como contraste causal.</p>
 {_descriptive_rankings(summary)}
@@ -678,7 +661,7 @@ main{{max-width:1120px;margin:auto;padding:42px 24px 80px}} h1{{font-size:34px;l
 <p>{auc_text}</p>
 {_pooled_auc_table(pooled)}
 
-<h3>Todas as métricas agregadas</h3>
+<h3>Todas as métricas agregadas</h3><p>Dice/IoU positivos usam somente alvos não vazios; as taxas de falsos positivos usam somente alvos vazios. Dice/IoU globais preservam a convenção histórica. Valores indisponíveis são exibidos como —.</p>
 {_results_table(summary)}
 
 <h3>Deltas pareados da comparação principal</h3>
@@ -699,7 +682,10 @@ main{{max-width:1120px;margin:auto;padding:42px 24px 80px}} h1{{font-size:34px;l
 
 <h2>10. Limitações e decisão</h2>
 <ul><li>Uma única seed não sustenta uma conclusão inferencial definitiva, independentemente do desenho de avaliação.</li><li>{inference_text}</li><li>O protocolo ISIC é uma avaliação interna; não é resultado oficial do challenge.</li><li>O baseline centralizado multi-dataset permanece fora do escopo.</li><li>A comparação de maiores médias entre braços com orçamentos diferentes é descritiva.</li></ul>
-<p><strong>Decisão executiva:</strong> a federação multi-modal é tecnicamente viável, mas seu benefício é condicional. Para equilíbrio institucional entre modalidades, a agregação hierárquica 50/50 permanece a política cientificamente alinhada ao objetivo. Para maximizar classificação nesta seed, a combinação por épocas com cardinalidade/flat foi mais forte, ao custo de pior segmentação BUSI e de permitir dominância efetiva do ISIC. <code>balanced_fold</code> deve permanecer como política principal quando acurácia balanceada importa; focal sem pesos é uma ablação útil para AUC, não uma substituição equivalente. A próxima etapa necessária para alegações de desempenho é repetir a matriz em seeds independentes.</p>
+<p><strong>Leitura do protocolo:</strong> avalie Dice e IoU dos alvos não vazios junto da
+frequência e área de falsos positivos nos alvos vazios. A classificação não bloqueia a máscara.
+Os resultados descrevem os braços concluídos; alegações sobre qualidade precisam de orçamento
+adequado e replicação. Smokes comprovam funcionamento, não desempenho científico.</p>
 
 <h2>11. Artefatos</h2>
 <ul><li><code>{_esc(analysis_dir / 'summary_per_task_setup.csv')}</code></li><li><code>{_esc(analysis_dir / 'method_comparisons.csv')}</code></li><li><code>{_esc(analysis_dir / 'pooled_auc.csv')}</code></li><li><code>{_esc(analysis_dir / 'aggregation_audit.csv')}</code></li><li><code>{_esc(study_root / 'run_index.csv')}</code></li></ul>

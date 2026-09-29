@@ -69,8 +69,14 @@ def _multitask_loss(config, seg_crit, cls_crit, masks, outputs, label, logits):
 
 
 def _train_centralized(config, train_loader, val_loader, device, run_path, fold, runtime_events):
+    from src.dataset.classic_dataloader import class_weights_from_training
+    data_config = dict(config['data'])
+    if data_config.get('class_weighting') == 'balanced_fold':
+        data_config['classes_weighted'] = None
+        data_config['class_weights'] = class_weights_from_training(
+            train_loader.dataset.mapping_file, data_config['classes'])
     model, optimizer, seg_crit, cls_crit, scheduler = load_multitask_experiment_artefacts(
-        config["data"], config["model"], config["optimizer"], config["loss"], 0, None)
+        data_config, config["model"], config["optimizer"], config["loss"], 0, None, device=device)
     model = model.to(device)
     precision = precision_policy(config, device)
     n_classes = len(config["data"]["classes"])
@@ -159,7 +165,7 @@ def run(config_path="./src/config.yaml", run_path=None):
         config = yaml.load(cf, Loader=yaml.FullLoader)
     fed, data_cfg, train_cfg = config["federated"], config["data"], config["training"]
     evaluation_settings(train_cfg)
-    evaluation = evaluation_metadata(train_cfg)
+    evaluation = {**evaluation_metadata(train_cfg), **config.get("evaluation", {})}
 
     seed_everything(train_cfg["seed"], cuda_benchmark=train_cfg["cuda_benchmark"])
     dev_str = fed.get("device", "auto")
@@ -227,6 +233,8 @@ def run(config_path="./src/config.yaml", run_path=None):
         pd.concat(pred_frames, ignore_index=True).to_csv(f"{run_path}/centralized_cls_predictions.csv", index=False)
     for task in df["task"].unique():
         sub, col = df[df["task"] == task], {"seg": "dice", "cls": "acc"}.get(task, "dice")
+        if task == 'seg':
+            col = config.get('evaluation', {}).get('segmentation_primary_metric', col)
         mean_value, std_value = sub[col].mean(), sub[col].std()
         estimate = f"{mean_value:.4f}" if pd.isna(std_value) else f"{mean_value:.4f} ± {std_value:.4f}"
         logging.info(f"[centralized] task={task}: {col} {estimate} (n={len(sub)})")

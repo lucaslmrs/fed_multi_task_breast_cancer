@@ -73,6 +73,16 @@ def _metric_pairs(fp32_path: Path, bf16_path: Path) -> tuple[pd.DataFrame, float
     right = pd.read_csv(bf16_path / "federated_test_results.csv")
     rows = []
     for task, metric in PRIMARY_METRIC.items():
+        if task == 'seg':
+            declarations = []
+            for frame in (left, right):
+                values = frame.get('segmentation_primary_metric', pd.Series(['dice'])).dropna().unique()
+                if len(values) != 1:
+                    raise ValueError('Benchmark requires one declared segmentation primary metric')
+                declarations.append(str(values[0]))
+            if declarations[0] != declarations[1]:
+                raise ValueError('Benchmark arms use different segmentation primary metrics')
+            metric = declarations[0]
         ltask = left[left["task"] == task][PAIR_KEYS + [metric]].rename(
             columns={metric: "fp32"}
         )

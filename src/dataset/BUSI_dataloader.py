@@ -292,7 +292,10 @@ def deterministic_oversampling(mapping_df):
     return mapping_df
 
 
-def load_datasets(config_training, config_data, transforms, mode='CV', runtime=None):
+def load_datasets(config_training, config_data, transforms, mode='CV', runtime=None, tasks=None):
+    if mode == 'CV' and tasks is not None:
+        from src.dataset.classic_dataloader import load_classic_datasets
+        return load_classic_datasets(config_training, config_data, transforms, tasks, runtime)
     if mode == 'CV':
         runtime = dict(runtime or {})
         train_loaders, val_loaders, test_loaders = BUSI_dataloader_CV(seed=config_training['seed'],

@@ -201,6 +201,8 @@ class MultiTaskClientTopologyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         config = yaml.safe_load((ROOT / "src/config.yaml").read_text(encoding="utf-8"))
+        config["datasets"]["Curated_BUSI"]["seg_exclude_classes"] = ["normal"]
+        # Explicit legacy exclusion remains supported.
         # BUSI alone keeps the fixture fast; ISIC cannot host this topology anyway.
         config["federated"]["datasets"] = ["Curated_BUSI"]
         config["datasets"]["Curated_BUSI"]["client_topology"] = "multi_task"
@@ -289,3 +291,104 @@ class MultiTaskClientTopologyTests(unittest.TestCase):
         self.assertIn("disjoint image sets", str(context.exception))
 
 
+
+
+class GroupedPatientPartitionTests(unittest.TestCase):
+    """``fold_strategy: stratified_group`` keeps a patient atomic although it spans classes."""
+
+    DATASET = "SyntheticPatients"
+
+    @classmethod
+    def setUpClass(cls):
+        cls._directory = tempfile.TemporaryDirectory()
+        root = Path(cls._directory.name)
+        rng = np.random.default_rng(0)
+        rows = []
+        for patient in range(30):
+            n_slices = int(rng.integers(10, 21))
+            tumour = rng.random(n_slices) < rng.uniform(0.2, 0.6)
+            tumour[0], tumour[-1] = True, False  # every patient spans both classes
+            for index, positive in enumerate(tumour):
+                rows.append({
+                    "img_path": f"p{patient}_{index}.png",
+                    "mask_path": f"p{patient}_{index}_mask.png",
+                    "class": "tumor" if positive else "no_tumor",
+                    "lesion_id": f"P{patient}",
+                    "tumor_pixels": 50 if positive else 0,
+                })
+        mapping_dir = root / cls.DATASET / "processed_128"
+        mapping_dir.mkdir(parents=True)
+        pd.DataFrame(rows).to_csv(mapping_dir / "mapping.csv", index=False)
+        cls.root = root
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._directory.cleanup()
+
+    def _config(self, cv=3, **dataset_overrides):
+        dataset_cfg = {
+            "variant": "processed_128",
+            "fold_strategy": "stratified_group",
+            "group_col": "lesion_id",
+            "group_strata": 3,
+            "client_topology": "multi_task",
+            "seg_exclude_classes": [],
+        }
+        dataset_cfg.update(dataset_overrides)
+        return {
+            "data": {"root": str(self.root), "variant": "processed_128"},
+            "training": {"CV": cv, "seed": 7, "holdout_test_size": 0.3},
+            "datasets": {self.DATASET: dataset_cfg},
+            "federated": {
+                "datasets": [self.DATASET],
+                "n_clients": {self.DATASET: {"seg": 3, "cls": 3}},
+                "dirichlet_alpha": 1.0,
+                "val_size": 0.2,
+            },
+        }
+
+    def _build(self, config):
+        return build_multi_dataset_partition(config, output_path=str(self.root / "master.csv"))
+
+    def test_patients_never_cross_client_or_split(self):
+        for cv in (1, 3):
+            with self.subTest(CV=cv):
+                master = self._build(self._config(cv=cv))
+                crossing = master.groupby(["fold", "lesion_id"]).agg(
+                    clients=("client_id", "nunique"), splits=("split", "nunique")
+                )
+                self.assertEqual(int((crossing["clients"] > 1).sum()), 0)
+                self.assertEqual(int((crossing["splits"] > 1).sum()), 0)
+                self.assertEqual(sorted(master["fold"].unique()), list(range(cv)))
+                self.assertEqual(set(master["split"]), {"train", "val", "test"})
+
+    def test_every_patient_is_tested_once_across_folds(self):
+        master = self._build(self._config(cv=3))
+        tested = master[(master.split == "test") & (master.task == "cls")]
+        self.assertEqual(tested.groupby("lesion_id")["fold"].nunique().max(), 1)
+        self.assertEqual(tested["lesion_id"].nunique(), 30)
+
+    def test_clients_own_both_tasks_and_no_stratum_leaks(self):
+        master = self._build(self._config())
+        for tasks in master.groupby("client_id")["task"].apply(set):
+            self.assertEqual(tasks, {"seg", "cls"})
+        ownership = master.groupby(["fold", "img_path"])["client_id"].nunique()
+        self.assertEqual(int((ownership > 1).sum()), 0)
+        self.assertNotIn("_stratum", master.columns)
+        written = pd.read_csv(self.root / "master.csv")
+        self.assertNotIn("_stratum", written.columns)
+
+    def test_partition_is_deterministic(self):
+        first = self._build(self._config())
+        second = self._build(self._config())
+        pd.testing.assert_frame_equal(first, second)
+
+    def test_requires_group_col(self):
+        with self.assertRaises(ValueError) as context:
+            self._build(self._config(group_col=None))
+        self.assertIn("group_col", str(context.exception))
+
+    def test_single_task_topology_is_refused(self):
+        with self.assertRaises(ValueError) as context:
+            self._build(self._config(client_topology="single_task"))
+        self.assertIn("multi_task", str(context.exception))

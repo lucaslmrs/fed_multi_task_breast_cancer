@@ -49,6 +49,7 @@ venv.bak/
 /data
 /notebooks
 /papers
+*.zip
 
 # PyCharm
 .idea/
