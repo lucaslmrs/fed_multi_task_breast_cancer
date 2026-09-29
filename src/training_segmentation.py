@@ -124,7 +124,8 @@ def run(config_path="./src/config.yaml", run_path=None):
     resolved_run_path = Path(run_path)
     resolved_run_path.mkdir(parents=True, exist_ok=True)
     init_log(log_name=str(resolved_run_path / "execution.log"))
-    full_config['data'], full_config['model'] = config_data, config_model
+    # Persist the EFFECTIVE protocol: dataset registry overrides of data and loss included.
+    full_config['data'], full_config['model'], full_config['loss'] = config_data, config_model, config_loss
     (resolved_run_path / 'config.yaml').write_text(
         yaml.safe_dump(full_config, sort_keys=False), encoding='utf-8')
     run_path = str(resolved_run_path)
