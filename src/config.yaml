@@ -157,6 +157,24 @@ datasets:
     oversampling:
       seg: False
       cls: False  # multi-task clients cannot oversample cls without duplicating masks
+  SIIM_ACR:
+    variant: processed_128
+    channels: 1              # chest radiograph, MONOCHROME2
+    # Every labelled image carries a mask AND a class.  As in TCGA-LGG, `class` is DERIVED from
+    # the mask (pneumothorax iff the mask has a positive pixel).  See data/SIIM_ACR/PAPER_NOTES.md.
+    classes:
+      - no_pneumothorax
+      - pneumothorax
+    seg_exclude_classes: []  # an empty mask is a valid target under the Dice+BCE protocol
+    # Image-level split: the anonymisation gave every DICOM its own PatientID, so patients cannot
+    # be grouped.  Pixel duplicates are collapsed by the preprocessing instead.
+    fold_strategy: stratified
+    client_topology: multi_task
+    class_weighting: balanced_fold
+    classification_criterion: CE
+    oversampling:
+      seg: False
+      cls: False  # multi-task clients cannot oversample cls without duplicating masks
 
 federated:  # FedPer: shared encoder is federated, heads stay personalized per client
   datasets: [Curated_BUSI, ISIC_2018]
