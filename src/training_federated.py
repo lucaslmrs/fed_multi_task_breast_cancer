@@ -37,6 +37,8 @@ from src.federated.model_split import (
     set_shared_state,
     shared_keys,
 )
+from src.experiments.run_examples import client_examples, write_fold_candidates
+from src.experiments.run_report import build_run_report
 from src.federated.negative_transfer import report_run
 from src.federated.server import FedPerStrategy
 from src.utils.experiment_init import device_setup, init_multitask_model
@@ -132,6 +134,7 @@ def _test_client(
     task,
     setup,
     shared_arrays=None,
+    return_samples=False,
 ):
     model = _build_model(config, dataset, device)
     state_path = Path(run_dir) / f"fold_{fold}" / f"client_{client_id}" / "state.pt"
@@ -179,11 +182,13 @@ def _test_client(
         max_samples=config["federated"].get("max_samples_per_split"),
         loader_options=dataloader_kwargs(config, federated=True),
     )
-    metrics, preds = unified_eval.evaluate(
+    metrics, preds, *samples = unified_eval.evaluate(
         model, test_loader, task, len(data_cfg["classes"]), device,
         class_names=data_cfg["classes"],
         precision=precision,
+        return_samples=return_samples,
     )
+    raw_preds = None if preds is None else preds.copy()
     experiment = config.get("experiment", {})
     evaluation = {**evaluation_metadata(config["training"]), **config.get("evaluation", {})}
     identifiers = {
@@ -210,6 +215,8 @@ def _test_client(
         preds.insert(0, "client_id", client_id)
         preds.insert(0, "fold", fold)
         preds.insert(0, "setup", setup)
+    if return_samples:
+        return row, preds, (raw_preds, samples[0])
     return row, preds
 
 
@@ -470,15 +477,16 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                 f"{strategy.best_round}; evaluating final-round "
                 f"{'global trunk + personalized states' if not standalone else 'local models'}"
             )
-        fold_rows, fold_pred_frames = [], []
+        fold_rows, fold_pred_frames, fold_examples = [], [], []
         for client_id, dataset, tasks in roster:
             # One result row per (client, task): a multi-task client is scored once per task over
             # the slice that task supervises. analyze.py already keys on (client_id, task).
+            task_outputs = {}
             for task in tasks:
                 with runtime_events.measure(
                     "test", setup=setup, fold=fold, client_id=client_id
                 ) as event:
-                    row, preds = _test_client(
+                    row, preds, task_outputs[task] = _test_client(
                         config,
                         device,
                         str(master_file),
@@ -489,11 +497,23 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                         task,
                         setup,
                         shared_arrays=final_shared,
+                        return_samples=True,
                     )
                     event.update(examples=int(row.get("n_test", 0)), batches=0)
                 fold_rows.append(row)
                 if preds is not None:
                     fold_pred_frames.append(preds)
+            # Examples are observational: a rendering failure must not cost the fold's results.
+            try:
+                fold_examples.extend(client_examples(
+                    run_path, setup, fold, client_id, dataset, task_outputs,
+                    dataset_config(config, dataset)["classes"],
+                ))
+            except Exception:
+                logging.warning("[fold %s] could not render examples for %s", fold, client_id,
+                                exc_info=True)
+            del task_outputs
+        write_fold_candidates(fold_dir, setup, fold_examples)
         pd.DataFrame(fold_rows).to_csv(fold_results_path, index=False)
         if fold_pred_frames:
             pd.concat(fold_pred_frames, ignore_index=True, sort=False).to_csv(
@@ -506,11 +526,20 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
     from src.experiments.training_curves import build_run_artifacts
 
     build_run_artifacts(run_path)
+    # Reports are read from durable CSV/JSON artifacts; a failure here must not fail the run.
     if standalone:
         # Local-only clients ignore the trunk the server sends, so their deltas share no origin.
         logging.info("[negative transfer] n/a (standalone)")
     else:
-        report_run(run_path)
+        try:
+            report_run(run_path)
+        except Exception:
+            logging.warning("Could not build the negative transfer report", exc_info=True)
+    try:
+        report = build_run_report(run_path)
+        logging.info(f"Run report: {report}")
+    except Exception:
+        logging.warning("Could not build the run report", exc_info=True)
     runtime_events.write()
     gpu_telemetry.stop()
     logging.info(f"Total {setup} time: {time.perf_counter() - init_time:.2f}s")

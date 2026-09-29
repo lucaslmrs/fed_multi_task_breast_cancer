@@ -267,11 +267,16 @@ ISIC 2018 (3-channel dermoscopy). `encoder1` is a personalized modality stem; th
    `intra` (same dataset) and `inter` (between datasets). At the end of every federated (not
    standalone) run, `src/federated/negative_transfer.py` logs it and writes
    `negative_transfer_{rounds,summary}.csv`; histories that predate the field report `n/a`.
+   Read `overall` against `orthogonal_reference` (the value for mutually orthogonal updates):
+   high-dimensional updates are near-orthogonal, so only the excess over it signals conflict.
 7. `src/training_federated.py` — per-fold orchestrator: validates shared shapes before Flower, runs
    the simulation, persists `global_shared.pt`, and evaluates every federated client with the same
    final global trunk plus its latest personalized state. Local-only evaluates each latest full
    local model at the identical round budget. Saves `{setup}_test_results.csv` and
-   `{setup}_cls_predictions.csv` under the timestamped run directory.
+   `{setup}_cls_predictions.csv` under the timestamped run directory, plus `run_report.html`
+   (overall / per-dataset / per-client metrics and deterministic hit-miss examples per dataset,
+   rendered under `report/examples/` from `fold_*/{setup}_example_candidates.csv`) and, for a
+   federated run, `negative_transfer.html`. Rebuild with `python -m src.experiments.run_report <run>`.
 
 The final artifact is **one shared trunk + N personalized stems/heads** (not a single global model).
 Server-side early stopping is diagnostic only; final comparison uses the same configured last-round

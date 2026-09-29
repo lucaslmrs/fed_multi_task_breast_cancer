@@ -8,9 +8,14 @@ import numpy as np
 from flwr.common import ndarrays_to_parameters
 
 from src.federated.negative_transfer import (
+    HTML_FILE,
     MISSING_STATUS,
+    PLOTS_DIR,
     SUMMARY_FILE,
+    build_html,
     cancellation_from_gram,
+    mean_cosine_matrix,
+    pair_cosines,
     report_run,
     summarize_run,
 )
@@ -56,6 +61,13 @@ class CancellationTests(unittest.TestCase):
         self.assertAlmostEqual(
             1 - result["overall"], (1 - result["intra"]) * (1 - result["inter"]), places=9
         )
+
+    def test_orthogonal_reference(self):
+        orthogonal = cancellation_from_gram(_gram([[1, 0], [0, 1]]), [0.5, 0.5], ["A", "B"])
+        self.assertAlmostEqual(orthogonal["overall"], 1 - 2 ** -0.5)
+        self.assertAlmostEqual(orthogonal["orthogonal_reference"], orthogonal["overall"])
+        opposed = cancellation_from_gram(_gram([[1, 0], [-1, 0]]), [0.5, 0.5], ["A", "B"])
+        self.assertGreater(opposed["overall"], opposed["orthogonal_reference"])
 
     def test_zero_updates_are_undefined(self):
         result = cancellation_from_gram(_gram([[0, 0], [0, 0]]), [0.5, 0.5], ["A", "B"])
@@ -118,6 +130,34 @@ class SummaryTests(unittest.TestCase):
 
             report_run(run)
             self.assertTrue((Path(run) / SUMMARY_FILE).exists())
+            page = (Path(run) / HTML_FILE).read_text(encoding="utf-8")
+            self.assertIn("Por rodada", page)
+            self.assertTrue((Path(run) / PLOTS_DIR / "rounds.png").exists())
+
+    def test_cosine_heatmap_separates_same_and_cross_dataset_pairs(self):
+        with tempfile.TemporaryDirectory() as run:
+            path = Path(run) / "fold_0" / "aggregation_history.json"
+            path.parent.mkdir()
+            clients = ["A/seg/a0", "A/seg/a1", "B/seg/b0"]
+            events = [
+                {"round": r, "stage": "fit",
+                 "gradient_conflict": {"clients": order, "cosine": {"shared_total": matrix}}}
+                for r, order, matrix in [
+                    (1, clients, [[1, .5, -1], [.5, 1, 0], [-1, 0, 1]]),
+                    # Same pairs in another client order must align by label.
+                    (2, [clients[2], clients[0], clients[1]],
+                     [[1, -1, 0], [-1, 1, .5], [0, .5, 1]]),
+                ]
+            ]
+            path.write_text(json.dumps(events), encoding="utf-8")
+            labels, matrix = mean_cosine_matrix(run)
+            self.assertEqual(labels, clients)
+            pairs = pair_cosines(labels, matrix)
+            self.assertAlmostEqual(pairs["same_dataset"][0], 0.5)
+            self.assertAlmostEqual(pairs["cross_dataset"][0], -0.5)
+            page = build_html(run).read_text(encoding="utf-8")
+            self.assertIn("Similaridade entre clientes", page)
+            self.assertTrue((Path(run) / PLOTS_DIR / "cosine_heatmap.png").exists())
 
     def test_old_history_is_reported_as_missing(self):
         with tempfile.TemporaryDirectory() as run:
