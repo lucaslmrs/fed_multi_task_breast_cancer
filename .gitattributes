@@ -1,0 +1,8 @@
+# Source and docs edited by agents on Windows and WSL must stay LF.
+# Data artifacts (e.g. curation_list.csv) are deliberately not listed: their bytes are frozen.
+*.py   text eol=lf
+*.md   text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.sh   text eol=lf
+*.toml text eol=lf
