@@ -37,6 +37,7 @@ from src.federated.model_split import (
     set_shared_state,
     shared_keys,
 )
+from src.federated.negative_transfer import report_run
 from src.federated.server import FedPerStrategy
 from src.utils.experiment_init import device_setup, init_multitask_model
 from src.utils.miscellany import init_log, seed_everything
@@ -505,6 +506,11 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
     from src.experiments.training_curves import build_run_artifacts
 
     build_run_artifacts(run_path)
+    if standalone:
+        # Local-only clients ignore the trunk the server sends, so their deltas share no origin.
+        logging.info("[negative transfer] n/a (standalone)")
+    else:
+        report_run(run_path)
     runtime_events.write()
     gpu_telemetry.stop()
     logging.info(f"Total {setup} time: {time.perf_counter() - init_time:.2f}s")

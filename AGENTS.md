@@ -262,7 +262,11 @@ ISIC 2018 (3-channel dermoscopy). `encoder1` is a personalized modality stem; th
    then applies `dataset_weights`; `flat` mode is the sample-weighted ablation. Every round also
    records the **pairwise cosine between client trunk deltas** (per block and overall) into
    `aggregation_history.json` — no artifact persists a client's post-fit trunk, so that matrix
-   cannot be recovered after the run.
+   cannot be recovered after the run. It also records `negative_transfer`: the cancellation ratio
+   `1 − ‖Σ wᵢΔᵢ‖ / Σ wᵢ‖Δᵢ‖` of the whole trunk under the real aggregation weights, split into
+   `intra` (same dataset) and `inter` (between datasets). At the end of every federated (not
+   standalone) run, `src/federated/negative_transfer.py` logs it and writes
+   `negative_transfer_{rounds,summary}.csv`; histories that predate the field report `n/a`.
 7. `src/training_federated.py` — per-fold orchestrator: validates shared shapes before Flower, runs
    the simulation, persists `global_shared.pt`, and evaluates every federated client with the same
    final global trunk plus its latest personalized state. Local-only evaluates each latest full

@@ -12,6 +12,8 @@ import numpy as np
 from flwr.common import ndarrays_to_parameters, parameters_to_ndarrays
 from flwr.server.strategy import FedAvg
 
+from src.federated.negative_transfer import cancellation_from_gram
+
 TASKS = ("seg", "cls")
 
 
@@ -50,6 +52,8 @@ class FedPerStrategy(FedAvg):
         # the returned trunks all start from this point, so cosines between trunks are ~1 and
         # meaningless. Nothing else persists a client's post-fit trunk, so this is collected live.
         self._sent_arrays = None
+        # Raw whole-trunk Gram of the latest round, consumed by the negative-transfer telemetry.
+        self._last_total_gram = None
 
     def configure_fit(self, server_round, parameters, client_manager):
         # Round 1 configures from ``initial_parameters``; ``latest_parameters`` is still None then.
@@ -93,6 +97,15 @@ class FedPerStrategy(FedAvg):
         conflict = self._gradient_conflict(updates)
         if conflict is not None:
             telemetry["gradient_conflict"] = conflict
+            # From the exact float64 Gram, not the rounded cosines, and with the weights the
+            # aggregation really applied.
+            telemetry["negative_transfer"] = {
+                key: None if np.isnan(value) else round(value, 6)
+                for key, value in cancellation_from_gram(
+                    self._last_total_gram, final_weights,
+                    [update["dataset"] for update in updates],
+                ).items()
+            }
         summary = telemetry["group_participation"]
         logging.info(
             f"[round {server_round}] {self.aggregation_mode}/{self.client_weighting} "
@@ -338,6 +351,7 @@ class FedPerStrategy(FedAvg):
         for gram in grams.values():
             overall += gram
         grams["shared_total"] = overall
+        self._last_total_gram = overall
 
         return {
             "clients": [
