@@ -54,6 +54,7 @@ edits inside an existing canonical skill are visible immediately through both li
 # another dataset's variant), so set that first.
 python -m src.dataset.Curated_BUSI_preprocessing   # data.dataset: Curated_BUSI
 python -m src.dataset.ISIC_2018_preprocessing      # data.dataset: ISIC_2018
+python -m src.dataset.SIIM_ACR_preprocessing       # data.dataset: SIIM_ACR
 
 # Train (CV=1 selects deterministic holdout; CV>=2 selects cross-validation)
 python -m src.training_multitask      # segmentation + classification
@@ -102,7 +103,8 @@ data/<dataset>/
   federated/     # federated_mapping.csv, the frozen master partition
 ```
 
-Currently present: `data/Curated_BUSI/`, `data/ISIC_2018/` and `data/TCGA_LGG/`, all with a
+Currently present: `data/Curated_BUSI/`, `data/ISIC_2018/`, `data/TCGA_LGG/` and `data/SIIM_ACR/`,
+all with a
 `processed_128` variant.
 The variant's resolution comes from `data.image_size`; the preprocessing refuses to write a
 different size into an existing variant.
@@ -121,6 +123,7 @@ columns, resize helpers, the guards). All of them emit the same contract: `<vari
 - **Curated BUSI** — `src/dataset/Curated_BUSI_preprocessing.py`. Raw at `data/Curated_BUSI/raw/`; images resized to `data.image_size`, multiple masks merged, `mapping.csv` generated. `CURATED` filters through `data/Curated_BUSI/curation_list.csv`, leaving 450 images (222 benign, 164 malignant, 64 normal) after SSIM duplicate removal. It resizes with `INTER_NEAREST` — **do not "fix" this to INTER_AREA**: it would change the curated images and invalidate the frozen federated partition and every result derived from it.
 - **ISIC 2018** — `src/dataset/ISIC_2018_preprocessing.py`. Ingests BOTH challenge tasks into one mapping: Task 1 (3,694 images with masks) and Task 3/HAM10000 (11,720 images with labels). Images written RGB with `INTER_AREA`, masks nearest-neighbour + re-binarized. See `data/ISIC_2018/PAPER_NOTES.md` for the measured facts.
 - **TCGA-LGG** — `src/dataset/TCGA_LGG_preprocessing.py`. Brain MRI (Buda et al. 2019 masks over the TCIA collection): 3,929 axial slices from 110 patients, every slice carrying a mask and a class. Images written 3-channel (pre-contrast/FLAIR/post-contrast) with `INTER_AREA`. **`class` is derived from the mask** (`tumor` iff non-empty), so the classification target is a deterministic function of the segmentation target; `lesion_id` holds the patient id and splits group on it via `fold_strategy: stratified_group` (patient-atomic, stratified on binned per-patient tumour-slice fraction, `multi_task` only) — see `data/TCGA_LGG/PAPER_NOTES.md`.
+- **SIIM-ACR** — `src/dataset/SIIM_ACR_preprocessing.py`. Chest radiographs (SIIM-ACR Pneumothorax, Kaggle 2019): stage-1 DICOMs with the official `stage_2_train.csv` RLE annotations, 12,044 images after pixel-duplicate removal (9,377 `no_pneumothorax`, 2,667 `pneumothorax`), every image carrying a mask and a class. Images written 1-channel with `INTER_AREA`. **`class` is derived from the mask** (`pneumothorax` iff non-empty), as in TCGA-LGG. Anonymisation gave every DICOM its own PatientID, so **no patient grouping is possible**: splits are image-level and there is no `lesion_id` — see `data/SIIM_ACR/PAPER_NOTES.md`.
 - `BUSI_dataloader.py` reads `mapping.csv`, performs stratified K-fold splitting, then applies deterministic oversampling on the training fold to balance classes before constructing `DataLoader`s.
 
 #### `mapping.csv` schema
