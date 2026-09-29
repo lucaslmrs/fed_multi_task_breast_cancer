@@ -177,14 +177,15 @@ datasets:
       cls: False  # multi-task clients cannot oversample cls without duplicating masks
 
 federated:  # FedPer: shared encoder is federated, heads stay personalized per client
-  datasets: [Curated_BUSI, ISIC_2018, TCGA_LGG]
+  datasets: [Curated_BUSI, ISIC_2018, TCGA_LGG, SIIM_ACR]
   share_stem: False           # heterogeneous 1ch/3ch stems stay personalized
   n_clients:
     Curated_BUSI: {seg: 2, cls: 2}
     ISIC_2018: {seg: 4, cls: 4}
     TCGA_LGG: {seg: 2, cls: 2}   # multi_task: 2 clients owning both tasks, patient-grouped
-  # Own master: adding TCGA changes the roster, so it must not reuse the frozen study partition.
-  partition_file: data/federated_multi/busi_mt2_isic_st8_tcga_mt2/federated_mapping.csv
+    SIIM_ACR: {seg: 4, cls: 4}   # multi_task: 4 clients owning both tasks, image-level split
+  # Own master: each added dataset changes the roster, so it must not reuse an earlier partition.
+  partition_file: data/federated_multi/busi_mt2_isic_st8_tcga_mt2_siim_mt4/federated_mapping.csv
   n_clients_seg: 2
   n_clients_cls: 2
   rounds: 200
@@ -213,6 +214,7 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
       Curated_BUSI: 1.0
       ISIC_2018: 1.0
       TCGA_LGG: 1.0
+      SIIM_ACR: 1.0
   oversampling:            # per-task override of data.oversampling
     seg: False
     cls: True
