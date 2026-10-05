@@ -157,14 +157,35 @@ datasets:
     oversampling:
       seg: False
       cls: False  # multi-task clients cannot oversample cls without duplicating masks
+  SIIM_ACR:
+    variant: processed_128
+    channels: 1              # chest radiograph, MONOCHROME2
+    # Every labelled image carries a mask AND a class.  As in TCGA-LGG, `class` is DERIVED from
+    # the mask (pneumothorax iff the mask has a positive pixel).  See data/SIIM_ACR/PAPER_NOTES.md.
+    classes:
+      - no_pneumothorax
+      - pneumothorax
+    seg_exclude_classes: []  # an empty mask is a valid target under the Dice+BCE protocol
+    # Image-level split: the anonymisation gave every DICOM its own PatientID, so patients cannot
+    # be grouped.  Pixel duplicates are collapsed by the preprocessing instead.
+    fold_strategy: stratified
+    client_topology: multi_task
+    class_weighting: balanced_fold
+    classification_criterion: CE
+    oversampling:
+      seg: False
+      cls: False  # multi-task clients cannot oversample cls without duplicating masks
 
 federated:  # FedPer: shared encoder is federated, heads stay personalized per client
-  datasets: [Curated_BUSI, ISIC_2018]
+  datasets: [Curated_BUSI, ISIC_2018, TCGA_LGG, SIIM_ACR]
   share_stem: False           # heterogeneous 1ch/3ch stems stay personalized
   n_clients:
     Curated_BUSI: {seg: 2, cls: 2}
     ISIC_2018: {seg: 4, cls: 4}
-  partition_file: data/federated_studies/example_multi_dataset_dice_bce/seed_1993/federated_mapping.csv
+    TCGA_LGG: {seg: 2, cls: 2}   # multi_task: 2 clients owning both tasks, patient-grouped
+    SIIM_ACR: {seg: 4, cls: 4}   # multi_task: 4 clients owning both tasks, image-level split
+  # Own master: each added dataset changes the roster, so it must not reuse an earlier partition.
+  partition_file: data/federated_multi/busi_mt2_isic_st8_tcga_mt2_siim_mt4/federated_mapping.csv
   n_clients_seg: 2
   n_clients_cls: 2
   rounds: 200
@@ -192,6 +213,8 @@ federated:  # FedPer: shared encoder is federated, heads stay personalized per c
     dataset_weights:
       Curated_BUSI: 1.0
       ISIC_2018: 1.0
+      TCGA_LGG: 1.0
+      SIIM_ACR: 1.0
   oversampling:            # per-task override of data.oversampling
     seg: False
     cls: True

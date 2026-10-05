@@ -32,29 +32,47 @@ _SEG_KEYS = {"DICE": "dice", "Jaccard index": "iou", "Sensitivity": "sensitivity
 
 
 @torch.inference_mode()
-def evaluate(model, loader, task, num_classes, device, class_names=None, precision=None):
+def evaluate(model, loader, task, num_classes, device, class_names=None, precision=None,
+             return_samples=False):
     """Evaluate one task slice.
 
     ``class_names`` is optional for backwards compatibility.  When supplied it must describe the
     complete classification label space in numeric-label order.  The names are emitted as metadata
     rather than embedded in metric keys, keeping CSV schemas stable across renamed classes.
+
+    ``return_samples=True`` appends a third value, ``{"frame": per-image seg metrics or None,
+    "images": {patient_id: {"image", "mask"?, "pred"?}}}``, used to render run examples. The
+    aggregated metrics are identical either way; images are kept as uint8 for the whole slice.
     """
     class_names = _validate_class_names(class_names, num_classes)
     precision = precision or PrecisionPolicy("fp32", device)
     model.eval()
     n = len(loader.dataset)
+    samples = {"frame": None, "images": {}} if return_samples else None
     if n == 0:
-        out = {"n_test": 0}
+        out, preds = {"n_test": 0}, None
         if task == "cls":
             _add_class_name_metadata(out, class_names)
         elif task == "seg":
             out.update(summarize_segmentation_strata([]))
-        return out, None
-    if task == "seg":
-        return _evaluate_seg(model, loader, device, n, precision), None
-    if task != "cls":
+    elif task == "seg":
+        out, preds = _evaluate_seg(model, loader, device, n, precision, samples), None
+    elif task == "cls":
+        out, preds = _evaluate_cls(
+            model, loader, device, num_classes, n, class_names, precision, samples
+        )
+    else:
         raise ValueError(f"Unknown task {task!r}; expected 'seg' or 'cls'")
-    return _evaluate_cls(model, loader, device, num_classes, n, class_names, precision)
+    return (out, preds, samples) if return_samples else (out, preds)
+
+
+def _display_image(image):
+    """C x H x W tensor -> min-max scaled uint8, H x W for one channel or H x W x 3."""
+    array = image.float().cpu().numpy()
+    low, high = float(array.min()), float(array.max())
+    scaled = (array - low) / (high - low) if high > low else np.zeros_like(array)
+    scaled = (scaled * 255).round().astype(np.uint8)
+    return scaled[0] if scaled.shape[0] == 1 else np.moveaxis(scaled[:3], 0, -1)
 
 
 def _validate_class_names(class_names, num_classes):
@@ -75,9 +93,10 @@ def _add_class_name_metadata(target, class_names):
         target.update({f"class_name_{index}": name for index, name in enumerate(class_names)})
 
 
-def _evaluate_seg(model, loader, device, n, precision):
+def _evaluate_seg(model, loader, device, n, precision, samples=None):
     acc = {short: [] for short in _SEG_KEYS.values()}
     strata = []
+    rows = []
     for data in loader:
         with precision.autocast():
             _, outputs = model(precision.move(data["image"]))
@@ -93,14 +112,31 @@ def _evaluate_seg(model, loader, device, n, precision):
             strata.append(m)
             for key, short in _SEG_KEYS.items():
                 acc[short].append(m[key])
+            if samples is not None:
+                target, predicted = mask[index, 0] > 0.5, seg[index, 0] > 0.5
+                rows.append({
+                    "patient_id": patient_id,
+                    "dice": float(m["DICE"]),
+                    "dice_positive": float(m.get("dice_positive", np.nan)),
+                    "target_empty": bool(not target.any()),
+                    "target_pixels": int(target.sum()),
+                    "pred_pixels": int(predicted.sum()),
+                })
+                samples["images"][patient_id] = {
+                    "image": _display_image(data["image"][index]),
+                    "mask": target.astype(np.uint8),
+                    "pred": predicted.astype(np.uint8),
+                }
     out = {short: float(np.mean([x for x in v if np.isfinite(x)]))
            if any(np.isfinite(x) for x in v) else np.nan for short, v in acc.items()}
     out.update(summarize_segmentation_strata(strata))
     out["n_test"] = len(strata)
+    if samples is not None:
+        samples["frame"] = pd.DataFrame(rows)
     return out
 
 
-def _evaluate_cls(model, loader, device, num_classes, n, class_names, precision):
+def _evaluate_cls(model, loader, device, num_classes, n, class_names, precision, samples=None):
     patients, gt, pred, probs = [], [], [], []
     for data in loader:
         with precision.autocast():
@@ -114,7 +150,11 @@ def _evaluate_cls(model, loader, device, num_classes, n, class_names, precision)
         else:
             p = torch.softmax(pl, dim=1).cpu().numpy()
         label = data["label"][keep.cpu()].flatten().to(torch.int64).cpu().numpy()
-        patients.extend(data["patient_id"][keep.cpu()].cpu().numpy().tolist())
+        kept_patients = data["patient_id"][keep.cpu()].cpu().numpy().tolist()
+        patients.extend(kept_patients)
+        if samples is not None:
+            for image, patient_id in zip(data["image"][keep.cpu()], kept_patients):
+                samples["images"][patient_id] = {"image": _display_image(image)}
         gt.extend(label.tolist())
         pred.extend(p.argmax(axis=1).tolist())
         probs.extend(p.tolist())
