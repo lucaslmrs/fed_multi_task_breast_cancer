@@ -62,6 +62,19 @@ def local_training_config(config: dict) -> dict:
     return local_training
 
 
+PERSONALIZED_INIT_SEEDS = ("client", "dataset")
+
+
+def personalized_init_seed(config: dict) -> str:
+    """Scope of the seed that initializes a client's personalized stem/heads.
+
+    ``client`` (default, every historical run) draws an independent initialization per client, so
+    clients of the same dataset feed the shared trunk with unrelated random encodings from round 1.
+    ``dataset`` gives every client of a dataset the same initial stem/heads.
+    """
+    return str(config["federated"].get("personalized_init_seed", "client")).lower()
+
+
 def training_telemetry_config(config: dict) -> dict:
     """Resolve observational training-curve settings without affecting experiment design."""
     telemetry = dict(config["federated"].get("training_telemetry", {}))
@@ -128,6 +141,11 @@ def validate_federated_config(config: dict) -> None:
         value = local_training[field]
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f"federated.local_training.{field} must be a positive integer")
+
+    if personalized_init_seed(config) not in PERSONALIZED_INIT_SEEDS:
+        raise ValueError(
+            f"federated.personalized_init_seed must be one of {list(PERSONALIZED_INIT_SEEDS)}"
+        )
 
     telemetry = training_telemetry_config(config)
     if not isinstance(telemetry["enabled"], bool):

@@ -190,6 +190,87 @@ Por par, na inicialização, com `grad10` → `grad10_refpers`:
    clientes concordam consigo mesmos em apenas ≈ 0.0–0.1. Um cosseno normalizado
    `cos_ij / sqrt(teto_i · teto_j)` é candidato natural.
 
+#### E0.1b — Run diagnóstico: seed da personalização por dataset
+
+**Pergunta.** Iniciar stem e cabeças com a mesma seed para todos os clientes de um dataset (opção 1)
+mantém o alinhamento ao longo do treino, ou os stems se afastam?
+
+**Implementação.**
+- Nova flag `federated.personalized_init_seed: client | dataset`.
+- O padrão é `client`, que reproduz bit a bit a seed histórica (teste de regressão em
+  `tests/test_model_split_server.py`).
+- Código: `initialization_seed` em `src/federated/client.py`, validação em `src/federated/config.py`;
+  a política fica registrada no `metadata.yaml` do cliente.
+- O local-only usa a mesma política, então o pareamento entre braços se mantém.
+
+**Desenho.**
+- Configuração idêntica à do run de 29/09: mesma partição congelada, 4 datasets, 16 clientes, BF16,
+  10 steps/rodada.
+- Mudanças: apenas `rounds: 30` e a flag.
+- Dois braços: `runs/validation/personalized_init_seed/{client,dataset}`.
+- Runner: `runs/validation/personalized_init_seed/run_both.sh`.
+
+**Leitura.**
+- Trajetória por rodada do cosseno intra-dataset (pares com as mesmas tarefas), que vem do
+  `aggregation_history.json`.
+- Excesso de cancelamento sobre a referência ortogonal.
+- Distância relativa entre os stems dos clientes de um dataset na rodada 30.
+- É diagnóstico: 30 rodadas não servem para comparar desempenho.
+
+**Resultado (2026-10-09; um run por braço, uma seed, um holdout; descritivo).**
+
+Cosseno médio entre clientes do mesmo dataset e com as mesmas tarefas (`shared_total`):
+
+| rodada | 1 | 2 | 3 | 5 | 10 | 15 | 20 | 25 | 30 |
+|---|---|---|---|---|---|---|---|---|---|
+| `client` | 0.000 | 0.013 | 0.032 | 0.044 | 0.018 | 0.010 | 0.011 | 0.009 | 0.010 |
+| `dataset` | **0.387** | 0.488 | 0.537 | **0.569** | 0.520 | 0.466 | 0.387 | 0.289 | **0.252** |
+
+Por dataset (rodadas 1–5 → 26–30), na política `dataset`:
+- TCGA: 0.58 → 0.53;
+- SIIM: 0.54 → 0.37;
+- ISIC seg: 0.49 → 0.20;
+- BUSI: 0.44 → 0.07.
+
+Na política `client`, todos ficam entre 0.00 e 0.06 nas duas janelas.
+
+Por bloco (rodadas 26–30, `dataset`): encoder2 0.47, encoder3 0.30, encoder4 0.18, encoder5 0.08,
+bottleneck 0.04. O alinhamento se concentra nos blocos rasos.
+
+**Os stems não se afastam.** Na rodada 30, entre clientes do mesmo dataset:
+- política `dataset`: cosseno dos pesos do `encoder1` de 0.999 a 1.000, distância relativa de 1% a 4%;
+- política `client`: cosseno ≈ 0.02, distância relativa ≈ 1.4.
+
+O decaimento do alinhamento, portanto, **não vem de deriva do stem**. A explicação mais provável é a
+queda da razão sinal/ruído do gradiente à medida que a loss cai, coerente com o teto intra-cliente
+baixo medido na rodada 200. Os blocos profundos também se especializam mais. **Não há necessidade
+demonstrada da opção 2** (ressincronizar o stem) ao menos até a rodada 30.
+
+**O que não muda:**
+- O cosseno **inter-dataset** é ≈ 0 nas duas políticas (r1–5: 0.004 / 0.007; r26–30: ≈ 0.000).
+  Datasets de modalidades diferentes têm stems diferentes por construção.
+- ISIC seg × ISIC cls (`intra_diff_tasks`) também fica ≈ 0, mesmo com stem inicial igual. As duas
+  tarefas não interagem pelo trunk, nem de forma construtiva nem destrutiva.
+
+**Cancelamento acima da referência ortogonal** (negativo significa agregação construtiva):
+- `client`: −0.014 (r1–5), +0.001 (r26–30);
+- `dataset`: **−0.146** (r1–5), −0.037 (r26–30).
+
+**Métricas de teste na rodada 30** (apenas indicativas):
+- Dice positivo, `client` → `dataset`: BUSI 0.488 → 0.538, TCGA 0.408 → 0.446, ISIC 0.703 → 0.698,
+  SIIM 0.015 → 0.014.
+- O mais visível é a **dispersão entre clientes** do mesmo dataset, que cai muito:
+  - BUSI seg: ±0.107 → ±0.036;
+  - TCGA seg: ±0.033 → ±0.003;
+  - SIIM seg: ±0.017 → ±0.002.
+- A acurácia de classificação fica praticamente igual.
+
+**Conclusão.** A opção 1 transforma o FedAvg intra-dataset de "média de vetores ortogonais" em
+agregação construtiva. O alinhamento é forte no início e decai (0.57 → 0.25 em 30 rodadas) sem que
+os stems se separem. Entre datasets não muda nada. Um braço completo (200 rodadas) com
+`personalized_init_seed: dataset` é necessário para medir o efeito em desempenho. É decisão do
+usuário e o treino é executado por ele.
+
 #### E0.2 — Busca na literatura (escolher 2 métodos)
 
 **Critérios de escolha:**
@@ -238,6 +319,9 @@ telemetria nova ligada, que é só diagnóstica e não muda o resultado.
 - 2026-10-08 — etapa criada a pedido do usuário, após a constatação de cosseno ≈ 0 em todos os pares.
 - 2026-10-08 — E0.1 concluída: a métrica é válida, e a ortogonalidade vem dos stems/cabeças
   inicializados por cliente (H3). Próximo passo: decisão do usuário sobre o desenho e, depois, E0.2.
+- 2026-10-09 — E0.1b concluída: com `personalized_init_seed: dataset`, o cosseno intra-dataset
+  começa em 0.39, chega a 0.57 e cai para 0.25 na rodada 30. Os stems permanecem idênticos
+  (cos ≥ 0.999), e o cosseno inter-dataset continua ≈ 0.
 
 ---
 

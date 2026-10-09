@@ -5,7 +5,7 @@ import numpy as np
 import torch
 
 from src.federated.config import aggregation_config, local_training_config, validate_federated_config
-from src.federated.client import stable_client_seed
+from src.federated.client import initialization_seed, stable_client_seed
 from src.federated.model_split import get_shared_state, set_shared_state, shared_keys
 from src.federated.server import FedPerStrategy
 from src.models.multitask.MTnnUNet import MTnnUNet
@@ -76,6 +76,33 @@ class ModelSplitTests(unittest.TestCase):
             },
         }
         with self.assertRaisesRegex(ValueError, "share_stem"):
+            validate_federated_config(config)
+
+    def test_client_init_seed_policy_reproduces_the_historical_seed(self):
+        self.assertEqual(
+            initialization_seed(42, 1, "ISIC_2018_seg_0", "ISIC_2018"),
+            stable_client_seed(42, 1, "ISIC_2018_seg_0"),
+        )
+        self.assertNotEqual(
+            initialization_seed(42, 1, "ISIC_2018_seg_0", "ISIC_2018"),
+            initialization_seed(42, 1, "ISIC_2018_seg_1", "ISIC_2018"),
+        )
+
+    def test_dataset_init_seed_policy_pairs_clients_of_a_dataset_only(self):
+        seg = initialization_seed(42, 1, "ISIC_2018_seg_0", "ISIC_2018", "dataset")
+        self.assertEqual(seg, initialization_seed(42, 1, "ISIC_2018_cls_3", "ISIC_2018", "dataset"))
+        self.assertNotEqual(seg, initialization_seed(42, 1, "SIIM_ACR_mt_0", "SIIM_ACR", "dataset"))
+        self.assertNotEqual(seg, initialization_seed(42, 2, "ISIC_2018_seg_0", "ISIC_2018", "dataset"))
+        with self.assertRaisesRegex(ValueError, "personalized_init_seed"):
+            initialization_seed(42, 1, "ISIC_2018_seg_0", "ISIC_2018", "global")
+
+    def test_unknown_personalized_init_seed_is_rejected(self):
+        config = {
+            "model": {"sequences": 1},
+            "data": {"dataset": "gray", "classes": ["a"], "augmentation": {}},
+            "federated": {"datasets": ["gray"], "personalized_init_seed": "global"},
+        }
+        with self.assertRaisesRegex(ValueError, "personalized_init_seed"):
             validate_federated_config(config)
 
 
