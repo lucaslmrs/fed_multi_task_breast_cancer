@@ -12,6 +12,7 @@ import numpy as np
 from flwr.common import ndarrays_to_parameters, parameters_to_ndarrays
 from flwr.server.strategy import FedAvg
 
+from src.federated import conflict_diagnostics
 from src.federated.negative_transfer import cancellation_from_gram
 
 TASKS = ("seg", "cls")
@@ -26,9 +27,14 @@ class FedPerStrategy(FedAvg):
         client_weighting="num_examples",
         shared_key_names=None,
         *args,
+        conflict_config=None,
+        conflict_fold_dir=None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        # Full run config + fold directory enable the M2 lookahead hand-off (observational only).
+        self.conflict_config = conflict_config
+        self.conflict_fold_dir = conflict_fold_dir
         self.task_weights = task_weights
         self.dataset_weights = dataset_weights or {}
         if aggregation_mode not in {"flat", "hierarchical"}:
@@ -88,6 +94,14 @@ class FedPerStrategy(FedAvg):
             })
 
         _validate_update_shapes(updates)
+        if self._lookahead_round(server_round) and self._sent_arrays is not None:
+            conflict_diagnostics.observational(
+                lambda: conflict_diagnostics.write_round_deltas(
+                    conflict_diagnostics.round_dir(self.conflict_fold_dir, server_round),
+                    self._sent_arrays, updates,
+                ),
+                f"round {server_round} delta hand-off",
+            )
         if self.aggregation_mode == "hierarchical":
             aggregated, final_weights = self._aggregate_hierarchical(updates)
         else:
@@ -193,7 +207,22 @@ class FedPerStrategy(FedAvg):
             final_weights[indices] = dataset_weight * within_dataset
         return final_weights
 
+    def _lookahead_round(self, server_round):
+        return (
+            self.conflict_config is not None and self.conflict_fold_dir is not None
+            and conflict_diagnostics.lookahead_enabled(self.conflict_config)
+            and conflict_diagnostics.is_sampled_round(self.conflict_config, server_round)
+        )
+
     def aggregate_evaluate(self, server_round, results, failures):
+        if self._lookahead_round(server_round):
+            # Every client has scored the round's deltas by now; drop the large transients.
+            conflict_diagnostics.observational(
+                lambda: conflict_diagnostics.cleanup_round(
+                    conflict_diagnostics.round_dir(self.conflict_fold_dir, server_round)
+                ),
+                f"round {server_round} cleanup",
+            )
         if failures and not self.accept_failures:
             logging.error(
                 "[round %s] refusing validation aggregate because %s client(s) failed",

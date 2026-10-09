@@ -22,7 +22,7 @@ from flwr.simulation import start_simulation
 
 from src.dataset.federated_dataloader import build_client_loader, list_clients
 from src.dataset.splitting import evaluation_metadata, validate_master_splits
-from src.federated import unified_eval
+from src.federated import conflict_diagnostics, unified_eval
 from src.federated.client import build_client_fn, stable_client_seed
 from src.federated.config import (
     active_datasets,
@@ -425,6 +425,8 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                 aggregation_mode=aggregation["mode"],
                 client_weighting=aggregation["client_weighting"],
                 shared_key_names=shared_key_names,
+                conflict_config=None if standalone else config,
+                conflict_fold_dir=None if standalone else fold_dir,
                 initial_parameters=_initial_shared_parameters(config, datasets, device, fold),
                 fraction_fit=1.0,
                 fraction_evaluate=1.0,
@@ -535,6 +537,10 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
             report_run(run_path)
         except Exception:
             logging.warning("Could not build the negative transfer report", exc_info=True)
+        try:
+            conflict_diagnostics.report_run(run_path)
+        except Exception:
+            logging.warning("Could not build the gradient-conflict report", exc_info=True)
     try:
         report = build_run_report(run_path)
         logging.info(f"Run report: {report}")

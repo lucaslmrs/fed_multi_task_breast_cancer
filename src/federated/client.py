@@ -22,7 +22,7 @@ from src.dataset.federated_dataloader import (
     client_tasks,
     resolve_class_weights,
 )
-from src.federated import local_trainer
+from src.federated import conflict_diagnostics, local_trainer
 from src.federated.config import (
     aggregation_config,
     dataset_config,
@@ -457,6 +457,13 @@ class FederatedClient(NumPyClient):
                 raise RuntimeError("steps mode requires a round-addressable train batch sampler")
             batch_sampler.set_round(max(server_round, 1))
 
+        if conflict_diagnostics.is_sampled_round(self.config, server_round):
+            # Observational: restores RNG and never steps the model, so training is unchanged.
+            _preserve_rng_state(lambda: conflict_diagnostics.observational(
+                lambda: conflict_diagnostics.collect_fit_probes(self, server_round),
+                f"{self.client_id} fit probes",
+            ))
+
         record_detail = (
             self.telemetry["enabled"]
             and self.telemetry["granularity"] == "epoch_and_round"
@@ -575,6 +582,12 @@ class FederatedClient(NumPyClient):
             if f"metric_{name}" in val
         })
         metrics.update({f"task_mass_{name}": float(value) for name, value in self.task_mass.items()})
+        if (conflict_diagnostics.lookahead_enabled(self.config)
+                and conflict_diagnostics.is_sampled_round(self.config, server_round)):
+            _preserve_rng_state(lambda: conflict_diagnostics.observational(
+                lambda: conflict_diagnostics.collect_lookahead(self, parameters, server_round),
+                f"{self.client_id} lookahead",
+            ))
         return float(val["loss"]), val["n"], metrics
 
 
