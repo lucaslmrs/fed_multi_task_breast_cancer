@@ -353,6 +353,55 @@ completo fica para a E0.3, depois da escolha.
 - O controle negativo com alvo invertido pode ser "fácil demais". Se todos os métodos passarem,
   acrescentar um conflito parcial: inverter apenas 25% dos alvos.
 
+#### E0.2.2–E0.2.5 — Resultado da prototipagem (2026-10-09)
+
+**Script:** `scripts/gradient_conflict_methods.py`.
+- Reaproveita os helpers de `gradient_conflict_controls.py`, `train_local`, `evaluate_local` e os
+  pesos reais de agregação de `FedPerStrategy`.
+- Cria um **adversário** para o primeiro cliente de cada grupo (dataset, tarefas): mesmas imagens e
+  mesma personalização, alvos invertidos (`1 − máscara`, `(classe + 1) mod K`).
+- Repete tudo sobre os batches de duas rodadas (a/b) para medir a estabilidade.
+- Estados analisados:
+  - **29/09 final** (seed por cliente, rodada 200);
+  - **`dataset` 30r final** (seed por dataset, rodada 30).
+- Artefatos em `runs/validation/gradient_conflict_methods/`.
+
+| | Controle negativo (adversário × gêmeo) | Pares reais | Estabilidade a/b (pares reais) | Observação |
+|---|---|---|---|---|
+| **M1** cos do gradiente | **−0.17** (normalizado −0.35) / **−0.11** (−0.19) | intra 0.013 / **0.25** | 0.16 / **0.92** | Detecta conflito. Fica ruidoso no fim do treino, quando o teto intra-cliente é baixo. |
+| **M1** magnitude Φ | 0.31 / 0.56 | ISIC seg×cls: **0.33** em 29/09 | — | Informação nova: revela o domínio de magnitude que o cosseno não vê. |
+| **M3** pureza de sinal | −0.02 / −0.06 (excesso sobre a base) | ≈ 0 | — | Sinal fraco e redundante com o M1. **Descartar.** |
+| **M2** lookahead (Δ real, val) | **−0.96** / **−0.17**, contra +0.08 / +0.02 do próprio passo | entre datasets, efeitos de ±1e-3 invisíveis ao cosseno | 0.41 / 0.32 por par | É o detector mais forte. Enxerga interação entre datasets. Ruidoso por par: exige média sobre rodadas, como o TAG faz. |
+| **M2'** ganho da federação | falha em 2/5 gêmeos em 29/09 (o ganho **sobe** com o adversário) | ISIC: +0.025 | 0.99 (inflado pelos adversários) | Na rodada 200 o próprio passo **piora** a val do ISIC (self Z = −0.026, overfitting). O "ganho" mede só a diluição de passos que fazem overfitting. **Ambíguo; não passa no C3.** |
+
+**Achados laterais (descritivos):**
+- M2 no estado `dataset` 30r, em Z ×1e-4, rep a | rep b:
+  - TCGA → BUSI: **+14.8 | +10.4** (transferência positiva);
+  - TCGA → ISIC: **−9.6 | −8.6** (negativa);
+  - SIIM → BUSI: **−5.1 | −4.7** (negativa).
+  
+  São interações entre datasets que o cosseno (≈ 0) não mostra.
+- Em 29/09, a rodada 200, quase toda a matriz Z é negativa, inclusive intra-ISIC e intra-BUSI, e o
+  self Z do ISIC é −258e-4. **Isso é overfitting, não interferência:** M2 calculado na validação
+  confunde as duas coisas.
+
+**Matriz de decisão:**
+
+| | C1 transf. negativa | C2 indep. otimizador | C3 controles | C4 custo | C5 fonte | C6 complementar | Decisão |
+|---|---|---|---|---|---|---|---|
+| M1 (cos + Φ) | proxy de 1ª ordem | ✔ | ✔ | ~+10% com 1 rodada a cada 10 | PCGrad ✔ | ✔ magnitude | **recomendado** |
+| M2 (TAG, Δ real) | ✔ funcional | parcial | ✔ (o mais forte) | estimado +15–25% com 1 rodada a cada 10 (16×16 forwards × 8 batches) | TAG ✔, adaptado | ✔ | **recomendado** |
+| M2' | ✔, mas ambíguo | parcial | ✘ (2/5) | grátis com M2 | adaptação | — | não; reportar Z(agg→j) como subproduto do M2 |
+| M3 | proxy local | ✔ | fraco | grátis | GradDrop ✔ | redundante | não |
+
+**Ajustes necessários se M1 + M2 forem escolhidos** (entram no detalhamento da E0.3):
+1. **M2 também sobre o batch de treino do alvo**, como o TAG original. O Apêndice B.4 diz que treino
+   aproxima validação para i ≠ j. Ter os dois separa interferência (treino) de overfitting (val).
+2. **Média sobre rodadas amostradas** (TAG: `Ẑ = (1/T) Σ Zᵗ`), porque a estabilidade por par numa
+   única rodada é baixa (0.3–0.4).
+3. **M1 sempre reportado com o teto intra-cliente** e o cosseno normalizado.
+4. Medir o custo real online antes do treino completo.
+
 #### E0.3 — Implementação dos 2 métodos escolhidos
 
 Será detalhada depois da escolha. Pontos já previstos:
