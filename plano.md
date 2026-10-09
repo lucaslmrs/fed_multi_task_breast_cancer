@@ -26,13 +26,17 @@ Criado em 2026-10-04.
 
 | # | Etapa | Status | Branch | Atualizado |
 |---|---|---|---|---|
+| E0 | Métodos adicionais de verificação de conflito de gradientes | 🟨 | `feat/gradient-conflict` | 2026-10-08 |
 | E1 | Validação do treinamento | 🟨 | `feat/training-validation` | 2026-10-08 |
 | E2 | App local de monitoramento e comparação | ⬜ | `feat/monitor-app` | — |
 | E5 | Validação das fontes (consolidação) | ⬜ | `docs/sources` | — |
 | E3 | Ablação: loss fed multitask multi-dataset | ⬜ | `exp/loss-ablation` | — |
 | E4 | Ablação: pré-processamento de imagens | ⬜ | `exp/preprocessing-ablation` | — |
 
-Ordem de execução: **E1 → E2 → E5 → E3 → E4**.
+Ordem de execução: **E0 → E1 → E2 → E5 → E3 → E4**.
+- E0 foi incluída em 2026-10-08 a pedido do usuário. A métrica atual de conflito dá ≈ 0 para todos
+  os pares de clientes, inclusive pares que deveriam estar alinhados, e é preciso saber se isso é
+  ausência real de conflito ou cegueira da métrica antes de usá-la na E1 (D9) e na E3.
 - Validar o treinamento antes de construir em cima dele.
 - O app acelera a leitura e a comparação das ablações.
 - As fontes verificadas embasam a escolha dos braços das ablações.
@@ -64,6 +68,112 @@ O treino completo é executado pelo usuário. Sempre que uma etapa precisar de u
 3. **Tempo/recursos estimados**, quando houver referência em runs anteriores.
 4. **Artefatos esperados de volta**: diretório do run ou estudo, e quais arquivos serão analisados.
 5. **Critério de sucesso** do treino: o que indica que ele rodou corretamente.
+
+---
+
+## E0 — Métodos adicionais de verificação de conflito de gradientes
+
+**Objetivo.** Buscar na literatura e implementar **mais dois métodos** de medir conflito de gradiente
+entre clientes/tarefas, complementares ao cosseno entre deltas que já existe. Antes disso, validar se
+a métrica atual é capaz de detectar conflito.
+
+**Situação atual.**
+- `FedPerStrategy._gradient_conflict` (`src/federated/server.py:315`): cosseno par a par entre os
+  **deltas de trunk** (trunk devolvido − trunk enviado) de cada cliente, por bloco e total. O
+  resultado é gravado em `aggregation_history.json`.
+- `cancellation_from_gram` (`src/federated/negative_transfer.py`): razão de cancelamento
+  `1 − ‖Σ wᵢΔᵢ‖ / Σ wᵢ‖Δᵢ‖`, comparada com a referência ortogonal.
+- Fonte que motivou a métrica: FedBone (arXiv 2306.17465).
+
+**Evidência que motivou a etapa** (run de 29/09; 200 rodadas; 16 clientes, isto é, 120 pares):
+
+| bloco | média cos | p5 | p95 | fração < 0 | fração < −0.1 |
+|---|---|---|---|---|---|
+| encoder2 | −0.001 | −0.033 | +0.031 | 0.53 | 0.000 |
+| encoder5 | +0.001 | −0.009 | +0.012 | 0.46 | 0.000 |
+| shared_total | +0.001 | −0.009 | +0.013 | 0.48 | 0.000 |
+
+- A distribuição é **idêntica** para pares intra-dataset e inter-dataset, inclusive entre clientes do
+  mesmo dataset, da mesma tarefa e com partição quase IID (Dirichlet α=100). Esses pares deveriam
+  ter cosseno claramente positivo.
+- Conclusão: hoje é impossível distinguir "sem conflito" de "métrica cega". O cancelamento
+  `overall ≈ orthogonal_reference` (A6 da E1) é consequência direta disso, e não uma evidência
+  independente.
+
+**Hipóteses a testar** (para a métrica atual ficar cega):
+- H1. **Adam:** o passo é normalizado por coordenada (≈ lr·sinal(m)/√v) e usa um estado de
+  otimizador por cliente. O delta vira quase "sinal + ruído" e perde a direção do gradiente.
+- H2. **Acúmulo de 10 steps:** o delta de uma rodada soma 10 passos sobre batches diferentes. É um
+  deslocamento, não um gradiente no ponto enviado.
+- H3. **Stem personalizado por cliente:** o `encoder1` não é compartilhado e cada cliente tem a sua
+  inicialização (seed por `client_id`). Assim, o espaço de entrada do trunk difere entre clientes,
+  mesmo dentro de um dataset.
+- H4. **Bug de medição:** referência `_sent_arrays` errada, ordem de tensores trocada, precisão,
+  parâmetros que não são pesos treináveis.
+- H5. **Dimensionalidade:** com ~10⁷ parâmetros, vetores quase independentes ficam quase ortogonais.
+  O cosseno global dilui um conflito localizado em poucas camadas ou canais.
+
+### Detalhamento
+
+#### E0.1 — Validação da métrica atual (controles)
+
+1. **Controle sintético** (teste unitário de `_gradient_conflict` e `cancellation_from_gram`):
+   - deltas idênticos → cos = 1;
+   - deltas opostos → cos = −1;
+   - deltas ortogonais → cos = 0;
+   - ordem de tensores e `_sent_arrays` corretos (H4).
+2. **Controle positivo real** (CPU, curto; eu executo): dois clientes **com os mesmos dados** e o
+   mesmo stem, 1 step e SGD (sem Adam). O cosseno esperado é ≈ 1. Depois, religar um fator por vez
+   (Adam → H1, 10 steps → H2, stems diferentes → H3) e medir quanto cada um derruba o cosseno.
+3. Resultado: tabela "fator → cosseno observado", que diz se a métrica atual é utilizável e em que
+   condições.
+
+#### E0.2 — Busca na literatura (escolher 2 métodos)
+
+**Critérios de escolha:**
+- (i) medir conflito sem depender do otimizador e do acúmulo de steps (H1/H2);
+- (ii) ser aplicável em FL simulado com 16 clientes e custo viável;
+- (iii) ter fonte primária verificável;
+- (iv) ser complementar entre si, por exemplo um método geométrico e um funcional.
+
+**Candidatos iniciais** (a verificar nas fontes primárias; nada aqui está confirmado ainda):
+
+| Candidato | Ideia | Fonte a verificar |
+|---|---|---|
+| Cosseno + similaridade de magnitude do **gradiente bruto** no trunk recebido, sobre um batch-sonda fixo | Elimina Adam e o acúmulo de steps. A magnitude capta o domínio de uma tarefa (seg tem peso 4×). | PCGrad — Yu et al., NeurIPS 2020 ("Gradient Surgery for Multi-Task Learning") |
+| **Afinidade lookahead** entre clientes/tarefas: Z(i→j) = 1 − L_j(θ + Δ_i) / L_j(θ) | Medida funcional: o passo de i ajuda ou prejudica a loss de j? Não depende da geometria em alta dimensão. | TAG — Fifty et al., NeurIPS 2021 ("Efficiently Identifying Task Groupings in Multi-Task Learning") |
+| Concordância de **sinal** por coordenada | Barato. Sensível a conflito localizado. | GradDrop — Chen et al., NeurIPS 2020 |
+| Conflito por camada/canal em FL multitarefa | O que a literatura de FL multitarefa já mede. | FedBone (2306.17465), FedHCA² (CVPR 2024) |
+| Similaridade de **representações** do trunk entre clientes | Complemento não-gradiente. | CKA — Kornblith et al., ICML 2019 |
+
+Entregável: uma nota curta (em `docs/`) com o método, a fórmula, a fonte verificada, o custo e a
+interpretação de cada candidato. **O usuário escolhe os 2 métodos.**
+
+#### E0.3 — Implementação dos 2 métodos escolhidos
+
+Será detalhada depois da escolha. Pontos já previstos:
+- Gradiente bruto num batch-sonda: o cliente calcula o gradiente no trunk recebido **antes** do
+  primeiro passo local. Assim, os números do treino não mudam.
+- Para não estourar disco ou rede, gravar um *sketch* por projeção aleatória com seed fixa
+  (Johnson–Lindenstrauss), que preserva cossenos e normas aproximadamente, e/ou amostrar só algumas
+  rodadas.
+- Afinidade lookahead custa O(n²) avaliações por rodada, então deve rodar em rodadas amostradas.
+- Configuração em `runtime.diagnostics`, que fica fora do hash científico.
+- Testes unitários seguindo o padrão de `tests/test_negative_transfer.py`.
+
+**Treino necessário?** Sim. As métricas novas são coletadas durante o treino e não podem ser
+recalculadas a partir dos artefatos existentes, porque nenhum artefato guarda o trunk pós-fit por
+rodada. O handoff virá na E0.3: provavelmente uma re-execução da configuração de 29/09 com a
+telemetria nova ligada, que é só diagnóstica e não muda o resultado.
+
+**Critério de pronto.**
+- A métrica atual foi validada ou refutada com controles.
+- Os 2 métodos novos estão implementados, testados e rodados num treino completo.
+- Os conflitos medidos foram interpretados.
+- D9 da E1 usa os métodos validados.
+
+**Registro.**
+- 2026-10-08 — etapa criada a pedido do usuário, após a constatação de cosseno ≈ 0 em todos os pares.
 
 ---
 
@@ -131,7 +241,7 @@ Os resultados são descritivos: um holdout e uma seed.
 | A3 | **Overfitting de cls com avaliação na última rodada** | A val loss cls sobe enquanto a de treino cai: `Curated_BUSI_mt_1` (melhor na rodada 87; 0.90 → 1.23) e `TCGA_LGG_mt_0` (melhor na 92; 0.45 → 0.72). Por desenho do protocolo, a avaliação final usa a última rodada. | alta |
 | A4 | **ISIC-2018 cls não generaliza** | Treino cai 31–36%. A val loss de `cls_0` fica estável (1.90 → 1.93). Balanced acc. máx. ≈ 0.41–0.46. A acc de teste, 0.274, está abaixo do preditor constante "NV" (0.669), o que é coerente com o `balanced_fold`. | alta |
 | A5 | Nenhum valor não-finito | 0 NaN/Inf nos históricos dos 16 clientes. | ok |
-| A6 | Sem conflito de gradiente acima do acaso | Cancelamento `overall` = 0.667 ≈ referência ortogonal 0.668. | ok |
+| A6 | ~~Sem conflito de gradiente~~ **Inconclusivo** | Cancelamento `overall` = 0.667 ≈ referência ortogonal 0.668, mas o cosseno ≈ 0 inclusive entre clientes que deveriam estar alinhados. A métrica pode estar cega; ver E0. | em aberto |
 | A7 | ISIC-2018 seg saudável | val dice 0.84–0.87, ainda subindo no fim. | ok |
 | A8 | Duplicação no histórico | `post_local_round/train` repete exatamente os valores de `local_step/train` (agregado). Não é erro, mas o diagnóstico deve contar cada série uma única vez. | info |
 
