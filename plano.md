@@ -402,17 +402,101 @@ completo fica para a E0.3, depois da escolha.
 3. **M1 sempre reportado com o teto intra-cliente** e o cosseno normalizado.
 4. Medir o custo real online antes do treino completo.
 
-#### E0.3 — Implementação dos 2 métodos escolhidos
+#### E0.3 — Implementação online de M1 + M2 (escolha do usuário em 2026-10-09)
 
-Será detalhada depois da escolha. Pontos já previstos:
-- Gradiente bruto num batch-sonda: o cliente calcula o gradiente no trunk recebido **antes** do
-  primeiro passo local. Assim, os números do treino não mudam.
-- Para não estourar disco ou rede, gravar um *sketch* por projeção aleatória com seed fixa
-  (Johnson–Lindenstrauss), que preserva cossenos e normas aproximadamente, e/ou amostrar só algumas
-  rodadas.
-- Afinidade lookahead custa O(n²) avaliações por rodada, então deve rodar em rodadas amostradas.
-- Configuração em `runtime.diagnostics`, que fica fora do hash científico.
-- Testes unitários seguindo o padrão de `tests/test_negative_transfer.py`.
+**Requisito inviolável: a telemetria não pode alterar o treino.**
+- Toda coleta roda dentro de `_preserve_rng_state` (`src/federated/client.py:93`), que já existe para
+  validação observacional.
+- O modelo é restaurado ao estado anterior antes do treino local.
+- Os gradientes/updates de treino ficam bit a bit iguais com a coleta ligada ou desligada (teste em
+  CPU, E0.3.5).
+
+**E0.3.1 — Configuração (fora do hash científico).**
+- Bloco novo:
+  ```yaml
+  runtime:
+    diagnostics:
+      gradient_conflict:
+        enabled: false           # padrão: runs existentes inalterados
+        every_n_rounds: 10       # rodadas amostradas: 1, 11, 21, …, sempre incluindo a última
+        probe_batches: 10        # M1: batches do sampler da própria rodada
+        sketch_dim: 65536        # M1: CountSketch com seed fixa (ver E0.3.2)
+        lookahead:
+          enabled: true
+          val_batches: 8
+          train_batches: 8
+  ```
+- `runtime` já é removido da assinatura de resume (`training_federated._resume_config_signature`) e do
+  hash de estudo (`study_runner`).
+- Validação em `validate_runtime_config` (`src/utils/training_runtime.py`).
+- Só vale para `standalone: false`. No local-only não há trunk comum.
+
+**E0.3.2 — M1 no cliente** (`fit`, antes de `train_local`, só nas rodadas amostradas).
+- Gradiente bruto do trunk no θ recebido, sobre os `probe_batches` da rodada: reutilizar o
+  procedimento do `grad10` de `scripts/gradient_conflict_controls.py`, movido para
+  `src/federated/conflict_diagnostics.py`.
+- As duas metades dos batches dão gᴬ e gᴮ: g = média, e o **teto intra-cliente** = cos(gᴬ, gᴮ), sem
+  custo extra.
+- Persistência:
+  - O vetor exato tem 18,6 MB por cliente e rodada (~6 GB num run). Em vez disso, gravar um
+    **CountSketch** de dimensão `sketch_dim`: hash e sinal por coordenada, com seed fixa e comum a todos
+    os clientes, e soma via `index_add_`.
+  - O sketch preserva produtos internos em esperança.
+  - Arquivo: `fold_k/conflict/round_r/<client>_m1.npz` (gᴬ, gᴮ e as normas **exatas** de g, gᴬ, gᴮ,
+    para Φ e para normalizar o cosseno).
+  - Erro do sketch: validado contra o cosseno exato no teste E0.3.5, com tolerância a definir a
+    partir de 1/√k ≈ 0.004.
+- Também por bloco (encoder2…bottleneck), com um sketch por bloco, de dimensão proporcional ao bloco.
+
+**E0.3.3 — M2 no fluxo fit → aggregate → evaluate.**
+1. `fit` (rodada amostrada): o cliente grava um snapshot da sua personalização **pré-fit** em
+   `fold_k/conflict/round_r/<client>_pre.pt`. O TAG mantém fixos os parâmetros específicos da tarefa.
+2. `aggregate_fit` (servidor): grava θ_r (o trunk enviado) e os 16 Δᵢ (os updates reais da rodada) em
+   `fold_k/conflict/round_r/deltas.npz` (~300 MB, temporário). O caminho vai para os clientes via
+   `configure_evaluate` → `config["conflict_round_dir"]`.
+3. `evaluate` (cliente j, rodada amostrada): carrega o snapshot pré-fit e θ_r, e calcula Lⱼ nos
+   `val_batches` (val) e nos `train_batches` (batch do sampler da rodada, sem augmentation) para:
+   - θ_r (base);
+   - θ_r + Δᵢ, para cada cliente i (inclusive j, que dá o "self");
+   - θ_agg (subproduto M2').
+
+   Grava `fold_k/conflict/round_r/<client>_m2.csv` com colunas
+   `source, target, split ∈ {train, val}, loss, z`.
+4. Ao fim da rodada, apagar `deltas.npz` e os snapshots `_pre.pt`. Ficam só os CSVs e os sketches.
+
+**E0.3.4 — Consolidação e relatório** (`src/federated/conflict_diagnostics.py`, chamado no fim do run,
+no mesmo ponto e com a mesma política não-fatal do `negative_transfer`).
+- `conflict_m1_pairs.csv`: rodada, i, j, bloco, cos, cos normalizado `cos / √(tetoᵢ·tetoⱼ)`, Φ,
+  tetos.
+- `conflict_m2_lookahead.csv`: rodada, origem, alvo, split, Z.
+- `conflict_summary.csv`, com média ± dp **sobre as rodadas amostradas** (`Ẑ = (1/T) Σ Zᵗ`, como no
+  TAG), por par de **datasets** e por classe de par, nos splits train e val, separadamente.
+- Linha no `execution.log`.
+- O HTML fica para o app da E2, que lê os CSVs.
+- Leitura: Z(train) < 0 e Z(val) < 0 → interferência; Z(train) ≥ 0 e Z(val) < 0 → overfitting, não
+  interferência.
+
+**E0.3.5 — Testes** (`tests/test_conflict_diagnostics.py`).
+- CountSketch: o cosseno e o produto interno estimados ficam dentro da tolerância do exato em vetores
+  aleatórios correlacionados (cos ∈ {−0.5, 0, 0.5, 0.99}).
+- Fórmulas: Φ (iguais → 1), Z (passo nulo → 0; passo que dobra a loss → −1), normalização pelo teto.
+- **Não-perturbação:** `fit` de um cliente minúsculo em CPU com a coleta ligada e desligada →
+  parâmetros finais e histórico idênticos.
+- Rodada não amostrada: nenhum arquivo é escrito.
+- Leitura tolerante de runs sem a pasta `conflict/` → `n/a`.
+- Smoke: `python -m scripts.smoke_federated --setup federated --holdout --samples 2` com a
+  coleta ligada (eu executo).
+
+**E0.3.6 — Custo real.** Rodar 3 rodadas do run de 29/09 na GPU com `every_n_rounds: 1` e medir o
+acréscimo por rodada (`runtime_events.csv`). Se o custo extrapolado para 200 rodadas passar de 25%,
+reduzir `val_batches`/`train_batches` ou aumentar `every_n_rounds`.
+
+**E0.3.7 — Handoff de treino (usuário).** Definido depois da E0.3.6, com o diff exato. Proposta:
+- (a) o run de 29/09 com a coleta ligada e `personalized_init_seed: client`;
+- (b) o mesmo com `personalized_init_seed: dataset`.
+
+Ambos com 200 rodadas. O (a) também serve de verificação de não-perturbação em escala real: as
+métricas finais devem bater com as de 29/09, a menos do não-determinismo do cuDNN.
 
 **Treino necessário?** Sim. As métricas novas são coletadas durante o treino e não podem ser
 recalculadas a partir dos artefatos existentes, porque nenhum artefato guarda o trunk pós-fit por
@@ -429,6 +513,11 @@ telemetria nova ligada, que é só diagnóstica e não muda o resultado.
 - 2026-10-08 — etapa criada a pedido do usuário, após a constatação de cosseno ≈ 0 em todos os pares.
 - 2026-10-08 — E0.1 concluída: a métrica é válida, e a ortogonalidade vem dos stems/cabeças
   inicializados por cliente (H3). Próximo passo: decisão do usuário sobre o desenho e, depois, E0.2.
+- 2026-10-09 — E0.2 concluída.
+  - Protótipo e controle adversário executados.
+  - **O usuário escolheu M1 (cosseno + magnitude do gradiente bruto) e M2 (lookahead TAG com o
+    update real, em train e val, com média sobre rodadas).**
+  - E0.3 detalhada.
 - 2026-10-09 — E0.2.1 concluída: fontes verificadas em `docs/GRADIENT_CONFLICT_METHODS.md`.
   - Correções: título do TAG ("for"); venues de GradVac, FedFomo e FedHCA² não confirmadas no texto
     primário; FedBone é preprint.
