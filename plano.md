@@ -26,7 +26,7 @@ Criado em 2026-10-04.
 
 | # | Etapa | Status | Branch | Atualizado |
 |---|---|---|---|---|
-| E0 | Métodos adicionais de verificação de conflito de gradientes | 🟨 | `feat/gradient-conflict` | 2026-10-08 |
+| E0 | Métodos adicionais de verificação de conflito de gradientes | ⏳ | `feat/gradient-conflict` | 2026-10-09 |
 | E1 | Validação do treinamento | 🟨 | `feat/training-validation` | 2026-10-08 |
 | E2 | App local de monitoramento e comparação | ⬜ | `feat/monitor-app` | — |
 | E5 | Validação das fontes (consolidação) | ⬜ | `docs/sources` | — |
@@ -491,7 +491,34 @@ no mesmo ponto e com a mesma política não-fatal do `negative_transfer`).
 acréscimo por rodada (`runtime_events.csv`). Se o custo extrapolado para 200 rodadas passar de 25%,
 reduzir `val_batches`/`train_batches` ou aumentar `every_n_rounds`.
 
-**E0.3.7 — Handoff de treino (usuário).** Definido depois da E0.3.6, com o diff exato. Proposta:
+**E0.3 — Resultado da implementação (2026-10-09).**
+- Código:
+  - módulo novo `src/federated/conflict_diagnostics.py`;
+  - ganchos em `client.fit/evaluate`, `FedPerStrategy.aggregate_fit/aggregate_evaluate` e
+    `training_federated`;
+  - padrões e validação em `src/utils/training_runtime.py`;
+  - `local_objective` extraído de `train_local` sem mudança numérica.
+- Toda falha da coleta é registrada no log (`observational`) e nunca interrompe o treino. Com menos de
+  2 batches-sonda, o M1 é pulado com aviso.
+- Testes: `tests/test_conflict_diagnostics.py`, 14 testes. Suíte completa: 158 OK.
+- Smoke: `python -m scripts.smoke_federated --setup federated --holdout --samples 4 --conflict-diagnostics`
+  → `SMOKE_OK`, M1 e M2 nas 2 rodadas, transitórios removidos.
+- **Não-perturbação em escala real** (GPU, configuração de 29/09, 3 rodadas, coleta em todas as
+  rodadas vs desligada): as métricas de teste são idênticas em todos os 8 pares dataset/tarefa. A única
+  diferença é o SIIM seg, 0.0192 vs 0.0191, na 4ª casa, que é não-determinismo do cuDNN/BF16.
+- **Custo medido** (`runs/validation/conflict_cost/`):
+  - por rodada amostrada, o M1 acrescenta ~2 s ao `fit` (27 → 29 s) e o M2 ~64 s ao `evaluate`
+    (9 → 73 s, com 8+8 batches);
+  - com 1 rodada a cada 10, isso dá ~+27% num run de 200 rodadas, acima do limite de 25%;
+  - **ajuste:** `val_batches` e `train_batches` de 8 para 4. O custo do M2 escala linearmente com os
+    batches, então a estimativa é de ~+14%;
+  - a variabilidade de Z vem sobretudo de Δ, e não dos batches de avaliação (E0.2), por isso a
+    redução custa pouca precisão.
+
+**E0.3.7 — Handoff de treino (usuário).** As configurações estão prontas em
+`runs/validation/gradient_conflict_full/{client,dataset}.yaml`. Diferença em relação ao run de 29/09:
+apenas `federated.personalized_init_seed` e o bloco `runtime.diagnostics.gradient_conflict` (ligado,
+a cada 10 rodadas, 10 batches-sonda, sketch de 65536, lookahead com 4+4 batches). Proposta original:
 - (a) o run de 29/09 com a coleta ligada e `personalized_init_seed: client`;
 - (b) o mesmo com `personalized_init_seed: dataset`.
 
@@ -513,6 +540,10 @@ telemetria nova ligada, que é só diagnóstica e não muda o resultado.
 - 2026-10-08 — etapa criada a pedido do usuário, após a constatação de cosseno ≈ 0 em todos os pares.
 - 2026-10-08 — E0.1 concluída: a métrica é válida, e a ortogonalidade vem dos stems/cabeças
   inicializados por cliente (H3). Próximo passo: decisão do usuário sobre o desenho e, depois, E0.2.
+- 2026-10-09 — E0.3 implementada e testada.
+  - Não-perturbação confirmada na GPU.
+  - Custo ajustado para ~+14%.
+  - **Aguardando os 2 treinos completos do usuário (E0.3.7).**
 - 2026-10-09 — E0.2 concluída.
   - Protótipo e controle adversário executados.
   - **O usuário escolheu M1 (cosseno + magnitude do gradiente bruto) e M2 (lookahead TAG com o
