@@ -128,6 +128,68 @@ a métrica atual é capaz de detectar conflito.
 3. Resultado: tabela "fator → cosseno observado", que diz se a métrica atual é utilizável e em que
    condições.
 
+#### E0.1 — Resultado (executado em 2026-10-08)
+
+**Script:** `scripts/gradient_conflict_controls.py`.
+- Reconstrói o estado de um run terminado: trunk global + stem/cabeças/Adam de cada cliente.
+- Também roda com `--at-init`, que reconstrói o estado da rodada 1.
+- Mede o cosseno com o **próprio** `FedPerStrategy._gradient_conflict`, ligando um fator por vez.
+- Cada condição é repetida sobre os batches da rodada seguinte. Isso dá o *teto intra-cliente*:
+  o quanto um cliente concorda consigo mesmo.
+- Artefatos (não versionados) em `runs/validation/gradient_conflict_controls/20260929_run_{all_clients,at_init}/`.
+
+**Controles sintéticos:** já existiam em `tests/test_model_split_server.py` e `tests/test_negative_transfer.py`
+(idênticos → 1, opostos → −1, ortogonais → 0, delta nulo → indefinido, blocos separados).
+O trunk tem 10 tensores e 4,66 M de parâmetros, **todos treináveis**: nenhum buffer entra no delta.
+
+**Média do cosseno, pares do mesmo dataset e mesmas tarefas** (`intra_same_tasks`, 20 pares):
+
+| condição | estado final (rodada 200) | inicialização (rodada 1) | teto intra-cliente (final / init) |
+|---|---|---|---|
+| `real_adam10` (o que o servidor mede) | 0.000 | 0.001 | 0.54 / 0.42 |
+| `adam1` (sem acúmulo de steps) | 0.001 | 0.001 | 0.92 / 0.26 |
+| `sgd10` (sem Adam) | 0.012 | −0.002 | 0.28 / 0.64 |
+| `grad10` (gradiente bruto no trunk enviado) | 0.013 | −0.003 | 0.29 / 0.65 |
+| `grad10_refpers` (**stem/cabeças iguais** dentro do dataset) | 0.061 | **0.619** (mediana 0.86) | 0.27 / 0.63 |
+
+Por par, na inicialização, com `grad10` → `grad10_refpers`:
+- ISIC seg × seg: 0.00 → **0.99**;
+- SIIM × SIIM: 0.00 → **0.86**;
+- TCGA: 0.00 → **0.85**;
+- BUSI: 0.00 → **0.41**;
+- ISIC cls × cls: 0.00 → 0.00. Nesse caso o gradiente de classificação no trunk inicial é dominado
+  por ruído; ver o teto.
+
+**Veredito sobre as hipóteses:**
+- **H4 (bug de medição): refutada.** A métrica reproduz o valor do servidor, e cada cliente concorda
+  consigo mesmo (0.30–0.66).
+- **H1 (Adam) e H2 (10 steps): refutadas como causa.** Com o gradiente bruto no ponto enviado, sem
+  Adam e sem acúmulo, o cosseno entre clientes continua ≈ 0.
+- **H3 (stem/cabeças personalizados): confirmada.** Clientes com os mesmos dados e as mesmas tarefas
+  produzem gradientes de trunk quase **paralelos** (0.85–0.99) quando compartilham stem e cabeças,
+  e **ortogonais** (≈ 0) com os próprios. Isso vale desde a rodada 1: os stems/cabeças são
+  inicializados com uma seed diferente por cliente (`stable_client_seed(..., client_id)` em
+  `src/federated/client.py:129`), então cada cliente entrega ao trunk uma codificação aleatória
+  diferente da mesma imagem.
+- **H5 (diluição por dimensionalidade):** não é a explicação principal, já que o mesmo trunk dá
+  0.99 com a personalização igualada. Continua relevante por bloco.
+
+**Implicações:**
+1. O cosseno entre deltas **não está cego**. Ele mede um fato do desenho atual: os 16 clientes atualizam
+   o trunk em direções mutuamente ortogonais. Portanto, "sem conflito" é uma leitura errada; a leitura
+   correta é **"sem interação"**. A média de 16 updates ortogonais apenas encolhe cada um (cancelamento
+   ≈ referência ortogonal, A6). Por construção, o FedAvg quase não combina informação entre os clientes.
+2. Isso afeta a interpretação científica de federado vs local e de `negative_transfer`. O achado deve
+   ser levado à E3 e ao artigo, com a cautela de que é **um run, uma seed, um holdout**.
+3. Possível correção de desenho, **a decidir pelo usuário; não implementar sem aprovação**: inicializar
+   stem/cabeças com seed por **dataset** em vez de por cliente, e/ou federar o stem dentro de cada
+   dataset. Isso muda a configuração científica e, portanto, exigiria um braço novo, sem invalidar
+   os runs existentes.
+4. Para os métodos novos (E0.2/E0.3): todo cosseno entre clientes deve ser lido contra o **teto
+   intra-cliente**, porque ruído de gradiente limita o cosseno observável. No estado final, alguns
+   clientes concordam consigo mesmos em apenas ≈ 0.0–0.1. Um cosseno normalizado
+   `cos_ij / sqrt(teto_i · teto_j)` é candidato natural.
+
 #### E0.2 — Busca na literatura (escolher 2 métodos)
 
 **Critérios de escolha:**
@@ -174,6 +236,8 @@ telemetria nova ligada, que é só diagnóstica e não muda o resultado.
 
 **Registro.**
 - 2026-10-08 — etapa criada a pedido do usuário, após a constatação de cosseno ≈ 0 em todos os pares.
+- 2026-10-08 — E0.1 concluída: a métrica é válida, e a ortogonalidade vem dos stems/cabeças
+  inicializados por cliente (H3). Próximo passo: decisão do usuário sobre o desenho e, depois, E0.2.
 
 ---
 
@@ -241,7 +305,7 @@ Os resultados são descritivos: um holdout e uma seed.
 | A3 | **Overfitting de cls com avaliação na última rodada** | A val loss cls sobe enquanto a de treino cai: `Curated_BUSI_mt_1` (melhor na rodada 87; 0.90 → 1.23) e `TCGA_LGG_mt_0` (melhor na 92; 0.45 → 0.72). Por desenho do protocolo, a avaliação final usa a última rodada. | alta |
 | A4 | **ISIC-2018 cls não generaliza** | Treino cai 31–36%. A val loss de `cls_0` fica estável (1.90 → 1.93). Balanced acc. máx. ≈ 0.41–0.46. A acc de teste, 0.274, está abaixo do preditor constante "NV" (0.669), o que é coerente com o `balanced_fold`. | alta |
 | A5 | Nenhum valor não-finito | 0 NaN/Inf nos históricos dos 16 clientes. | ok |
-| A6 | ~~Sem conflito de gradiente~~ **Inconclusivo** | Cancelamento `overall` = 0.667 ≈ referência ortogonal 0.668, mas o cosseno ≈ 0 inclusive entre clientes que deveriam estar alinhados. A métrica pode estar cega; ver E0. | em aberto |
+| A6 | ~~Sem conflito de gradiente~~ **Sem interação entre clientes** | Cancelamento `overall` = 0.667 ≈ referência ortogonal 0.668. A E0.1 mostrou que a métrica é válida e que os updates são ortogonais por causa dos stems/cabeças inicializados por cliente. | alta (desenho) |
 | A7 | ISIC-2018 seg saudável | val dice 0.84–0.87, ainda subindo no fim. | ok |
 | A8 | Duplicação no histórico | `post_local_round/train` repete exatamente os valores de `local_step/train` (agregado). Não é erro, mas o diagnóstico deve contar cada série uma única vez. | info |
 
