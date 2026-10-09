@@ -380,6 +380,12 @@ telemetria nova ligada, que é só diagnóstica e não muda o resultado.
 - 2026-10-08 — etapa criada a pedido do usuário, após a constatação de cosseno ≈ 0 em todos os pares.
 - 2026-10-08 — E0.1 concluída: a métrica é válida, e a ortogonalidade vem dos stems/cabeças
   inicializados por cliente (H3). Próximo passo: decisão do usuário sobre o desenho e, depois, E0.2.
+- 2026-10-09 — E0.2.1 concluída: fontes verificadas em `docs/GRADIENT_CONFLICT_METHODS.md`.
+  - Correções: título do TAG ("for"); venues de GradVac, FedFomo e FedHCA² não confirmadas no texto
+    primário; FedBone é preprint.
+  - M2' ganhou precedente (FedFomo, Eq. 3).
+  - O FedHCA² usa deltas de rodada, como a nossa métrica atual.
+  - TAG com η pequeno reduz-se a um produto interno, por isso usar o delta real.
 - 2026-10-09 — E0.1b concluída: com `personalized_init_seed: dataset`, o cosseno intra-dataset
   começa em 0.39, chega a 0.57 e cai para 0.25 na rodada 30. Os stems permanecem idênticos
   (cos ≥ 0.999), e o cosseno inter-dataset continua ≈ 0.
