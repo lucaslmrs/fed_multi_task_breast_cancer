@@ -271,26 +271,87 @@ os stems se separem. Entre datasets não muda nada. Um braço completo (200 roda
 `personalized_init_seed: dataset` é necessário para medir o efeito em desempenho. É decisão do
 usuário e o treino é executado por ele.
 
-#### E0.2 — Busca na literatura (escolher 2 métodos)
+#### E0.2 — Busca, prototipagem e escolha de 2 métodos
 
-**Critérios de escolha:**
-- (i) medir conflito sem depender do otimizador e do acúmulo de steps (H1/H2);
-- (ii) ser aplicável em FL simulado com 16 clientes e custo viável;
-- (iii) ter fonte primária verificável;
-- (iv) ser complementar entre si, por exemplo um método geométrico e um funcional.
+**O que a E0.1/E0.1b ensinou e que muda os requisitos:**
+1. O cosseno entre deltas é válido, mas só enxerga a geometria de **primeira ordem**. Ele não
+   distingue "sem conflito" de "sem interação", e não capta a **diluição** pela média (cada cliente
+   do BUSI pesa 12,5%).
+2. Nenhum controle até agora produziu cosseno **negativo**. A capacidade de detectar conflito, ou
+   seja, a sensibilidade negativa, **nunca foi testada**.
+3. O ruído de gradiente limita o valor observável. Todo método precisa ser lido contra o **teto
+   intra-cliente**.
+4. Entre datasets, a interação é ≈ 0 por construção (stems diferentes). Um método útil para a
+   pergunta "há transferência negativa?" precisa medir o **efeito na loss**, e não apenas a direção.
 
-**Candidatos iniciais** (a verificar nas fontes primárias; nada aqui está confirmado ainda):
+**Critérios de escolha (pesos para a matriz de decisão):**
 
-| Candidato | Ideia | Fonte a verificar |
+| # | Critério | Peso |
 |---|---|---|
-| Cosseno + similaridade de magnitude do **gradiente bruto** no trunk recebido, sobre um batch-sonda fixo | Elimina Adam e o acúmulo de steps. A magnitude capta o domínio de uma tarefa (seg tem peso 4×). | PCGrad — Yu et al., NeurIPS 2020 ("Gradient Surgery for Multi-Task Learning") |
-| **Afinidade lookahead** entre clientes/tarefas: Z(i→j) = 1 − L_j(θ + Δ_i) / L_j(θ) | Medida funcional: o passo de i ajuda ou prejudica a loss de j? Não depende da geometria em alta dimensão. | TAG — Fifty et al., NeurIPS 2021 ("Efficiently Identifying Task Groupings in Multi-Task Learning") |
-| Concordância de **sinal** por coordenada | Barato. Sensível a conflito localizado. | GradDrop — Chen et al., NeurIPS 2020 |
-| Conflito por camada/canal em FL multitarefa | O que a literatura de FL multitarefa já mede. | FedBone (2306.17465), FedHCA² (CVPR 2024) |
-| Similaridade de **representações** do trunk entre clientes | Complemento não-gradiente. | CKA — Kornblith et al., ICML 2019 |
+| C1 | Responde à pergunta de transferência negativa, isto é, mede efeito na loss/desempenho ou é um proxy validado disso | alto |
+| C2 | Independente do otimizador e do acúmulo de steps (H1/H2) | alto |
+| C3 | Passa nos controles positivo **e** negativo (abaixo) | eliminatório |
+| C4 | Custo viável online: ≤ 20% de acréscimo no tempo da rodada, nas rodadas amostradas | médio |
+| C5 | Fonte primária verificada, com uso prévio em MTL ou FL | médio |
+| C6 | Complementar ao cosseno atual e ao outro método escolhido | médio |
 
-Entregável: uma nota curta (em `docs/`) com o método, a fórmula, a fonte verificada, o custo e a
-interpretação de cada candidato. **O usuário escolhe os 2 métodos.**
+**Candidatos a verificar** (fórmulas, referências e venues **ainda não conferidos** nas fontes primárias):
+
+| id | Método | O que mede | Fonte a verificar | Custo previsto no nosso setup |
+|---|---|---|---|---|
+| M1 | Cosseno + **similaridade de magnitude** (GMS) do gradiente bruto no trunk recebido, sobre batches-sonda fixos | Conflito direcional no ponto enviado, sem Adam/steps. A magnitude capta o domínio de um cliente/tarefa. | Yu et al., "Gradient Surgery for Multi-Task Learning" (PCGrad), NeurIPS 2020 | k forward/backward extras por cliente nas rodadas amostradas (k = 10 ⇒ ~2× a rodada). Vetor de 4,66 M (18,6 MB) por cliente. |
+| M2 | **Afinidade lookahead**: Z(i→j) = 1 − L_j(θ + Δᵢ) / L_j(θ) | Efeito funcional do passo de i na loss de j. Inclui ordem superior; o sinal negativo é transferência negativa. | Fifty et al., "Efficiently Identifying Task Groupings in Multi-Task Learning" (TAG), NeurIPS 2021 | n² = 256 forwards em batch-sonda por rodada amostrada (só forward). Exige distribuir os 16 deltas aos clientes. |
+| M2' | **Ganho da federação** por cliente: L_j(θ_agregado) vs L_j(θ + Δⱼ) | Variante barata de M2 (n forwards): a média ajudou ou atrapalhou o cliente j em relação ao próprio passo? Capta a diluição diretamente. | Derivada de TAG; procurar precedente em FL ("client drift", "personalization gain") | n forwards por rodada; nenhum dado extra a distribuir. |
+| M3 | **Pureza de sinal** por coordenada: P = ½(1 + Σgᵢ / Σ\|gᵢ\|) | Conflito localizado em coordenadas/canais, que o cosseno global dilui. | Chen et al., "Just Pick a Sign" (GradDrop), NeurIPS 2020 | Grátis, se M1 já coleta gradientes. |
+| M4 | Similaridade **cosseno por camada com EMA** (alvo de similaridade) | Versão por camada do cosseno, com suavização temporal (reduz ruído). | Wang et al., "Gradient Vaccine" (GradVac), ICLR 2021 | Grátis sobre M1 ou sobre os deltas atuais. |
+| M5 | Métricas de conflito usadas em FL multitarefa | Para alinhar com a literatura do artigo. | FedBone (arXiv 2306.17465); FedHCA² (CVPR 2024) | A definir após a leitura. |
+| M6 | **CKA** das representações do trunk | Similaridade de representação, não de gradiente. Só faz sentido sobre as mesmas imagens, isto é, dentro de um dataset. | Kornblith et al., ICML 2019 | Forward em um conjunto de imagens comum; não serve entre datasets. |
+
+**Plano de execução:**
+
+1. **E0.2.1 — Verificação das fontes.**
+   - Ler a fonte primária (arXiv/proceedings) de cada candidato. Registrar a fórmula exata, a
+     definição de conflito/afinidade, a venue/ano, se já foi usado em FL, e as limitações declaradas.
+   - Corrigir qualquer item da tabela acima que divergir.
+   - Entregável: `docs/GRADIENT_CONFLICT_METHODS.md`, com uma seção por método e a referência em
+     BibTeX pronta para o `papers/ciarp2026/refs.bib`. Esse arquivo também alimenta a E5.
+2. **E0.2.2 — Protótipo offline.**
+   - Estender `scripts/gradient_conflict_controls.py` com os candidatos que sobreviverem à E0.2.1.
+     Prioridade: M1, M2, M2' e M3, que são computáveis a partir de estados salvos.
+   - Rodar sobre 4 estados já existentes, sem treino novo:
+     - (a) 29/09 na inicialização;
+     - (b) 29/09 no final;
+     - (c) braço `dataset` de 30 rodadas;
+     - (d) braço `client` de 30 rodadas.
+   - O estado (c) é o mais informativo, porque tem alinhamento intra-dataset real.
+3. **E0.2.3 — Controles de validação.** Todo candidato tem de passar nos três:
+   - **Positivo:** clientes do mesmo dataset com personalização igual devem ter alta
+     similaridade/afinidade. Isso já está demonstrado para o cosseno.
+   - **Negativo (novo):** um cliente sintético cujo alvo é invertido (máscara `1 − m` na seg; rótulo
+     trocado na cls) treina sobre os mesmos dados. O método **tem** de reportar conflito: cosseno < 0,
+     afinidade < 0. É o primeiro teste da sensibilidade a conflito.
+   - **Teto:** reportar a concordância intra-cliente (batches diferentes) para normalizar e para
+     saber o que é detectável.
+4. **E0.2.4 — Medir o custo de cada candidato** em tempo de GPU por rodada e em memória, extrapolado
+   para 200 rodadas com amostragem (por exemplo, 1 rodada a cada 10).
+5. **E0.2.5 — Matriz de decisão.**
+   - Tabela de candidatos × C1–C6, com os números dos controles e do custo.
+   - Recomendação provável, a confirmar com os dados: **um geométrico (M1, incluindo M3 de graça)
+     e um funcional (M2 ou M2')**. **O usuário escolhe os 2.**
+
+**Treino necessário?** **Não.** A E0.2 roda só sobre estados salvos (GPU local, minutos). O treino
+completo fica para a E0.3, depois da escolha.
+
+**Critério de pronto.**
+- Fontes verificadas e documentadas.
+- Cada candidato prototipado com resultados dos 3 controles e custo medido.
+- Matriz de decisão apresentada e escolha registrada.
+
+**Riscos.**
+- M2 exige distribuir os deltas a todos os clientes. Na simulação dá para fazer via disco, mas isso
+  precisa ser verificado na E0.3.
+- O controle negativo com alvo invertido pode ser "fácil demais". Se todos os métodos passarem,
+  acrescentar um conflito parcial: inverter apenas 25% dos alvos.
 
 #### E0.3 — Implementação dos 2 métodos escolhidos
 
