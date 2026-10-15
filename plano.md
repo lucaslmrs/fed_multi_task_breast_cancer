@@ -26,7 +26,7 @@ Criado em 2026-10-04.
 
 | # | Etapa | Status | Branch | Atualizado |
 |---|---|---|---|---|
-| E0 | Métodos adicionais de verificação de conflito de gradientes | ⏳ | `feat/gradient-conflict` | 2026-10-09 |
+| E0 | Métodos adicionais de verificação de conflito de gradientes | ✅ | `feat/gradient-conflict` | 2026-10-15 |
 | E1 | Validação do treinamento | 🟨 | `feat/training-validation` | 2026-10-08 |
 | E2 | App local de monitoramento e comparação | ⬜ | `feat/monitor-app` | — |
 | E5 | Validação das fontes (consolidação) | ⬜ | `docs/sources` | — |
@@ -673,12 +673,55 @@ Os dois rodaram em paralelo, levaram ~2h14 cada, não registraram nenhum aviso d
   BUSI. Isso é **compatível com transferência negativa**, mas **ainda não a demonstra**: falta o
   controle nulo de curvatura (item 3).
 
+**E0.3.9 — Controle nulo do M2 (2026-10-15).**
+
+`scripts/gradient_conflict_methods.py --null-control`, offline, sobre o estado final (r200) dos dois
+treinos completos. Para cada par (i → j), Z foi calculado com quatro passos:
+- o Δᵢ real;
+- uma direção **aleatória com a mesma norma por tensor**;
+- Δᵢ × wᵢ, com o peso real de agregação;
+- a direção aleatória × wᵢ.
+
+Saída: `runs/validation/gradient_conflict_methods/20261015_*/m2_null_control.csv`.
+
+| Z × 1e-4 (train / val) | Δ real | aleatório, mesma norma | Δ × wᵢ | aleatório × wᵢ |
+|---|---|---|---|---|
+| **entre datasets**, `client` | **−16.1 / −4.4** | +0.6 / +1.9 | +0.4 / +1.4 | +0.7 / +1.9 |
+| **entre datasets**, `dataset` | **−22.1 / −6.7** | +0.3 / −0.6 | −0.2 / −0.2 | +0.1 / −0.2 |
+| intra, mesmas tarefas, `dataset` | −149.0 / −40.0 | +0.2 / −0.4 | +0.2 / +2.3 | +0.1 / −1.0 |
+| self, `client` | +467 / −182 | +1.0 / −0.3 | **+60 / +8** | +1.3 / +1.0 |
+| self, `dataset` | +493 / −58 | −0.5 / +0.1 | **+50 / +0.4** | +0.7 / +0.9 |
+
+**Leitura:**
+1. **A curvatura genérica não explica o Z negativo.** Uma direção aleatória de mesma norma quase
+   não muda a loss (|Z| < 2e-4). O update real de outro dataset é bem pior que o aleatório (−16 a
+   −22 no train): ele aponta para direções de **alta curvatura da loss do alvo**. Isso é
+   interferência real, embora o cosseno de 1ª ordem seja ≈ 0. É coerente com o "tragic triad" do
+   PCGrad: o conflito aqui é de curvatura, e não de direção.
+2. **Na escala em que a agregação realmente aplica o update (× wᵢ), a interferência entre datasets
+   some:** −0.2 a +0.4e-4, indistinguível do aleatório escalado. O custo de curvatura escala com wᵢ²
+   e os pesos são pequenos (6–12% por cliente), por isso ele fica desprezível.
+3. **O efeito dominante da federação é a diluição do próprio passo.** O self cai de +467/+493 com o
+   Δ inteiro para +50/+60 com Δ × wⱼ, ou seja, cerca de 10× menos progresso por rodada no próprio
+   objetivo. Os outros clientes não compensam (intra/inter × wᵢ ≈ 0).
+4. Entre clientes do mesmo dataset na política `dataset`, o Δ inteiro de um irmão é muito prejudicial
+   (−149), mas também é desprezível na escala real (+0.2).
+
+**Conclusão sobre transferência negativa** (estado final, uma seed, um holdout):
+> Não há transferência negativa entre datasets **na escala aplicada pela agregação**. Os updates
+> de outros datasets interferem por curvatura quando aplicados inteiros, mas os pesos hierárquicos
+> os reduzem a um efeito desprezível. O custo mensurável da federação é a **diluição** do passo de
+> cada cliente (~10×), e não o conflito entre datasets.
+
+Ressalvas: só foi medido o estado final, e o M2 online mostrou o efeito entre datasets crescendo
+ao longo do treino (com Δ inteiro). O M2 online não registra a versão escalada; incluir Δ × wᵢ na
+coleta online é uma melhoria simples para a E3.
+
 **Pendências antes de fechar a E0:**
-- (a) Controle nulo do M2: direção aleatória de mesma norma + Δ escalado por wᵢ. Pode rodar
-  **offline** sobre estados salvos, como na E0.2, sem treino novo.
-- (b) Investigar o colapso do SIIM seg na política `dataset`. Pode virar entrada da E3/E4.
-- (c) Replicar com mais seeds antes de qualquer afirmação de efeito. Isso é decisão do usuário,
-  porque exige treino.
+- ~~(a) Controle nulo do M2~~ → **feito na E0.3.9.**
+- ~~(b) Investigar o colapso do SIIM seg~~ → **movido para a E3/E4** (decisão do usuário em
+  2026-10-15).
+- ~~(c) Replicar com mais seeds~~ → **movido para a E3/E4** (decisão do usuário em 2026-10-15).
 
 **Critério de pronto.**
 - A métrica atual foi validada ou refutada com controles.
@@ -695,6 +738,9 @@ Os dois rodaram em paralelo, levaram ~2h14 cada, não registraram nenhum aviso d
   - O M2 pareado precisa de uma referência nula.
   - O piso de ruído entre execuções é de ~±0.02.
   - Pendências (a)–(e) aguardam decisão.
+- 2026-10-15 — Controle nulo do M2 (E0.3.9). O Z entre datasets é interferência de curvatura com o
+  Δ inteiro, e desprezível na escala real da agregação; o custo dominante é a diluição (~10×).
+  (b) e (c) foram para a E3/E4. **E0 concluída**, faltando apenas o PR.
 - 2026-10-14 — Treinos completos concluídos e analisados (E0.3.8).
   - O ruído GPU entre runs (até ~0.05 no BUSI) foi quantificado.
   - A seed por dataset cria alinhamento intra-dataset, ganha em TCGA/ISIC cls e colapsa o SIIM seg.
@@ -990,6 +1036,22 @@ consolida e verifica as decisões já existentes antes das ablações.
 
 **Critério de pronto.** Loss escolhida, com evidência descritiva e fonte registrada.
 
+**Entradas vindas da E0** (2026-10-15):
+- **Colapso do SIIM seg com `personalized_init_seed: dataset`.** O Dice positivo de teste cai para
+  0.000 nos 4 clientes; a validação vai a 0 a partir de r100 e não volta. Com seed por cliente,
+  fica em 0.066. Hipóteses a testar nos braços:
+  - λ_seg vs λ_cls (hoje 0.8/0.2);
+  - DiceBCE em uma lesão pequena (classe positiva rara no pixel);
+  - interação com o alinhamento intra-dataset (4 clientes idênticos de início).
+
+  Incluir o SIIM como dataset-alvo explícito da ablação da loss.
+- **Replicação com seeds.** O ruído GPU entre runs é de até ~0.05 (BUSI) e ~0.01 (demais) num único
+  run. **Todo braço da E3 precisa de ≥ 3 seeds** (o perfil `final` do `study_runner`: 1993/1994/1995)
+  antes de qualquer conclusão de efeito. Incluir também o braço `personalized_init_seed: dataset` vs
+  `client` nessa replicação.
+- Métricas de conflito (M1/M2 da E0) ligadas em todos os braços, para ler o efeito da loss no
+  conflito e não só no desempenho.
+
 **Riscos/dependências.** O número de braços cresce rápido, então é preciso priorizar. Métodos
 adaptativos interagem com a agregação (FedBone), o que exige cuidado na interpretação.
 
@@ -1010,6 +1072,13 @@ adaptativos interagem com a agregação (FedBone), o que exige cuidado na interp
 - **Augmentation:** flip H/V e rotação em `src/dataset/BUSI_dataset.py`.
 - **Legado:** CLAHE, SOBEL, brilho e contraste como canais extras.
 - **Normalização:** hook existe, mas está desligado (`federated_dataloader.py`, `normalization=None`).
+
+**Entradas vindas da E0** (2026-10-15):
+- **SIIM seg (pneumotórax a 128 px).** O colapso da segmentação na política `dataset` e o Dice
+  ≈ 0.06 na `client` sugerem que a lesão pode estar sendo apagada pela redução para 128 px. Isso
+  exige uma variante de maior resolução, ou um recorte, como braço da E4, com uma nova variante e
+  sem tocar em `processed_128`.
+- **Replicação com ≥ 3 seeds**, pelo mesmo motivo de ruído entre runs registrado na E3.
 
 **Restrição central.** Ablações que alteram a imagem gravada exigem uma **nova variante** de dataset,
 sem sobrescrever `processed_128` nem regerar a partição congelada. Por isso a preferência vai para

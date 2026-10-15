@@ -90,12 +90,12 @@ def _sign_consistency(a, b):
     return float(np.abs(a + b).sum() / total) if total > 0 else float("nan")
 
 
-def _val_loss(participant, trunk):
+def _val_loss(participant, trunk, split="val"):
     client = participant["client"]
     client.model.load_state_dict(participant["model_state"])
     set_shared_state(client.model, trunk, client.share_stem)
     result = local_trainer.evaluate_local(
-        client.model, participant["val"], client.task, client.device, client.num_classes,
+        client.model, participant[split], client.task, client.device, client.num_classes,
         client.seg_criterion, client.cls_criterion, client.inversely_weighted,
         tasks=client.tasks, task_lambdas=client.task_lambdas, precision=client.precision,
     )
@@ -127,6 +127,10 @@ def main():
     parser.add_argument("--adversaries", nargs="*", default=None,
                         help="client ids to twin with an inverted-target adversary "
                              "(default: the first client of each (dataset, tasks) group)")
+    parser.add_argument("--null-control", action="store_true",
+                        help="M2 curvature null: score each real update against a random direction "
+                             "of the same per-tensor norm, both unscaled and scaled by the real "
+                             "aggregation weight w_i, on train and val batches")
     parser.add_argument("--out", default=None)
     args = parser.parse_args()
 
@@ -190,7 +194,8 @@ def main():
             run_batches, run_batches_b = view(batches), view(batches_b)
             participant = {
                 "id": participant_id, "dataset": dataset, "tasks": tasks, "client": client,
-                "model_state": model_state, "val": view(val), "base_weight": base_weight,
+                "model_state": model_state, "val": view(val),
+                "train": view(_Batches(batches[:args.val_batches])), "base_weight": base_weight,
                 "adversary": adversary, "twin": client_id,
             }
             for suffix, items in (("", run_batches), ("_b", run_batches_b)):
@@ -255,6 +260,50 @@ def main():
         gains.append(row)
     lookahead = pd.DataFrame(lookahead)
     gains = pd.DataFrame(gains)
+
+    if args.null_control:
+        # Near a minimum ANY step of norm |Delta_i| that is not aligned raises the loss through
+        # curvature (1/2 d'Hd > 0). A random direction with the same per-tensor norms is the
+        # null for that; scaling by the real weight w_i separates first order (~w) from
+        # curvature (~w^2), since the aggregate applies w_i * Delta_i, not Delta_i.
+        print("null-control evaluations...", flush=True)
+        null_rng = np.random.default_rng(20261015)
+        steps = {}
+        for participant, weight in zip(real, weights):
+            noise = []
+            for step in participant["delta"]:
+                direction = null_rng.normal(size=step.shape).astype(step.dtype)
+                norm = np.linalg.norm(direction)
+                noise.append(direction * (np.linalg.norm(step) / norm if norm > 0 else 0.0))
+            steps[participant["id"]] = {
+                "delta": participant["delta"], "random": noise,
+                "delta_scaled": [weight * s for s in participant["delta"]],
+                "random_scaled": [weight * s for s in noise],
+                "weight": float(weight),
+            }
+        null_rows = []
+        for j in real:
+            base = {split: _val_loss(j, theta, split) for split in ("train", "val")}
+            for i in real:
+                kind = "self" if i is j else pair_kind(i, j)
+                for variant in ("delta", "random", "delta_scaled", "random_scaled"):
+                    trunk = _apply(theta, steps[i["id"]][variant])
+                    for split in ("train", "val"):
+                        null_rows.append({
+                            "source": i["id"], "target": j["id"], "pair_class": kind,
+                            "source_dataset": i["dataset"], "target_dataset": j["dataset"],
+                            "weight": steps[i["id"]]["weight"], "variant": variant,
+                            "split": split,
+                            "z": 1 - _val_loss(j, trunk, split) / base[split],
+                        })
+        null = pd.DataFrame(null_rows)
+        null.to_csv(out / "m2_null_control.csv", index=False)
+        table = null.pivot_table(index=["pair_class", "split"], columns="variant", values="z",
+                                 aggfunc="mean") * 1e4
+        table["excess_full"] = table["delta"] - table["random"]
+        table["excess_scaled"] = table["delta_scaled"] - table["random_scaled"]
+        print("\n## M2 null control, Z x1e4 (excess = real update minus random of same norm)")
+        print(table.round(2).to_string())
 
     geometric.to_csv(out / "m1_m3_pairs.csv", index=False)
     lookahead.to_csv(out / "m2_lookahead.csv", index=False)
