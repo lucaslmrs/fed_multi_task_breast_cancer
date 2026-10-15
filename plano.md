@@ -515,6 +515,70 @@ reduzir `val_batches`/`train_batches` ou aumentar `every_n_rounds`.
   - a variabilidade de Z vem sobretudo de Δ, e não dos batches de avaliação (E0.2), por isso a
     redução custa pouca precisão.
 
+**E0.4 — Resultado dos treinos completos (executados pelo usuário em 2026-10-14, em paralelo).**
+
+Runs:
+- `runs/20261014_211153_…` (`personalized_init_seed: client`);
+- `runs/20261014_211215_…` (`dataset`).
+
+Ambos com 200 rodadas, 21 rodadas amostradas e 0 falhas da coleta. Scripts de análise em
+`runs/validation/gradient_conflict_full/`. Um run por braço, uma seed, um holdout: **descritivo**.
+
+1. **Piso de ruído entre execuções.** O run `client` difere do de 29/09 em até ~0.02 nas métricas
+   finais (BUSI cls 0.613 vs 0.590; ISIC cls 0.255 vs 0.274).
+   - A divergência começa **no 1º step da rodada 1**, antes de qualquer atualização (ISIC seg: loss
+     1.38250065 vs 1.38249981), e cresce suavemente, sem saltos nas rodadas amostradas.
+   - Isso é não-determinismo do BF16/cuDNN (`cuda_benchmark: true`), e não perturbação pela coleta.
+   - **Consequência: diferenças de ~±0.02 entre dois runs quaisquer estão dentro do ruído.**
+2. **M1 (cosseno do gradiente bruto), média sobre as rodadas amostradas:**
+
+   | classe de par | `client` | `dataset` |
+   |---|---|---|
+   | intra-dataset, mesmas tarefas | 0.003 (normalizado 0.002) | **0.157 (normalizado 0.55)** |
+   | intra-dataset, tarefas diferentes (ISIC seg×cls) | 0.003 | 0.008 |
+   | inter-dataset | −0.001 | −0.001 |
+
+   - Com seed por dataset, o alinhamento intra-dataset vai de 0.54 (rodada 1) a ~0.05–0.15 na segunda
+     metade do treino e ≈ 0 na rodada 200. O teto intra-cliente fica entre 0.3 e 0.5.
+   - **Entre datasets e entre seg×cls do ISIC, não há conflito de 1ª ordem em nenhuma das duas
+     políticas.**
+   - Similaridade de magnitude inter ≈ 0.41: as normas dos gradientes diferem ~4× entre datasets.
+3. **M2 (lookahead com o update real):**
+   - O Z entre clientes é **negativo** no split de treino em 70–100% das rodadas, inclusive intra-dataset
+     na política `dataset`, onde o M1 é positivo.
+   - Como o M1 inter ≈ 0, o termo de 1ª ordem é nulo. O Z < 0 vem do **termo de 2ª ordem
+     (curvatura)** de aplicar o passo **inteiro** de outro cliente: L(θ+Δ) ≈ L + g·Δ + ½ΔᵀHΔ. O
+     "tragic triad" do PCGrad inclui justamente a curvatura.
+   - **Sem uma referência nula (passo aleatório com a mesma norma), Z < 0 não pode ser lido como
+     transferência negativa.**
+   - O **update agregado** que o servidor aplica de fato tem **Z > 0 no treino para os 4 datasets nos
+     dois runs**: BUSI +14/+17, TCGA +12/+16, ISIC +4/+8, SIIM +0.5/+0.8 (×1e-4). A média encolhe
+     cada passo, e a curvatura cai com o quadrado do peso.
+   - Na validação, o próprio passo **piora** BUSI, ISIC e TCGA (overfitting no fim do treino), enquanto
+     o agregado continua ≥ 0, exceto TCGA na política `dataset`.
+4. **Métricas de teste, `dataset` vs `client`:**
+   - acima do piso de ruído: ISIC cls 0.255 → 0.386, TCGA cls 0.885 → 0.923, TCGA seg 0.604 → 0.641;
+   - **SIIM seg colapsa: 0.066 → 0.000**;
+   - BUSI dentro do ruído.
+
+**Conclusão da E0 (o que os dados sustentam):**
+- Os dois métodos concordam que **não há conflito de 1ª ordem entre datasets**. As atualizações entre
+  datasets não interagem nem de forma construtiva nem destrutiva.
+- O dano aparente nos pares (M2 < 0) é efeito de curvatura de passos inteiros e não acontece no update
+  realmente aplicado, que ajuda todos os datasets no treino.
+- **Isso não prova ausência de transferência negativa no desempenho.** Para isso falta o par
+  federado × local-only com a configuração atual.
+
+**Pendências abertas pela E0.4** (propostas; decisão do usuário):
+- (a) Referência nula no M2: avaliar Lⱼ(θ + r) com r aleatório de norma igual à mediana de ‖Δ‖, que
+  custa +2 avaliações por cliente. Sem isso, o Z pareado não é interpretável.
+- (b) Runs local-only pareados com os dois runs acima, para a pergunta de desempenho.
+- (c) Investigar o colapso da seg do SIIM com seed por dataset; liga-se a A1/A2 da E1.
+- (d) Repetir com `cuda_benchmark: false` ou com mais seeds para medir o piso de ruído de forma
+  controlada.
+- (e) Memória: os atores Ray chegaram a 2.3–3.3 GB de RSS + ~0.8 GB de swap cada. Registrar a memória
+  por processo na E1.
+
 **E0.3.7 — Handoff de treino (usuário).** As configurações estão prontas em
 `runs/validation/gradient_conflict_full/{client,dataset}.yaml`. Diferença em relação ao run de 29/09:
 apenas `federated.personalized_init_seed` e o bloco `runtime.diagnostics.gradient_conflict` (ligado,
@@ -540,6 +604,11 @@ telemetria nova ligada, que é só diagnóstica e não muda o resultado.
 - 2026-10-08 — etapa criada a pedido do usuário, após a constatação de cosseno ≈ 0 em todos os pares.
 - 2026-10-08 — E0.1 concluída: a métrica é válida, e a ortogonalidade vem dos stems/cabeças
   inicializados por cliente (H3). Próximo passo: decisão do usuário sobre o desenho e, depois, E0.2.
+- 2026-10-14 — Treinos completos analisados (E0.4).
+  - Não há conflito de 1ª ordem entre datasets.
+  - O M2 pareado precisa de uma referência nula.
+  - O piso de ruído entre execuções é de ~±0.02.
+  - Pendências (a)–(e) aguardam decisão.
 - 2026-10-09 — E0.3 implementada e testada.
   - Não-perturbação confirmada na GPU.
   - Custo ajustado para ~+14%.
