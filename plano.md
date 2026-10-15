@@ -594,6 +594,92 @@ recalculadas a partir dos artefatos existentes, porque nenhum artefato guarda o 
 rodada. O handoff virá na E0.3: provavelmente uma re-execução da configuração de 29/09 com a
 telemetria nova ligada, que é só diagnóstica e não muda o resultado.
 
+**E0.3.8 — Resultado dos treinos completos (2026-10-14).**
+
+Runs:
+- `runs/20261014_211153_*`: `personalized_init_seed: client`;
+- `runs/20261014_211215_*`: `personalized_init_seed: dataset`.
+
+Os dois rodaram em paralelo, levaram ~2h14 cada, não registraram nenhum aviso da coleta e geraram os
+3 CSVs de conflito. **Uma seed, um holdout: tudo é descritivo.**
+
+1. **Ruído entre runs (GPU).**
+   - O run `client` não reproduz 29/09 bit a bit. As trajetórias divergem **desde o 1º step**
+     (|Δloss| de 1e-5 a 3e-4), e dois runs **sem** coleta (29/09 vs `conflict_cost/off`) divergem
+     com a mesma magnitude. A causa é `cuda_benchmark` + BF16, e não a telemetria; a
+     não-perturbação está provada bit a bit em CPU.
+   - Diferença de teste 29/09 → `client` depois de 200 rodadas:
+     - BUSI: balanced acc 0.551 → 0.603, Dice positivo 0.631 → 0.650;
+     - ISIC: balanced acc 0.352 → 0.351;
+     - TCGA: balanced acc 0.854 → 0.858, Dice 0.594 → 0.604.
+   - **Ruído de referência por run: até ~0.05 no BUSI (dataset pequeno) e ~0.01 nos demais.**
+     Nenhuma comparação de run único deve tratar diferenças dessa ordem como efeito.
+
+2. **M1 (cosseno do gradiente bruto).**
+   - `client`: intra-dataset ≈ 0 nas 21 rodadas amostradas (−0.009 a +0.014). Confirma a
+     ortogonalidade estrutural ao longo de todo o treino.
+   - `dataset`: intra-dataset em 0.54 na rodada 1, depois 0.43 (r11), 0.25 (r31), ~0.05–0.17 a
+     partir de r91. Por dataset (média do run): TCGA 0.28, SIIM 0.19, ISIC 0.14, BUSI 0.09. No
+     final, concentrado em encoder2/3 (0.08–0.10) contra bottleneck 0.01.
+   - Entre datasets: ≈ 0 nas duas políticas, em todas as rodadas.
+   - O cosseno normalizado pelo teto é instável (> 1 em algumas rodadas). Com 5 batches por metade,
+     o teto é ruidoso: usar só como indicação.
+   - **Magnitude Φ:** intra-dataset 0.89–0.94; ISIC seg×cls 0.57–0.61; **entre datasets
+     0.40–0.43**. As normas de gradiente diferem muito entre datasets, então alguns datasets
+     dominam a direção do trunk. Isso é informação que o cosseno não dá.
+
+3. **M2 (lookahead com o update real), em Z × 1e-4, médias sobre 21 rodadas:**
+
+   | classe de par | `client` train / val | `dataset` train / val |
+   |---|---|---|
+   | self | +7.9 / −11.1 | +11.2 / −32.9 |
+   | aggregate | +5.4 / +2.4 | +8.3 / +3.4 |
+   | intra, mesmas tarefas | −10.3 / −4.1 | −36.3 / −23.0 |
+   | intra, tarefas diferentes (ISIC seg×cls) | −15.0 / −7.0 | −25.2 / −14.1 |
+   | entre datasets | −7.6 / −2.8 | −7.5 / −1.5 |
+
+   - Entre datasets, o efeito é **negativo e consistente** no split de treino (80–100% das rodadas
+     com média < 0 na maioria dos pares) e **cresce no fim do treino** (r ≤ 61: −3.2; r ≥ 141:
+     −12.4).
+   - O alvo mais afetado é o **BUSI**: ISIC → BUSI −33 / −13 (95% das rodadas negativas), TCGA →
+     BUSI −22 / −6. O SIIM quase não reage (|Z| < 0.5), porque a loss dele quase não se move.
+   - **Self no fim:** train ≈ 0, val −52 a −67, ou seja, overfitting nas duas políticas (coerente
+     com A3/A4).
+   - **Aggregate > 0 nas duas políticas**: a média federada reduz a loss, e mais com a seed por
+     dataset.
+   - **⚠ Limitação que impede afirmar transferência negativa:** Z aplica o Δᵢ **inteiro** de outro
+     cliente. Perto de um mínimo, *qualquer* passo dessa norma que não esteja alinhado aumenta a
+     loss pela curvatura (½ ΔᵀHΔ > 0). O Z negativo entre datasets pode ser só curvatura, e não
+     conflito. Falta um **controle nulo**: a mesma conta com uma direção aleatória de mesma norma
+     (e/ou com Δᵢ escalado pelo peso real de agregação wᵢ, já que o custo de curvatura escala com
+     wᵢ² e o efeito de 1ª ordem com wᵢ).
+
+4. **Desempenho: `dataset` vs `client` (diferenças maiores que o ruído do item 1 em negrito):**
+   - TCGA: balanced acc **0.858 → 0.907**, Dice positivo **0.604 → 0.641**, AUC 0.931 → 0.956.
+   - ISIC cls: balanced acc 0.351 → 0.390, **macro-F1 0.214 → 0.271**, AUC 0.756 → 0.785.
+   - BUSI: balanced acc 0.603 → 0.661, que está dentro do ruído do BUSI. A dispersão entre os 2
+     clientes cai (Dice mín/máx 0.553/0.747 → 0.588/0.707).
+   - **SIIM seg colapsa para 0.000 nos 4 clientes** (contra 0.066 no `client`). O Dice de validação
+     cai a 0 a partir de r100 e não volta, enquanto no `client` ele sobe no fim (0.012 → 0.079).
+     SIIM cls: macro-F1 0.494 → 0.462.
+
+**Conclusão da E0** (formulação para relatório; uma seed):
+- A métrica de cosseno é válida. Com stems inicializados por cliente, ela mostra **ausência de
+  interação** entre clientes ao longo de todo o treino.
+- A seed por dataset cria alinhamento intra-dataset real, que decai com o treino mas não some, e
+  está associada a ganhos acima do ruído em TCGA e ISIC cls. Também está associada ao colapso
+  completo da segmentação do SIIM.
+- Entre datasets, o cosseno é ≈ 0, mas o lookahead é sistematicamente negativo, sobretudo sobre o
+  BUSI. Isso é **compatível com transferência negativa**, mas **ainda não a demonstra**: falta o
+  controle nulo de curvatura (item 3).
+
+**Pendências antes de fechar a E0:**
+- (a) Controle nulo do M2: direção aleatória de mesma norma + Δ escalado por wᵢ. Pode rodar
+  **offline** sobre estados salvos, como na E0.2, sem treino novo.
+- (b) Investigar o colapso do SIIM seg na política `dataset`. Pode virar entrada da E3/E4.
+- (c) Replicar com mais seeds antes de qualquer afirmação de efeito. Isso é decisão do usuário,
+  porque exige treino.
+
 **Critério de pronto.**
 - A métrica atual foi validada ou refutada com controles.
 - Os 2 métodos novos estão implementados, testados e rodados num treino completo.
@@ -609,6 +695,10 @@ telemetria nova ligada, que é só diagnóstica e não muda o resultado.
   - O M2 pareado precisa de uma referência nula.
   - O piso de ruído entre execuções é de ~±0.02.
   - Pendências (a)–(e) aguardam decisão.
+- 2026-10-14 — Treinos completos concluídos e analisados (E0.3.8).
+  - O ruído GPU entre runs (até ~0.05 no BUSI) foi quantificado.
+  - A seed por dataset cria alinhamento intra-dataset, ganha em TCGA/ISIC cls e colapsa o SIIM seg.
+  - O M2 entre datasets é negativo, mas falta o controle nulo de curvatura para concluir.
 - 2026-10-09 — E0.3 implementada e testada.
   - Não-perturbação confirmada na GPU.
   - Custo ajustado para ~+14%.
