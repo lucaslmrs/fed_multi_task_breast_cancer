@@ -27,7 +27,7 @@ Criado em 2026-10-04.
 | # | Etapa | Status | Branch | Atualizado |
 |---|---|---|---|---|
 | E0 | Métodos adicionais de verificação de conflito de gradientes | ✅ | `feat/gradient-conflict` | 2026-10-15 |
-| B0 | Baselines não federados por dataset (seg / cls / multitask) | ⏳ | `feat/baselines` | 2026-10-15 |
+| B0 | Baselines não federados por dataset (seg / cls / multitask) | ✅ | `feat/baselines` | 2026-10-16 |
 | E1 | Validação do treinamento | 🟨 | `feat/training-validation` | 2026-10-08 |
 | E2 | App local de monitoramento e comparação | ⬜ | `feat/monitor-app` | — |
 | E5 | Validação das fontes (consolidação) | ⬜ | `docs/sources` | — |
@@ -827,7 +827,63 @@ python -m src.training_baseline --config runs/20260929_082717_FEDERATED_MTnnUNet
 - Tabela baseline × federado (`client`/`dataset`) por dataset e tarefa registrada aqui, com a faixa
   de ruído.
 
+**Resultado (2026-10-16).**
+- Os 12 runs foram concluídos.
+- Relatório: `runs/baseline/report.html`, com tabela, gráfico, matrizes de confusão de cls e de
+  pixel, e curvas. Gerador: `scripts/baseline_report.py`; recriar com
+  `bash runs/baseline/build_report.sh`.
+- Uma seed, um holdout. "Ruído" = |29/09 − federado seed/cliente|, que são dois runs com a mesma
+  configuração.
+
+| dataset | métrica | base seg | base cls | base multitask | fed seed/cliente | fed seed/dataset | ruído |
+|---|---|---|---|---|---|---|---|
+| BUSI | balanced acc | — | 0.473 | 0.505 | 0.603 | **0.661** | ±0.052 |
+| ISIC | balanced acc | — | 0.481 | **0.549** | 0.351 | 0.390 | ±0.001 |
+| SIIM | balanced acc | — | **0.772** | 0.763 | 0.590 | 0.583 | ±0.002 |
+| TCGA | balanced acc | — | 0.887 | **0.923** | 0.858 | 0.907 | ±0.004 |
+| BUSI | Dice positivo | **0.683** | — | 0.678 | 0.650 | 0.648 | ±0.020 |
+| ISIC | Dice positivo | **0.880** | — | 0.876 | 0.842 | 0.846 | ±0.001 |
+| SIIM | Dice positivo | 0.005 | — | 0.000 | **0.066** | 0.000 | ±0.002 |
+| TCGA | Dice positivo | **0.733** | — | 0.709 | 0.604 | 0.641 | ±0.009 |
+
+**Leitura:**
+1. **Classificação: o federado fica bem abaixo do baseline em ISIC e SIIM.**
+   - ISIC: 0.35–0.39 vs 0.48–0.55.
+   - SIIM: 0.59 vs 0.77.
+   - As matrizes mostram o porquê:
+     - No ISIC, o federado desloca as predições para **MEL**: 50% dos NV são preditos como MEL no
+       `seed/cliente`, enquanto o baseline acerta 63–68% dos NV.
+     - No SIIM, o federado marca a maioria dos negativos como pneumotórax (recall de
+       `no_pneumothorax` 0.38–0.46, contra 0.70–0.74 no baseline).
+   - Em ambos, o federado erra **muito mais** que o baseline treinado com os mesmos dados.
+2. **BUSI é a exceção.** O federado supera o baseline (0.60–0.66 vs 0.47–0.51), acima do ruído do
+   BUSI (±0.05). As curvas mostram o baseline de cls do BUSI com validação muito ruidosa (dataset
+   pequeno, ~250 imagens): o early stopping escolhe um checkpoint instável.
+3. **Segmentação: o baseline é melhor ou igual.** ISIC +0.04 e TCGA +0.09/+0.13, acima do ruído;
+   BUSI +0.03, no limite do ruído.
+4. **SIIM seg não é aprendida por nenhum setup**, nem pelo baseline centralizado (Dice positivo
+   0.005; a matriz de pixel mostra 99.6–100% dos pixels de lesão preditos como fundo; a loss de
+   validação estaciona em 0.25 depois de ~50 épocas). **O colapso do SIIM não é causado pela
+   federação nem pela seed por dataset:** a tarefa, com esta resolução (128 px) e esta loss, não é
+   aprendida. Isso reforça a entrada da E4 (resolução) e da E3 (loss) para o SIIM.
+5. **Multitarefa vs tarefa única (baseline):**
+   - melhora a classificação: ISIC +0.07, TCGA +0.04, BUSI +0.03 (dentro do ruído do BUSI);
+   - mantém ou piora levemente a segmentação: TCGA −0.02, demais ≈ iguais.
+6. **FP em imagem vazia (BUSI) = 1.0 em todos os setups.** Toda imagem `normal` de teste recebe
+   algum pixel predito como lesão. Isso é comum a todos os setups e deve ser investigado na E1
+   (limiar ou pós-processamento estão fora do protocolo atual).
+
+**Ressalvas:**
+- O orçamento é diferente por desenho: os baselines usam early stopping pela validação e o federado
+  usa 200 rodadas fixas, com avaliação na última. Parte da vantagem do baseline na classificação
+  pode vir da seleção do checkpoint, já que o federado faz overfitting no fim (E0.3.8, self Z val
+  < 0).
+- **Teto de épocas:** seg SIIM (melhor época 199), seg TCGA (190), multitask BUSI (167) e multitask
+  TCGA (177) pararam nas 200 épocas ainda melhorando. Esses baselines podem estar
+  **subestimados**.
+
 **Registro.**
+- 2026-10-16 — 12 baselines concluídos; relatório gerado; resultados acima.
 - 2026-10-15 — etapa criada a pedido do usuário. Implementação, testes e smoke concluídos;
   aguardando os treinos.
 
