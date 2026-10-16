@@ -94,6 +94,7 @@ class FedPerStrategy(FedAvg):
             })
 
         _validate_update_shapes(updates)
+        _validate_update_finite(updates, server_round)
         if self._lookahead_round(server_round) and self._sent_arrays is not None:
             conflict_diagnostics.observational(
                 lambda: conflict_diagnostics.write_round_deltas(
@@ -425,6 +426,18 @@ def _validate_update_shapes(updates):
                 "Clients returned incompatible shared states; check share_stem/channels. "
                 f"Expected {reference[:2]}..., got {shapes[:2]}... from {update['dataset']}"
             )
+
+
+def _validate_update_finite(updates, server_round):
+    """Refuse to average a non-finite shared state into the global trunk."""
+    for update in updates:
+        for index, array in enumerate(update["arrays"]):
+            if np.issubdtype(array.dtype, np.number) and not np.isfinite(array).all():
+                raise FloatingPointError(
+                    f"[round {server_round}] client {update['client_id']} returned "
+                    f"{int((~np.isfinite(array)).sum())} non-finite values in shared tensor "
+                    f"{index} (shape {tuple(array.shape)}); refusing to aggregate"
+                )
 
 
 def _weighted_arrays(updates, weights):
