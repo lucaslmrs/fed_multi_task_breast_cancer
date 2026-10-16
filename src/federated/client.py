@@ -48,6 +48,7 @@ from src.utils.training_runtime import (
     configure_worker_threads,
     dataloader_kwargs,
     precision_policy,
+    runtime_config,
 )
 
 
@@ -123,6 +124,7 @@ class FederatedClient(NumPyClient):
         self.config = config
         configure_worker_threads(config)
         self.precision = precision_policy(config, self.device)
+        self.grad_norm = runtime_config(config)["diagnostics"]["grad_norm"]["enabled"]
         self.data_cfg = dataset_config(config, dataset)
         self.num_classes = len(self.data_cfg["classes"])
         self.share_stem = config["federated"].get("share_stem", True)
@@ -349,6 +351,10 @@ class FederatedClient(NumPyClient):
                     "task": task, "metric_name": metric_name, "value": value,
                     "n_samples": metric_sample_count(result['task_metrics'][task], metric_name, self.task_mass.get(task, 0)),
                 })
+        for name in ("grad_norm_mean", "grad_norm_max"):
+            if np.isfinite(result.get(name, float("nan"))):
+                rows.append({"task": "combined", "metric_name": name, "value": result[name],
+                             "n_samples": self.n_train})
         for row in rows:
             row.update({
                 "unit_type": "round", "unit_index": int(server_round),
@@ -482,6 +488,7 @@ class FederatedClient(NumPyClient):
             epoch_end_callback=None,
             record_step_history=record_detail and self.local_training_mode == "steps",
             precision=self.precision,
+            grad_norm=self.grad_norm,
         )
         if self.device == "cuda":
             torch.cuda.synchronize()
@@ -537,6 +544,9 @@ class FederatedClient(NumPyClient):
                 torch.cuda.max_memory_reserved() / 2**20 if self.device == "cuda" else 0.0
             ),
         }
+        for name in ("grad_norm_mean", "grad_norm_max"):
+            if np.isfinite(train_result.get(name, float("nan"))):
+                metrics[f"train_{name}"] = float(train_result[name])
         metrics.update(self._scalar_metrics("train", {
             "loss": train_result["loss"],
             "task_losses": train_result["task_losses"],

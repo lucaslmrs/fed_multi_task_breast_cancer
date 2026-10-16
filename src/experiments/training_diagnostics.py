@@ -1119,6 +1119,21 @@ def diagnose_run(run_path, **kwargs):
     return summary
 
 
+def run_training_diagnostics(config, run_path):
+    """End-of-run hook: diagnose ``run_path`` unless disabled; never fails the run."""
+    from src.utils.training_runtime import runtime_config
+
+    try:
+        settings = runtime_config(config)["diagnostics"]["training"]
+        if not settings["enabled"]:
+            logging.info("[diagnostics] disabled (runtime.diagnostics.training.enabled)")
+            return None
+        return diagnose_run(run_path, baseline_root=settings["baseline_root"])
+    except Exception:
+        logging.warning("Could not build the training diagnostics", exc_info=True)
+        return None
+
+
 def diagnose_paths(paths, thresholds=None, noise=None, baseline_root="runs/baseline"):
     """Diagnose every run under ``paths``; write per-run and consolidated outputs."""
     table = []

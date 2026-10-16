@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import math
 import tempfile
@@ -417,14 +419,16 @@ class ToleranceAndCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             run = RunBuilder(root).client(
                 "c0", val={("seg", "dice_positive"): [0.01] * ROUNDS}).write()
-            td.main([str(run), "--baseline-root", str(Path(root) / "none")])
+            with contextlib.redirect_stdout(io.StringIO()):
+                td.main([str(run), "--baseline-root", str(Path(root) / "none")])
             findings = pd.read_csv(run / "diagnostics" / "findings.csv")
             self.assertIn("D6", set(findings.check_id))
             summary = json.loads((run / "diagnostics" / "summary.json").read_text())
             self.assertEqual(summary["status"], "critical")
             self.assertTrue((run / "diagnostics" / "summary.md").exists())
-            td.main([str(run), "--threshold", "D6_dice=0.001",
-                     "--baseline-root", str(Path(root) / "none")])
+            with contextlib.redirect_stdout(io.StringIO()):
+                td.main([str(run), "--threshold", "D6_dice=0.001",
+                         "--baseline-root", str(Path(root) / "none")])
             findings = pd.read_csv(run / "diagnostics" / "findings.csv")
             self.assertNotIn("D6", set(findings.check_id))
             with self.assertRaises(SystemExit):

@@ -39,6 +39,7 @@ from src.federated.model_split import (
 )
 from src.experiments.run_examples import client_examples, write_fold_candidates
 from src.experiments.run_report import build_run_report
+from src.experiments.training_diagnostics import run_training_diagnostics
 from src.federated.negative_transfer import report_run
 from src.federated.server import FedPerStrategy
 from src.utils.experiment_init import device_setup, init_multitask_model
@@ -541,6 +542,7 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
             conflict_diagnostics.report_run(run_path)
         except Exception:
             logging.warning("Could not build the gradient-conflict report", exc_info=True)
+    run_training_diagnostics(config, run_path)
     try:
         report = build_run_report(run_path)
         logging.info(f"Run report: {report}")

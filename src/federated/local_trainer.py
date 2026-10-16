@@ -14,6 +14,9 @@ OMITTED, never contributed as a zero: an all-zero mask is a legitimate target fo
 class, so a zero term and an absent term are not the same thing.
 """
 
+import math
+
+import numpy as np
 import torch
 import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, f1_score
@@ -175,10 +178,30 @@ def local_objective(model, data, inputs, owned, lambdas, device, num_classes, se
     return loss, counted, raw_terms, logits, outputs
 
 
+def gradient_norm(model, step):
+    """Total L2 norm of the current gradients; raises on a non-finite norm.
+
+    Read-only: ``get_total_norm`` reduces the gradients without touching them, so a healthy run's
+    numbers are unchanged. Under BF16 there is no ``GradScaler`` to catch a non-finite gradient
+    behind a finite loss, so this is the guard that stops it before ``optimizer.step()``.
+    """
+    grads = [p.grad for p in model.parameters() if p.grad is not None]
+    if not grads:
+        return 0.0
+    value = float(torch.nn.utils.get_total_norm(grads))
+    if not math.isfinite(value):
+        raise FloatingPointError(
+            f"non-finite gradient norm ({value}) at local step {step}; the optimizer step was "
+            "not applied"
+        )
+    return value
+
+
 def train_local(model, loader, optimizer, task, device, local_epochs, num_classes,
                 seg_criterion=None, cls_criterion=None, inversely_weighted=True,
                 training_mode="epochs", steps_per_round=10, tasks=None, task_lambdas=None,
-                epoch_end_callback=None, record_step_history=False, precision=None):
+                epoch_end_callback=None, record_step_history=False, precision=None,
+                grad_norm=True):
     """Run local SGD and return loss plus exact optimization/exposure telemetry.
 
     ``epochs`` preserves the legacy nested epoch/loader loop. In ``steps`` mode the loader must
@@ -187,6 +210,8 @@ def train_local(model, loader, optimizer, task, device, local_epochs, num_classe
     ``tasks``/``task_lambdas`` enable the multi-task objective. A client that declares several
     tasks and finishes a round having exercised only some of them is a silent degradation to a
     single-task client, so it is rejected.
+
+    ``grad_norm`` measures (read-only) and guards the gradient norm of every step.
     """
     owned = resolve_tasks(task, tasks)
     precision = precision or PrecisionPolicy("fp32", device)
@@ -211,9 +236,11 @@ def train_local(model, loader, optimizer, task, device, local_epochs, num_classe
     for name in owned:
         task_stats[name]["num_classes"] = num_classes
     history, validation_history = [], []
+    norms = []
     passes = local_epochs if training_mode == "epochs" else 1
     for pass_index in range(1, passes + 1):
         epoch_running, epoch_batches, epoch_examples = 0.0, 0, 0
+        epoch_norms = []
         epoch_loss_sums = {name: 0.0 for name in owned}
         epoch_loss_counts = {name: 0 for name in owned}
         epoch_stats = _empty_task_stats(owned)
@@ -253,6 +280,17 @@ def train_local(model, loader, optimizer, task, device, local_epochs, num_classe
                     "step", n_batches + 1, 1, int(inputs.shape[0]),
                 ))
             loss.backward()
+            if grad_norm:
+                norm = gradient_norm(model, n_batches + 1)
+                norms.append(norm)
+                epoch_norms.append(norm)
+                if training_mode == "steps" and record_step_history:
+                    history.append({
+                        "task": "combined", "metric_name": "grad_norm", "value": norm,
+                        "n_samples": int(inputs.shape[0]), "unit_type": "step",
+                        "unit_index": n_batches + 1, "optimizer_steps": 1,
+                        "examples_processed": int(inputs.shape[0]),
+                    })
             optimizer.step()
             running += loss.item()
             n_batches += 1
@@ -269,6 +307,15 @@ def train_local(model, loader, optimizer, task, device, local_epochs, num_classe
                 epoch_running, epoch_batches, "epoch", pass_index,
                 epoch_batches, epoch_examples,
             ))
+            if epoch_norms:
+                for name, value in (("grad_norm_mean", float(np.mean(epoch_norms))),
+                                    ("grad_norm_max", float(np.max(epoch_norms)))):
+                    history.append({
+                        "task": "combined", "metric_name": name, "value": value,
+                        "n_samples": epoch_examples, "unit_type": "epoch",
+                        "unit_index": int(pass_index), "optimizer_steps": int(epoch_batches),
+                        "examples_processed": int(epoch_examples),
+                    })
             if epoch_end_callback is not None:
                 validation_history.append({
                     "unit_type": "epoch",
@@ -300,6 +347,8 @@ def train_local(model, loader, optimizer, task, device, local_epochs, num_classe
         },
         "history": history,
         "validation_history": validation_history,
+        "grad_norm_mean": float(np.mean(norms)) if norms else float("nan"),
+        "grad_norm_max": float(np.max(norms)) if norms else float("nan"),
     }
 
 

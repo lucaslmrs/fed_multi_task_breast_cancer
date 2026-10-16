@@ -112,6 +112,15 @@ def runtime_config(config: dict) -> dict:
     lookahead.setdefault("train_batches", 8)
     conflict["lookahead"] = lookahead
     diagnostics["gradient_conflict"] = conflict
+    # Read-only per-step gradient norm and its non-finite guard (plano E1.2).
+    grad_norm = dict(diagnostics.get("grad_norm", {}) or {})
+    grad_norm.setdefault("enabled", True)
+    diagnostics["grad_norm"] = grad_norm
+    # Offline artifact diagnostics written at the end of every run (plano E1.1).
+    training = dict(diagnostics.get("training", {}) or {})
+    training.setdefault("enabled", True)
+    training.setdefault("baseline_root", "runs/baseline")
+    diagnostics["training"] = training
 
     return {
         "inference_batch_size": int(configured.get("inference_batch_size", 32)),
@@ -158,6 +167,12 @@ def validate_runtime_config(config: dict) -> None:
             raise ValueError(f"{prefix}.{name} must be a positive integer")
     if conflict["probe_batches"] < 2:
         raise ValueError(f"{prefix}.probe_batches must be at least 2 (two halves give the ceiling)")
+    for name in ("grad_norm", "training"):
+        if not isinstance(runtime["diagnostics"][name]["enabled"], bool):
+            raise ValueError(f"runtime.diagnostics.{name}.enabled must be a boolean")
+    baseline_root = runtime["diagnostics"]["training"]["baseline_root"]
+    if not isinstance(baseline_root, str) or not baseline_root:
+        raise ValueError("runtime.diagnostics.training.baseline_root must be a non-empty path")
 
 
 def dataloader_kwargs(config: dict, *, federated: bool = False) -> dict:

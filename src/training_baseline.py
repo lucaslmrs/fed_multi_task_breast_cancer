@@ -42,6 +42,7 @@ from src.dataset.BUSI_dataloader import deterministic_oversampling
 from src.dataset.federated_dataloader import (list_clients, load_client_mapping,
                                               pivot_multitask_mapping, resolve_class_weights)
 from src.dataset.splitting import evaluation_metadata
+from src.experiments.training_diagnostics import run_training_diagnostics
 from src.federated import local_trainer, unified_eval
 from src.federated.client import _default_transforms, _task_lambdas, resolve_device
 from src.federated.config import (active_datasets, aggregation_config, dataset_config,
@@ -175,6 +176,7 @@ def train_and_evaluate(config, dataset, mode, run_path, device, max_epochs=None,
                       seg_criterion=seg_criterion, cls_criterion=cls_criterion,
                       inversely_weighted=config["loss"]["inversely_weighted"], tasks=tasks,
                       task_lambdas=task_lambdas, precision=precision)
+        grad_norm = runtime_config(config)["diagnostics"]["grad_norm"]["enabled"]
 
         best_path = Path(run_path) / f"fold_{fold}" / "best.pt"
         best_path.parent.mkdir(parents=True, exist_ok=True)
@@ -182,7 +184,8 @@ def train_and_evaluate(config, dataset, mode, run_path, device, max_epochs=None,
         for epoch in range(1, epochs + 1):
             started = time.perf_counter()
             train = local_trainer.train_local(
-                model, train_loader, optimizer, local_epochs=1, training_mode="epochs", **common)
+                model, train_loader, optimizer, local_epochs=1, training_mode="epochs",
+                grad_norm=grad_norm, **common)
             val = local_trainer.evaluate_local(model, val_loader, **common)
             val_loss = float(val["loss"])
             if opt_cfg["scheduler"] == "cosine":
@@ -199,6 +202,9 @@ def train_and_evaluate(config, dataset, mode, run_path, device, max_epochs=None,
             record = {"fold": fold, "epoch": epoch, "train_loss": float(train["loss"]),
                       "val_loss": val_loss, "lr": optimizer.param_groups[0]["lr"],
                       "seconds": time.perf_counter() - started, "best": improved}
+            if grad_norm:
+                record.update(train_grad_norm_mean=train["grad_norm_mean"],
+                              train_grad_norm_max=train["grad_norm_max"])
             for task_name, metrics in val.get("metrics", {}).items():
                 for name, value in metrics.items():
                     record[f"val_{name}_{task_name}"] = value
@@ -272,6 +278,7 @@ def run(config_path, mode, dataset, out_root="runs/baseline", max_epochs=None, m
                      task, column, group[column].mean(), len(group))
     logging.info("Saved %s | total time %.1fs", run_path / RESULTS_FILE,
                  time.perf_counter() - started)
+    run_training_diagnostics(config, run_path)
     return run_path
 
 
