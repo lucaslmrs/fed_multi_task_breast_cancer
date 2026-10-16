@@ -27,6 +27,7 @@ Criado em 2026-10-04.
 | # | Etapa | Status | Branch | Atualizado |
 |---|---|---|---|---|
 | E0 | Métodos adicionais de verificação de conflito de gradientes | ✅ | `feat/gradient-conflict` | 2026-10-15 |
+| B0 | Baselines não federados por dataset (seg / cls / multitask) | ⏳ | `feat/baselines` | 2026-10-15 |
 | E1 | Validação do treinamento | 🟨 | `feat/training-validation` | 2026-10-08 |
 | E2 | App local de monitoramento e comparação | ⬜ | `feat/monitor-app` | — |
 | E5 | Validação das fontes (consolidação) | ⬜ | `docs/sources` | — |
@@ -763,6 +764,72 @@ coleta online é uma melhoria simples para a E3.
 - 2026-10-09 — E0.1b concluída: com `personalized_init_seed: dataset`, o cosseno intra-dataset
   começa em 0.39, chega a 0.57 e cai para 0.25 na rodada 30. Os stems permanecem idênticos
   (cos ≥ 0.999), e o cosseno inter-dataset continua ≈ 0.
+
+---
+
+## B0 — Baselines não federados por dataset
+
+**Objetivo** (pedido do usuário em 2026-10-15, antes de continuar). Ter uma referência de quanto um
+treinamento normal, **não federado**, alcança em cada dataset, separadamente para segmentação,
+classificação e multitarefa.
+
+**Decisões do usuário:**
+- **Partição congelada:** treino com a união dos clientes de cada dataset no mesmo master do
+  federado, avaliado com `unified_eval` nas **mesmas fatias de teste por cliente**, e portanto
+  diretamente comparável aos runs federados.
+- **MTnnUNet:** o mesmo modelo do federado, com só a loss de seg, só a de cls, ou as duas.
+- **1 seed (1993):** diferenças menores que o ruído entre runs (até ~0.05 no BUSI, ~0.01 nos demais;
+  E0.3.8) não são efeito.
+
+**Implementação** (`src/training_baseline.py`):
+- O pool de treino/val de um (dataset, modo) é a união das fatias `train`/`val` de todos os clientes
+  daquele dataset que possuem a(s) tarefa(s). O código recusa uma imagem que apareça em dois clientes.
+- No modo multitarefa, a função `pivot_multitask_mapping` deixa uma linha por imagem só com a
+  supervisão concedida. No ISIC, os pools de seg e cls são disjuntos, então o baseline multitarefa é
+  parcialmente supervisionado (`has_mask`/`has_label`).
+- A loss multitarefa usa os mesmos λ do federado (`aggregation.task_weights`, seg 0.8 / cls 0.2). Os
+  pesos de classe são `balanced_fold` e o critério de classificação é o de cada dataset, como nos
+  clientes.
+- O laço de treino é **centralizado e normal**: até `training.epochs` (200) épocas, com seleção do
+  melhor modelo e early stopping pela loss de validação do pool (`max_patience` 50) e o scheduler
+  configurado (plateau).
+  - **Diferente do budget fixo de 200 rodadas do federado, por desenho:** o baseline mede o que um
+    treino comum alcança.
+- Saída em `runs/baseline/<segmentation|classification|multitask>/<dataset>_<timestamp>/`:
+  - `config.yaml`, `execution.log`;
+  - `history.csv` (por época);
+  - `fold_0/best.pt`;
+  - `baseline_test_results.csv` e `baseline_cls_predictions.csv` (mesmo esquema do federado,
+    `setup=baseline`).
+- Testes: `tests/test_training_baseline.py` (composição do pool, ISIC disjunto, teste fora do pool,
+  imagem duplicada).
+- Smoke na GPU: os 12 baselines com 1 época e 16 amostras passaram (`runs/validation/baseline_smoke/`).
+
+**Tamanhos e tempo medidos:**
+- Pools medidos: SIIM 6.743 imagens de treino (~30 s/época) e ISIC cls 5.578 (~20 s/época).
+- Os demais pools foram estimados pela proporção: BUSI ~250 (~1 s/época) e TCGA/ISIC seg ~2.700
+  (~12 s/época).
+- Pior caso, sem early stopping: ~3h (seg) + ~3.5h (cls) + ~4h (multitarefa) em sequência. Com
+  early stopping deve ser bem menos.
+
+**Treino pelo usuário** (configuração = a do run de 29/09, que fixa o protocolo):
+```bash
+python -m src.training_baseline --config runs/20260929_082717_FEDERATED_MTnnUNet_Curated_BUSI-ISIC_2018-TCGA_LGG-SIIM_ACR/config.yaml --mode segmentation --dataset all
+python -m src.training_baseline --config runs/20260929_082717_FEDERATED_MTnnUNet_Curated_BUSI-ISIC_2018-TCGA_LGG-SIIM_ACR/config.yaml --mode classification --dataset all
+python -m src.training_baseline --config runs/20260929_082717_FEDERATED_MTnnUNet_Curated_BUSI-ISIC_2018-TCGA_LGG-SIIM_ACR/config.yaml --mode multitask --dataset all
+```
+- Os três comandos podem rodar em paralelo, um por terminal. Usam pouca memória de GPU, e cada um
+  roda os 4 datasets em sequência.
+- Sucesso: 4 linhas `BASELINE_OK` por comando e um `baseline_test_results.csv` em cada pasta.
+
+**Critério de pronto.**
+- 12 runs concluídos.
+- Tabela baseline × federado (`client`/`dataset`) por dataset e tarefa registrada aqui, com a faixa
+  de ruído.
+
+**Registro.**
+- 2026-10-15 — etapa criada a pedido do usuário. Implementação, testes e smoke concluídos;
+  aguardando os treinos.
 
 ---
 
