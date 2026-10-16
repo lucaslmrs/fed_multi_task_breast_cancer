@@ -28,7 +28,7 @@ Criado em 2026-10-04.
 |---|---|---|---|---|
 | E0 | Métodos adicionais de verificação de conflito de gradientes | ✅ | `feat/gradient-conflict` | 2026-10-15 |
 | B0 | Baselines não federados por dataset (seg / cls / multitask) | ✅ | `feat/baselines` | 2026-10-16 |
-| E1 | Validação do treinamento | 🟨 | `feat/training-validation` | 2026-10-08 |
+| E1 | Validação do treinamento | 🟦 | `feat/training-validation-v2` | 2026-10-16 |
 | E2 | App local de monitoramento e comparação | ⬜ | `feat/monitor-app` | — |
 | E5 | Validação das fontes (consolidação) | ⬜ | `docs/sources` | — |
 | E3 | Ablação: loss fed multitask multi-dataset | ⬜ | `exp/loss-ablation` | — |
@@ -963,93 +963,129 @@ interação entre o budget e a escolha da rodada final. **Esses achados são ent
 ponderação) e E4 (pré-processamento/resolução); a E1 não os corrige.** O objetivo da E1 é que eles
 passem a ser detectados automaticamente em todo run.
 
+#### Revisão do detalhamento após E0 e B0 (2026-10-16, aprovada pelo usuário)
+
+O detalhamento E1.1–E1.4 de 2026-10-08 é anterior à E0 e à B0, e duas coisas mudaram:
+- a D9 original lia "sem conflito" onde o certo é **"sem interação"** (E0.1), e a E0 deixou dois
+  métodos validados (M1/M2) e um controle nulo (E0.3.9) que mudam a leitura do Z;
+- a B0 revelou quatro problemas que nenhuma checagem cobria: federado abaixo do baseline, colapso de
+  predição numa classe, FP em imagem vazia e teto de épocas → **D12–D15**.
+
+**Vintages de artefatos** (determinam o que cada checagem consegue ler):
+
+| Vintage | Runs | O que existe | Consequência |
+|---|---|---|---|
+| Federado novo | `20260929_082717_*`, `20261014_211153_*`, `20261014_211215_*` | `training_history.csv` por cliente (longo), `metadata.yaml`, `aggregation_history.json` com `val_*`/`train_*` por cliente, `negative_transfer_summary.csv`; os dois de 14/10 também têm `conflict_*.csv` | todas as checagens |
+| Estudo antigo | 10 braços de `runs/studies/multi_dataset_balance_v1` (BUSI+ISIC, CV=4, 50 rodadas) | **sem `training_history.csv`**; histórico de agregação sem métricas de val por cliente; só `multitask_primary` tem `gradient_conflict`; `execution.log` tem a métrica de val por dataset/tarefa por rodada; pastas `fold_*.incomplete_*` | checagens de série por cliente → `n/a`; fallback por dataset/tarefa via `execution.log`; D12 → `n/a` (outra partição) |
+| Baseline | 12 em `runs/baseline/<modo>/<ds>_<ts>/` | `history.csv` largo por época, `baseline_test_results.csv` (com `best_epoch`), `baseline_cls_predictions.csv` | D1, D3–D7, D13–D15; D2 só no modo `classification` |
+
 #### E1.1 — Diagnóstico offline: `src/experiments/training_diagnostics.py` (novo)
 
-- **Entrada:** um diretório de run (`runs/<ts>_*`) ou de estudo (`runs/studies/<id>/`). Num estudo,
-  itera sobre os runs listados em `run_index.csv`.
-- **Leitura:**
-  - `fold_*/client_*/training_history.csv` e `metadata.yaml`;
-  - `fold_*/aggregation_history.json`;
-  - `negative_transfer_summary.csv`;
-  - `{setup}_test_results.csv`;
-  - `config.yaml`, de onde vêm número de classes, critério e modo de budget.
-- Cada série é lida uma única vez: treino via `local_step`, validação via `post_aggregation_round`
-  (federado) ou a fase equivalente no standalone.
-- O leitor é tolerante a campos ausentes. Runs antigos sem `negative_transfer` ou sem histórico por
-  step recebem status `n/a`, e não erro.
-- **Checagens.** Cada uma gera um *finding*: `check_id, severity, fold, dataset, client_id, task,
-  metric, evidence, threshold`.
+- **Entrada:** um ou mais caminhos. Diretório com `*_test_results.csv` → um run (`kind` =
+  `federated`/`standalone`/`baseline`). Diretório com `run_index.csv` → estudo (itera `run_path`,
+  anotando `arm_id`/`seed`). Outro diretório → busca runs até 3 níveis (serve para `runs/baseline`).
+  Pastas `fold_*.incomplete_*` são ignoradas.
+- **Leitura**, tolerante a artefato ausente (→ `n/a` com motivo, nunca exceção):
+  - histórico por cliente lido **uma vez**: treino = `local_step`/`local_epoch` (agregado por rodada
+    para as regras de terço; a série por step fica para picos e `grad_norm`); val =
+    `post_aggregation_round` (federado e standalone). `post_local_round` é ignorado (A8);
+  - `history.csv` do baseline convertido para o mesmo formato;
+  - fallback `execution.log` (`per-dataset/task metric {...}`) com `source=execution_log`;
+  - `metadata.yaml`, `aggregation_history.json`, `negative_transfer_summary.csv`,
+    `conflict_summary.csv`, `*_test_results.csv`, `*_cls_predictions.csv`, `config.yaml`.
+- **Finding:** `run, kind, arm_id, seed, check_id, severity (critical|high|info), fold, dataset,
+  client_id, task, metric, value, threshold, evidence, source`. Só checagens disparadas viram linha; o
+  estado de cada checagem (`ok`/`triggered`/`n/a` + motivo) vai para o `summary.json`.
 
-| id | Checagem | Regra (limiar padrão) |
-|---|---|---|
-| D1 | valores não-finitos | qualquer NaN/Inf em `value` → crítica |
-| D2 | loss no nível do acaso | último terço da loss de treino cls ≥ 0.95·ln K (CE; K = nº de classes) → crítica. Só vale para CE, pois a Focal muda a referência. |
-| D3 | estagnação | variação relativa entre o primeiro e o último terço da loss de treino > −5% → alta |
-| D4 | divergência | último terço da loss de treino > primeiro terço, ou picos de step > mediana + 10·MAD em > 1% dos steps → crítica |
-| D5 | overfitting | melhor rodada de val loss < 60% das rodadas, val loss final > 1.15 × mínima e treino ainda caindo → alta. Reporta a melhor rodada. |
-| D6 | seg colapsada | val dice_positive do último terço < 0.05 → crítica |
-| D7 | cls no piso | val balanced_accuracy do último terço ≤ 1/K + 0.05 → crítica |
-| D8 | heterogeneidade intra-dataset | (máx − mín) da métrica de teste entre clientes do mesmo dataset/tarefa > 0.15 com algum cliente em D6/D7 → alta |
-| D9 | conflito de gradiente | `overall − orthogonal_reference` > 0.05 (ou intra por dataset) → alta |
-| D10 | exposição por budget | épocas efetivas por cliente (steps × batch / `effective_train_examples`); razão máx/mín > 5 → info |
-| D11 | gradiente (quando houver E1.2) | norma de gradiente não-finita → crítica; mediana do último terço > 10 × a do primeiro → alta |
+| id | Regra (limiar padrão) | Sev. | Reencontra |
+|---|---|---|---|
+| D1 | NaN/Inf em qualquer valor do histórico | critical | A5 |
+| D2 | só CE: último terço da loss de treino cls ≥ 0.95·ln K | critical | A1 |
+| D3 | variação relativa último/primeiro terço da loss de treino > −5% | high | A1 |
+| D4 | último terço > primeiro terço, ou > 1% dos steps acima de mediana + 10·MAD | critical | — |
+| D5 | melhor val loss antes de 60% das rodadas, val final > 1.15·mín e treino ainda caindo (`info` no baseline, que seleciona o melhor checkpoint) | high | A3, A4 |
+| D6 | val `dice_positive` no último terço < 0.05 | critical | A2 |
+| D7 | val balanced acc. no último terço ≤ 1/K + 0.05 | critical | A1 |
+| D8 | (máx − mín) da métrica de teste entre clientes do mesmo dataset/tarefa > 0.15 com algum cliente em D6/D7 | high | A2 |
+| D9 | conflito/interação (abaixo) | info/high | A6, E0 |
+| D10 | épocas efetivas por cliente; razão máx/mín > 5 | info | — |
+| D11 | `grad_norm` não-finita → critical; mediana do último terço > 10× a do primeiro → high | — | (E1.2) |
+| D12 | média por dataset/tarefa < melhor baseline − ruído (BUSI 0.05, demais 0.01) | high (fed) / info (standalone) | B0 itens 1 e 3 |
+| D13 | classe mais predita c*: `frac_pred(c*) − prev(c*) ≥ 0.20` → high; `frac_pred(c*) ≥ 0.95` → critical | high/critical | ISIC NV→MEL, SIIM → pneumotórax |
+| D14 | `empty_fp_image_rate ≥ 0.5` com `n_empty ≥ 5` | high | BUSI = 1.0 |
+| D15 | baseline sem early stop e `best_epoch ≥ 0.9·epochs` → high; federado/standalone com mínimo da val loss e melhor métrica nos últimos 10% das rodadas → info | high/info | baselines seg SIIM/TCGA, multitask BUSI/TCGA |
 
-- Os limiares ficam num dicionário de constantes do módulo e podem ser sobrescritos por flags da CLI.
-  **Nada entra em `config.yaml`**, para não mexer no hash científico dos estudos.
-- **Saída** em `<run>/diagnostics/`:
-  - `findings.csv`;
-  - `summary.json`, com contagem por severidade e status `ok`/`warning`/`critical`;
-  - `summary.md`, legível.
-  - Num estudo, também `runs/studies/<id>/diagnostics/` com o consolidado por braço.
-  - O app da E2 consome `findings.csv`/`summary.json`.
-- **CLI:** `python -m src.experiments.training_diagnostics <run_dir|study_dir> [--out DIR] [--threshold D6=0.05 ...]`.
-- **Integração:** chamada não-fatal no fim de `src/training_federated.py`, no mesmo ponto onde já roda
-  o `negative_transfer`, com um `try/except` que só loga a falha. O resultado do run não muda.
+**D9 reformulada** (a fonte usada vai em `source`):
+1. `conflict_summary.csv` (M1/M2):
+   - **sem interação** (info): |cos M1 intra, mesmas tarefas| < 0.02. A leitura é "os clientes não
+     interagem pelo trunk", e não "sem conflito";
+   - **conflito de 1ª ordem** (high): cos M1 médio de uma classe de par ou par de datasets < −0.05;
+   - **interferência** (info, com ressalva): par de datasets com Z_train < 0 e Z_val < 0, ambos com
+     `média + 2·dp/√rodadas < 0` (consistência descritiva). A evidência registra que o Z com o Δ
+     inteiro superestima o efeito, e que na escala ×wᵢ ele some (E0.3.9);
+   - **overfitting** (high): `self` com Z_train ≥ 0 e Z_val < 0;
+   - **agregado prejudicial** (high): `aggregate` com Z_train < 0.
+2. Sem M1/M2: `negative_transfer` (`overall − orthogonal_reference` > 0.05 → high; |excesso| ≤ 0.02
+   → info "sem interação").
+3. Só `gradient_conflict` no histórico: cosseno médio intra-dataset, mesma regra de "sem interação".
+4. Nada → `n/a`.
 
-#### E1.2 — Guardas online de gradiente: `src/federated/local_trainer.py`
+**D12:** `--baseline-root` (padrão `runs/baseline`), baseline mais recente por (modo, dataset). Só
+compara quando `paths.partition_file(config)` resolve para o mesmo master nos dois configs; senão
+`n/a` ("fatias de teste diferentes"). Métricas: `balanced_acc` e `macro_f1` (cls), `dice_positive`
+(seg). Referência = melhor modo de baseline com a tarefa; a evidência lista todos.
 
-- Depois de `loss.backward()` e antes de `optimizer.step()`, calcular a norma L2 total dos gradientes
-  com `torch.nn.utils.get_total_norm`. A função é apenas leitura e não altera gradientes, portanto não
-  muda os números de runs saudáveis.
-  - Se a norma for não-finita → `FloatingPointError` com contexto (cliente, rodada, step), mantendo a
-    política atual de `ensure_finite`.
-  - Registrar `grad_norm` como `metric_name` adicional: por step quando `record_step_history`, e
-    média e máximo por época/rodada. A análise lida com o formato longo, e `training_curves.py`
-    filtra por nome de métrica, então a linha nova não quebra os dashboards.
-  - Expor `grad_norm_mean` e `grad_norm_max` no dicionário retornado por `train_local`.
-- Medir o custo no `scripts.benchmark_training_runtime`. Se passar de 2% do tempo de step, tornar a
-  medição desligável via `runtime.diagnostics.grad_norm` (o bloco `runtime` já é excluído do hash em
-  `study_runner.py`).
-- **Servidor** (`src/federated/server.py`, em `aggregate_fit`): verificar a finitude dos parâmetros do
-  trunk recebidos de cada cliente antes de agregar. Se um cliente devolver valor não-finito, falhar
-  com mensagem clara, em vez de propagar NaN para o trunk global.
+- Limiares: dicionário de constantes do módulo, sobrescrevível por `--threshold CHAVE=VALOR` e
+  `--noise DATASET=VALOR`. **Nada entra no hash científico.**
+- **Saída:** `<run>/diagnostics/{findings.csv, summary.json, summary.md}`; num estudo ou diretório de
+  vários runs, também `<dir>/diagnostics/` consolidado. `summary.json`: `status` (`critical`,
+  `warning` ou `ok`), contagens por severidade e estado por checagem.
+- **CLI:** `python -m src.experiments.training_diagnostics PATH [PATH ...] [--threshold ...]
+  [--noise ...] [--baseline-root ...]`. Sai com 0: o diagnóstico não é um gate.
+- **Integração não-fatal** no fim de `training_federated.run` (nos dois setups) e de
+  `training_baseline.run`, desligável em `runtime.diagnostics.training.enabled` (o bloco `runtime` já
+  é excluído do hash e da assinatura de resume).
 
-#### E1.3 — Testes: `tests/test_training_diagnostics.py` (novo) e extensão de testes existentes
+#### E1.2 — Guardas online somente leitura
 
-- Fixtures sintéticas de `training_history.csv`, uma por checagem D1–D10: um caso que dispara e um
-  saudável que não dispara.
-- Leitura de um run antigo sem `negative_transfer` → `n/a`, sem exceção.
-- `train_local` com um gradiente forçado a Inf → `FloatingPointError`.
-- `train_local` num modelo minúsculo em CPU com seed fixa: as losses e os pesos finais são
-  **idênticos** com e sem a medição de norma (garantia de não-regressão).
-- `aggregate_fit` com um cliente devolvendo NaN → erro explícito.
+- `local_trainer.train_local`, entre `backward()` e `step()`: `torch.nn.utils.get_total_norm` dos
+  gradientes; não-finita → `FloatingPointError`. Registro como `grad_norm` por step (histórico
+  detalhado), `grad_norm_mean`/`grad_norm_max` por época e por rodada (`post_local_round`), nas
+  métricas de `fit` e em `train_grad_norm_{mean,max}` no `history.csv` do baseline.
+  Ligado por `runtime.diagnostics.grad_norm.enabled` (padrão `true`); se o custo medido passar de 2%
+  do step, o padrão vira `false`.
+- `server.aggregate_fit`: `_validate_update_finite` logo após `_validate_update_shapes`; um tensor
+  não-finito → `FloatingPointError` com o cliente e o tensor, antes de agregar.
+
+#### E1.3 — Testes
+
+- `tests/test_training_diagnostics.py`: fixtures sintéticas por checagem (dispara / não dispara), run
+  antigo → `n/a`, `post_local_round` não contado duas vezes, D12 com partição diferente → `n/a`, D9 sem
+  interação vs interferência vs overfitting, estudo com `.incomplete`, override de limiar.
+- Gradiente Inf com loss finita → `FloatingPointError`; NaN devolvido por um cliente → erro no servidor.
+- **Não-regressão bit a bit em CPU** (padrão `test_probes_do_not_perturb_training`): `train_local` e
+  `client.fit` com a norma ligada e desligada → pesos e losses idênticos.
+- Padrões/validação dos campos novos de `runtime.diagnostics`.
 
 #### E1.4 — Execução e relatório
 
-1. Rodar o diagnóstico sobre o run de 29/09 e sobre os 10 braços de `runs/studies/multi_dataset_balance_v1`.
-   Os outros estudos têm só o plano, sem runs.
-2. Confirmar que D2, D6, D5 e D7 reproduzem A1–A4.
-3. Registrar os achados consolidados abaixo, em "Registro".
-4. Rodar `python -m scripts.smoke_federated --setup both --holdout --samples 2` (CPU, curto; eu
-   executo) e `python -m unittest discover -v`.
+1. `python -m unittest discover -v`; smoke CPU `python -m scripts.smoke_federated --setup both
+   --holdout --samples 2` e um baseline mínimo em CPU.
+2. Custo da norma na GPU (só se nenhum treino estiver rodando).
+3. Diagnóstico sobre os 3 runs avulsos, os 10 braços de `multi_dataset_balance_v1` e os 12 baselines.
+4. Conferir A1–A4 (E1.0), D12–D15 (B0) e a leitura de conflito da E0; registrar a tabela por run abaixo.
 
-**Treino pelo usuário:** **não é necessário na E1.** As guardas são somente leitura, então não há
-motivo para refazer runs. Os achados A1–A4 orientam os braços da E3/E4, e lá haverá o handoff de treino.
+**Treino pelo usuário:** não é necessário (guardas somente leitura; diagnóstico offline).
+
+**Fora do escopo:** memória RSS por ator Ray (pendência E0.4 (e)) — proposta para a E2/E3.
 
 **Registro.**
 - 2026-10-04 — etapa planejada (macro).
 - 2026-10-08 — branch `feat/training-validation` criada; auditoria preliminar (E1.0) feita;
   detalhamento E1.1–E1.4 escrito.
+- 2026-10-16 — detalhamento revisto após E0/B0 (D9 reformulada, D12–D15 novas, vintages de
+  artefatos) e aprovado pelo usuário; branch `feat/training-validation-v2` a partir da `main`
+  (PR #8 mesclado).
 
 ---
 
