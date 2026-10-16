@@ -22,11 +22,12 @@ from src.dataset.federated_dataloader import (
     client_tasks,
     resolve_class_weights,
 )
-from src.federated import local_trainer
+from src.federated import conflict_diagnostics, local_trainer
 from src.federated.config import (
     aggregation_config,
     dataset_config,
     local_training_config,
+    personalized_init_seed,
     training_telemetry_config,
 )
 from src.federated.model_split import (
@@ -60,6 +61,20 @@ def stable_client_seed(base_seed, fold, client_id, phase="initialization", serve
     payload = f"{int(base_seed)}|{int(fold)}|{client_id}|{phase}|{int(server_round)}"
     digest = hashlib.sha256(payload.encode("utf-8")).digest()
     return int.from_bytes(digest[:4], "big")
+
+
+def initialization_seed(base_seed, fold, client_id, dataset, policy="client"):
+    """Seed of a client's model construction, i.e. of its personalized stem/heads.
+
+    ``dataset`` keys the seed on the dataset instead of the client, so every client of a dataset
+    starts from identical personalized weights. The shared trunk is overwritten by the global one
+    either way, and the setup name stays absent so both arms remain paired.
+    """
+    if policy == "dataset":
+        return stable_client_seed(base_seed, fold, f"__dataset__:{dataset}")
+    if policy != "client":
+        raise ValueError(f"Unknown personalized_init_seed policy: {policy!r}")
+    return stable_client_seed(base_seed, fold, client_id)
 
 
 def resolve_device(requested):
@@ -126,7 +141,10 @@ class FederatedClient(NumPyClient):
         self.cuda_benchmark = bool(config["training"].get("cuda_benchmark", False))
         # Ray workers are separate processes.  Seed before constructing the model so local stems
         # and heads are exactly paired between the federated and local-only arms.
-        self.initial_seed = stable_client_seed(self.base_seed, fold, client_id)
+        self.personalized_init_seed = personalized_init_seed(config)
+        self.initial_seed = initialization_seed(
+            self.base_seed, fold, client_id, dataset, self.personalized_init_seed
+        )
         seed_everything(self.initial_seed, cuda_benchmark=self.cuda_benchmark)
 
         augmentations = self.data_cfg.get("augmentation", {})
@@ -240,6 +258,7 @@ class FederatedClient(NumPyClient):
             "channels": self.data_cfg["channels"],
             "share_stem": self.share_stem,
             "initial_seed": self.initial_seed,
+            "personalized_init_seed": self.personalized_init_seed,
             "data_order_seed": self.data_order_seed,
             "local_training_mode": self.local_training_mode,
             "local_epochs": self.local_epochs,
@@ -438,6 +457,13 @@ class FederatedClient(NumPyClient):
                 raise RuntimeError("steps mode requires a round-addressable train batch sampler")
             batch_sampler.set_round(max(server_round, 1))
 
+        if conflict_diagnostics.is_sampled_round(self.config, server_round):
+            # Observational: restores RNG and never steps the model, so training is unchanged.
+            _preserve_rng_state(lambda: conflict_diagnostics.observational(
+                lambda: conflict_diagnostics.collect_fit_probes(self, server_round),
+                f"{self.client_id} fit probes",
+            ))
+
         record_detail = (
             self.telemetry["enabled"]
             and self.telemetry["granularity"] == "epoch_and_round"
@@ -556,6 +582,12 @@ class FederatedClient(NumPyClient):
             if f"metric_{name}" in val
         })
         metrics.update({f"task_mass_{name}": float(value) for name, value in self.task_mass.items()})
+        if (conflict_diagnostics.lookahead_enabled(self.config)
+                and conflict_diagnostics.is_sampled_round(self.config, server_round)):
+            _preserve_rng_state(lambda: conflict_diagnostics.observational(
+                lambda: conflict_diagnostics.collect_lookahead(self, parameters, server_round),
+                f"{self.client_id} lookahead",
+            ))
         return float(val["loss"]), val["n"], metrics
 
 

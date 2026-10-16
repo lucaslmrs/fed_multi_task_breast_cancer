@@ -146,6 +146,35 @@ def _history_rows(tasks, task_stats, task_loss_sums, task_loss_counts,
     return rows
 
 
+def local_objective(model, data, inputs, owned, lambdas, device, num_classes, seg_criterion,
+                    cls_criterion, inversely_weighted, precision):
+    """Forward pass and the exact local objective optimised by ``train_local``.
+
+    Returns ``(loss, counted, raw_terms, logits, outputs)``. Shared with the gradient-conflict
+    probes so that they differentiate the very objective a client trains on.
+    """
+    with precision.autocast():
+        logits, outputs = model(inputs)
+        if len(owned) == 1:
+            # Historical single-task path, kept verbatim so existing arms reproduce exactly.
+            if owned[0] == "seg":
+                loss = _seg_loss(
+                    seg_criterion, precision.move(data["mask"]), outputs,
+                    inversely_weighted,
+                )
+            else:
+                label = _prep_label(precision.move(data["label"]), num_classes)
+                loss = _cls_loss(cls_criterion, label, logits)
+            counted = list(owned)
+            raw_terms = {owned[0]: loss}
+        else:
+            loss, counted, raw_terms = _combined_loss(
+                data, logits, outputs, owned, lambdas, device, num_classes,
+                seg_criterion, cls_criterion, inversely_weighted,
+            )
+    return loss, counted, raw_terms, logits, outputs
+
+
 def train_local(model, loader, optimizer, task, device, local_epochs, num_classes,
                 seg_criterion=None, cls_criterion=None, inversely_weighted=True,
                 training_mode="epochs", steps_per_round=10, tasks=None, task_lambdas=None,
@@ -193,25 +222,10 @@ def train_local(model, loader, optimizer, task, device, local_epochs, num_classe
         for data in loader:
             inputs = precision.move(data["image"])
             optimizer.zero_grad(set_to_none=True)
-            with precision.autocast():
-                logits, outputs = model(inputs)
-                if len(owned) == 1:
-                    # Historical single-task path, kept verbatim so existing arms reproduce exactly.
-                    if owned[0] == "seg":
-                        loss = _seg_loss(
-                            seg_criterion, precision.move(data["mask"]), outputs,
-                            inversely_weighted,
-                        )
-                    else:
-                        label = _prep_label(precision.move(data["label"]), num_classes)
-                        loss = _cls_loss(cls_criterion, label, logits)
-                    counted = list(owned)
-                    raw_terms = {owned[0]: loss}
-                else:
-                    loss, counted, raw_terms = _combined_loss(
-                        data, logits, outputs, owned, lambdas, device, num_classes,
-                        seg_criterion, cls_criterion, inversely_weighted,
-                    )
+            loss, counted, raw_terms, logits, outputs = local_objective(
+                model, data, inputs, owned, lambdas, device, num_classes,
+                seg_criterion, cls_criterion, inversely_weighted, precision,
+            )
             precision.ensure_finite(loss, "federated local training")
             for name in counted:
                 _update_task_stats(task_stats, data, logits, outputs, name, device, num_classes)

@@ -41,6 +41,7 @@ Never edit a discovery link: edit `.agents/skills/<name>/` and load the skill ma
 | `error-investigator` | A traceback, crash, failing test, or unexplained numeric result |
 | `grill-me` | Stress-testing a plan or design before building it |
 | `python-plotting` | Creating, reviewing, or standardizing Python charts and scientific figures |
+| `drive-sync` | Syncing the repo to Google Drive with rclone, or setting rclone up on a new machine |
 
 After adding, renaming, or removing a skill, run `python -m scripts.sync_agent_assets`. Content
 edits inside an existing canonical skill are visible immediately through both links; run

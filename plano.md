@@ -26,13 +26,18 @@ Criado em 2026-10-04.
 
 | # | Etapa | Status | Branch | Atualizado |
 |---|---|---|---|---|
-| E1 | Validação do treinamento | ⬜ | `feat/training-validation` | — |
+| E0 | Métodos adicionais de verificação de conflito de gradientes | ✅ | `feat/gradient-conflict` | 2026-10-15 |
+| B0 | Baselines não federados por dataset (seg / cls / multitask) | ✅ | `feat/baselines` | 2026-10-16 |
+| E1 | Validação do treinamento | 🟨 | `feat/training-validation` | 2026-10-08 |
 | E2 | App local de monitoramento e comparação | ⬜ | `feat/monitor-app` | — |
 | E5 | Validação das fontes (consolidação) | ⬜ | `docs/sources` | — |
 | E3 | Ablação: loss fed multitask multi-dataset | ⬜ | `exp/loss-ablation` | — |
 | E4 | Ablação: pré-processamento de imagens | ⬜ | `exp/preprocessing-ablation` | — |
 
-Ordem de execução: **E1 → E2 → E5 → E3 → E4**.
+Ordem de execução: **E0 → E1 → E2 → E5 → E3 → E4**.
+- E0 foi incluída em 2026-10-08 a pedido do usuário. A métrica atual de conflito dá ≈ 0 para todos
+  os pares de clientes, inclusive pares que deveriam estar alinhados, e é preciso saber se isso é
+  ausência real de conflito ou cegueira da métrica antes de usá-la na E1 (D9) e na E3.
 - Validar o treinamento antes de construir em cima dele.
 - O app acelera a leitura e a comparação das ablações.
 - As fontes verificadas embasam a escolha dos braços das ablações.
@@ -67,6 +72,823 @@ O treino completo é executado pelo usuário. Sempre que uma etapa precisar de u
 
 ---
 
+## E0 — Métodos adicionais de verificação de conflito de gradientes
+
+**Objetivo.** Buscar na literatura e implementar **mais dois métodos** de medir conflito de gradiente
+entre clientes/tarefas, complementares ao cosseno entre deltas que já existe. Antes disso, validar se
+a métrica atual é capaz de detectar conflito.
+
+**Situação atual.**
+- `FedPerStrategy._gradient_conflict` (`src/federated/server.py:315`): cosseno par a par entre os
+  **deltas de trunk** (trunk devolvido − trunk enviado) de cada cliente, por bloco e total. O
+  resultado é gravado em `aggregation_history.json`.
+- `cancellation_from_gram` (`src/federated/negative_transfer.py`): razão de cancelamento
+  `1 − ‖Σ wᵢΔᵢ‖ / Σ wᵢ‖Δᵢ‖`, comparada com a referência ortogonal.
+- Fonte que motivou a métrica: FedBone (arXiv 2306.17465).
+
+**Evidência que motivou a etapa** (run de 29/09; 200 rodadas; 16 clientes, isto é, 120 pares):
+
+| bloco | média cos | p5 | p95 | fração < 0 | fração < −0.1 |
+|---|---|---|---|---|---|
+| encoder2 | −0.001 | −0.033 | +0.031 | 0.53 | 0.000 |
+| encoder5 | +0.001 | −0.009 | +0.012 | 0.46 | 0.000 |
+| shared_total | +0.001 | −0.009 | +0.013 | 0.48 | 0.000 |
+
+- A distribuição é **idêntica** para pares intra-dataset e inter-dataset, inclusive entre clientes do
+  mesmo dataset, da mesma tarefa e com partição quase IID (Dirichlet α=100). Esses pares deveriam
+  ter cosseno claramente positivo.
+- Conclusão: hoje é impossível distinguir "sem conflito" de "métrica cega". O cancelamento
+  `overall ≈ orthogonal_reference` (A6 da E1) é consequência direta disso, e não uma evidência
+  independente.
+
+**Hipóteses a testar** (para a métrica atual ficar cega):
+- H1. **Adam:** o passo é normalizado por coordenada (≈ lr·sinal(m)/√v) e usa um estado de
+  otimizador por cliente. O delta vira quase "sinal + ruído" e perde a direção do gradiente.
+- H2. **Acúmulo de 10 steps:** o delta de uma rodada soma 10 passos sobre batches diferentes. É um
+  deslocamento, não um gradiente no ponto enviado.
+- H3. **Stem personalizado por cliente:** o `encoder1` não é compartilhado e cada cliente tem a sua
+  inicialização (seed por `client_id`). Assim, o espaço de entrada do trunk difere entre clientes,
+  mesmo dentro de um dataset.
+- H4. **Bug de medição:** referência `_sent_arrays` errada, ordem de tensores trocada, precisão,
+  parâmetros que não são pesos treináveis.
+- H5. **Dimensionalidade:** com ~10⁷ parâmetros, vetores quase independentes ficam quase ortogonais.
+  O cosseno global dilui um conflito localizado em poucas camadas ou canais.
+
+### Detalhamento
+
+#### E0.1 — Validação da métrica atual (controles)
+
+1. **Controle sintético** (teste unitário de `_gradient_conflict` e `cancellation_from_gram`):
+   - deltas idênticos → cos = 1;
+   - deltas opostos → cos = −1;
+   - deltas ortogonais → cos = 0;
+   - ordem de tensores e `_sent_arrays` corretos (H4).
+2. **Controle positivo real** (CPU, curto; eu executo): dois clientes **com os mesmos dados** e o
+   mesmo stem, 1 step e SGD (sem Adam). O cosseno esperado é ≈ 1. Depois, religar um fator por vez
+   (Adam → H1, 10 steps → H2, stems diferentes → H3) e medir quanto cada um derruba o cosseno.
+3. Resultado: tabela "fator → cosseno observado", que diz se a métrica atual é utilizável e em que
+   condições.
+
+#### E0.1 — Resultado (executado em 2026-10-08)
+
+**Script:** `scripts/gradient_conflict_controls.py`.
+- Reconstrói o estado de um run terminado: trunk global + stem/cabeças/Adam de cada cliente.
+- Também roda com `--at-init`, que reconstrói o estado da rodada 1.
+- Mede o cosseno com o **próprio** `FedPerStrategy._gradient_conflict`, ligando um fator por vez.
+- Cada condição é repetida sobre os batches da rodada seguinte. Isso dá o *teto intra-cliente*:
+  o quanto um cliente concorda consigo mesmo.
+- Artefatos (não versionados) em `runs/validation/gradient_conflict_controls/20260929_run_{all_clients,at_init}/`.
+
+**Controles sintéticos:** já existiam em `tests/test_model_split_server.py` e `tests/test_negative_transfer.py`
+(idênticos → 1, opostos → −1, ortogonais → 0, delta nulo → indefinido, blocos separados).
+O trunk tem 10 tensores e 4,66 M de parâmetros, **todos treináveis**: nenhum buffer entra no delta.
+
+**Média do cosseno, pares do mesmo dataset e mesmas tarefas** (`intra_same_tasks`, 20 pares):
+
+| condição | estado final (rodada 200) | inicialização (rodada 1) | teto intra-cliente (final / init) |
+|---|---|---|---|
+| `real_adam10` (o que o servidor mede) | 0.000 | 0.001 | 0.54 / 0.42 |
+| `adam1` (sem acúmulo de steps) | 0.001 | 0.001 | 0.92 / 0.26 |
+| `sgd10` (sem Adam) | 0.012 | −0.002 | 0.28 / 0.64 |
+| `grad10` (gradiente bruto no trunk enviado) | 0.013 | −0.003 | 0.29 / 0.65 |
+| `grad10_refpers` (**stem/cabeças iguais** dentro do dataset) | 0.061 | **0.619** (mediana 0.86) | 0.27 / 0.63 |
+
+Por par, na inicialização, com `grad10` → `grad10_refpers`:
+- ISIC seg × seg: 0.00 → **0.99**;
+- SIIM × SIIM: 0.00 → **0.86**;
+- TCGA: 0.00 → **0.85**;
+- BUSI: 0.00 → **0.41**;
+- ISIC cls × cls: 0.00 → 0.00. Nesse caso o gradiente de classificação no trunk inicial é dominado
+  por ruído; ver o teto.
+
+**Veredito sobre as hipóteses:**
+- **H4 (bug de medição): refutada.** A métrica reproduz o valor do servidor, e cada cliente concorda
+  consigo mesmo (0.30–0.66).
+- **H1 (Adam) e H2 (10 steps): refutadas como causa.** Com o gradiente bruto no ponto enviado, sem
+  Adam e sem acúmulo, o cosseno entre clientes continua ≈ 0.
+- **H3 (stem/cabeças personalizados): confirmada.** Clientes com os mesmos dados e as mesmas tarefas
+  produzem gradientes de trunk quase **paralelos** (0.85–0.99) quando compartilham stem e cabeças,
+  e **ortogonais** (≈ 0) com os próprios. Isso vale desde a rodada 1: os stems/cabeças são
+  inicializados com uma seed diferente por cliente (`stable_client_seed(..., client_id)` em
+  `src/federated/client.py:129`), então cada cliente entrega ao trunk uma codificação aleatória
+  diferente da mesma imagem.
+- **H5 (diluição por dimensionalidade):** não é a explicação principal, já que o mesmo trunk dá
+  0.99 com a personalização igualada. Continua relevante por bloco.
+
+**Implicações:**
+1. O cosseno entre deltas **não está cego**. Ele mede um fato do desenho atual: os 16 clientes atualizam
+   o trunk em direções mutuamente ortogonais. Portanto, "sem conflito" é uma leitura errada; a leitura
+   correta é **"sem interação"**. A média de 16 updates ortogonais apenas encolhe cada um (cancelamento
+   ≈ referência ortogonal, A6). Por construção, o FedAvg quase não combina informação entre os clientes.
+2. Isso afeta a interpretação científica de federado vs local e de `negative_transfer`. O achado deve
+   ser levado à E3 e ao artigo, com a cautela de que é **um run, uma seed, um holdout**.
+3. Possível correção de desenho, **a decidir pelo usuário; não implementar sem aprovação**: inicializar
+   stem/cabeças com seed por **dataset** em vez de por cliente, e/ou federar o stem dentro de cada
+   dataset. Isso muda a configuração científica e, portanto, exigiria um braço novo, sem invalidar
+   os runs existentes.
+4. Para os métodos novos (E0.2/E0.3): todo cosseno entre clientes deve ser lido contra o **teto
+   intra-cliente**, porque ruído de gradiente limita o cosseno observável. No estado final, alguns
+   clientes concordam consigo mesmos em apenas ≈ 0.0–0.1. Um cosseno normalizado
+   `cos_ij / sqrt(teto_i · teto_j)` é candidato natural.
+
+#### E0.1b — Run diagnóstico: seed da personalização por dataset
+
+**Pergunta.** Iniciar stem e cabeças com a mesma seed para todos os clientes de um dataset (opção 1)
+mantém o alinhamento ao longo do treino, ou os stems se afastam?
+
+**Implementação.**
+- Nova flag `federated.personalized_init_seed: client | dataset`.
+- O padrão é `client`, que reproduz bit a bit a seed histórica (teste de regressão em
+  `tests/test_model_split_server.py`).
+- Código: `initialization_seed` em `src/federated/client.py`, validação em `src/federated/config.py`;
+  a política fica registrada no `metadata.yaml` do cliente.
+- O local-only usa a mesma política, então o pareamento entre braços se mantém.
+
+**Desenho.**
+- Configuração idêntica à do run de 29/09: mesma partição congelada, 4 datasets, 16 clientes, BF16,
+  10 steps/rodada.
+- Mudanças: apenas `rounds: 30` e a flag.
+- Dois braços: `runs/validation/personalized_init_seed/{client,dataset}`.
+- Runner: `runs/validation/personalized_init_seed/run_both.sh`.
+
+**Leitura.**
+- Trajetória por rodada do cosseno intra-dataset (pares com as mesmas tarefas), que vem do
+  `aggregation_history.json`.
+- Excesso de cancelamento sobre a referência ortogonal.
+- Distância relativa entre os stems dos clientes de um dataset na rodada 30.
+- É diagnóstico: 30 rodadas não servem para comparar desempenho.
+
+**Resultado (2026-10-09; um run por braço, uma seed, um holdout; descritivo).**
+
+Cosseno médio entre clientes do mesmo dataset e com as mesmas tarefas (`shared_total`):
+
+| rodada | 1 | 2 | 3 | 5 | 10 | 15 | 20 | 25 | 30 |
+|---|---|---|---|---|---|---|---|---|---|
+| `client` | 0.000 | 0.013 | 0.032 | 0.044 | 0.018 | 0.010 | 0.011 | 0.009 | 0.010 |
+| `dataset` | **0.387** | 0.488 | 0.537 | **0.569** | 0.520 | 0.466 | 0.387 | 0.289 | **0.252** |
+
+Por dataset (rodadas 1–5 → 26–30), na política `dataset`:
+- TCGA: 0.58 → 0.53;
+- SIIM: 0.54 → 0.37;
+- ISIC seg: 0.49 → 0.20;
+- BUSI: 0.44 → 0.07.
+
+Na política `client`, todos ficam entre 0.00 e 0.06 nas duas janelas.
+
+Por bloco (rodadas 26–30, `dataset`): encoder2 0.47, encoder3 0.30, encoder4 0.18, encoder5 0.08,
+bottleneck 0.04. O alinhamento se concentra nos blocos rasos.
+
+**Os stems não se afastam.** Na rodada 30, entre clientes do mesmo dataset:
+- política `dataset`: cosseno dos pesos do `encoder1` de 0.999 a 1.000, distância relativa de 1% a 4%;
+- política `client`: cosseno ≈ 0.02, distância relativa ≈ 1.4.
+
+O decaimento do alinhamento, portanto, **não vem de deriva do stem**. A explicação mais provável é a
+queda da razão sinal/ruído do gradiente à medida que a loss cai, coerente com o teto intra-cliente
+baixo medido na rodada 200. Os blocos profundos também se especializam mais. **Não há necessidade
+demonstrada da opção 2** (ressincronizar o stem) ao menos até a rodada 30.
+
+**O que não muda:**
+- O cosseno **inter-dataset** é ≈ 0 nas duas políticas (r1–5: 0.004 / 0.007; r26–30: ≈ 0.000).
+  Datasets de modalidades diferentes têm stems diferentes por construção.
+- ISIC seg × ISIC cls (`intra_diff_tasks`) também fica ≈ 0, mesmo com stem inicial igual. As duas
+  tarefas não interagem pelo trunk, nem de forma construtiva nem destrutiva.
+
+**Cancelamento acima da referência ortogonal** (negativo significa agregação construtiva):
+- `client`: −0.014 (r1–5), +0.001 (r26–30);
+- `dataset`: **−0.146** (r1–5), −0.037 (r26–30).
+
+**Métricas de teste na rodada 30** (apenas indicativas):
+- Dice positivo, `client` → `dataset`: BUSI 0.488 → 0.538, TCGA 0.408 → 0.446, ISIC 0.703 → 0.698,
+  SIIM 0.015 → 0.014.
+- O mais visível é a **dispersão entre clientes** do mesmo dataset, que cai muito:
+  - BUSI seg: ±0.107 → ±0.036;
+  - TCGA seg: ±0.033 → ±0.003;
+  - SIIM seg: ±0.017 → ±0.002.
+- A acurácia de classificação fica praticamente igual.
+
+**Conclusão.** A opção 1 transforma o FedAvg intra-dataset de "média de vetores ortogonais" em
+agregação construtiva. O alinhamento é forte no início e decai (0.57 → 0.25 em 30 rodadas) sem que
+os stems se separem. Entre datasets não muda nada. Um braço completo (200 rodadas) com
+`personalized_init_seed: dataset` é necessário para medir o efeito em desempenho. É decisão do
+usuário e o treino é executado por ele.
+
+#### E0.2 — Busca, prototipagem e escolha de 2 métodos
+
+**O que a E0.1/E0.1b ensinou e que muda os requisitos:**
+1. O cosseno entre deltas é válido, mas só enxerga a geometria de **primeira ordem**. Ele não
+   distingue "sem conflito" de "sem interação", e não capta a **diluição** pela média (cada cliente
+   do BUSI pesa 12,5%).
+2. Nenhum controle até agora produziu cosseno **negativo**. A capacidade de detectar conflito, ou
+   seja, a sensibilidade negativa, **nunca foi testada**.
+3. O ruído de gradiente limita o valor observável. Todo método precisa ser lido contra o **teto
+   intra-cliente**.
+4. Entre datasets, a interação é ≈ 0 por construção (stems diferentes). Um método útil para a
+   pergunta "há transferência negativa?" precisa medir o **efeito na loss**, e não apenas a direção.
+
+**Critérios de escolha (pesos para a matriz de decisão):**
+
+| # | Critério | Peso |
+|---|---|---|
+| C1 | Responde à pergunta de transferência negativa, isto é, mede efeito na loss/desempenho ou é um proxy validado disso | alto |
+| C2 | Independente do otimizador e do acúmulo de steps (H1/H2) | alto |
+| C3 | Passa nos controles positivo **e** negativo (abaixo) | eliminatório |
+| C4 | Custo viável online: ≤ 20% de acréscimo no tempo da rodada, nas rodadas amostradas | médio |
+| C5 | Fonte primária verificada, com uso prévio em MTL ou FL | médio |
+| C6 | Complementar ao cosseno atual e ao outro método escolhido | médio |
+
+**Candidatos a verificar** (fórmulas, referências e venues **ainda não conferidos** nas fontes primárias):
+
+| id | Método | O que mede | Fonte a verificar | Custo previsto no nosso setup |
+|---|---|---|---|---|
+| M1 | Cosseno + **similaridade de magnitude** (GMS) do gradiente bruto no trunk recebido, sobre batches-sonda fixos | Conflito direcional no ponto enviado, sem Adam/steps. A magnitude capta o domínio de um cliente/tarefa. | Yu et al., "Gradient Surgery for Multi-Task Learning" (PCGrad), NeurIPS 2020 | k forward/backward extras por cliente nas rodadas amostradas (k = 10 ⇒ ~2× a rodada). Vetor de 4,66 M (18,6 MB) por cliente. |
+| M2 | **Afinidade lookahead**: Z(i→j) = 1 − L_j(θ + Δᵢ) / L_j(θ) | Efeito funcional do passo de i na loss de j. Inclui ordem superior; o sinal negativo é transferência negativa. | Fifty et al., "Efficiently Identifying Task Groupings in Multi-Task Learning" (TAG), NeurIPS 2021 | n² = 256 forwards em batch-sonda por rodada amostrada (só forward). Exige distribuir os 16 deltas aos clientes. |
+| M2' | **Ganho da federação** por cliente: L_j(θ_agregado) vs L_j(θ + Δⱼ) | Variante barata de M2 (n forwards): a média ajudou ou atrapalhou o cliente j em relação ao próprio passo? Capta a diluição diretamente. | Derivada de TAG; procurar precedente em FL ("client drift", "personalization gain") | n forwards por rodada; nenhum dado extra a distribuir. |
+| M3 | **Pureza de sinal** por coordenada: P = ½(1 + Σgᵢ / Σ\|gᵢ\|) | Conflito localizado em coordenadas/canais, que o cosseno global dilui. | Chen et al., "Just Pick a Sign" (GradDrop), NeurIPS 2020 | Grátis, se M1 já coleta gradientes. |
+| M4 | Similaridade **cosseno por camada com EMA** (alvo de similaridade) | Versão por camada do cosseno, com suavização temporal (reduz ruído). | Wang et al., "Gradient Vaccine" (GradVac), ICLR 2021 | Grátis sobre M1 ou sobre os deltas atuais. |
+| M5 | Métricas de conflito usadas em FL multitarefa | Para alinhar com a literatura do artigo. | FedBone (arXiv 2306.17465); FedHCA² (CVPR 2024) | A definir após a leitura. |
+| M6 | **CKA** das representações do trunk | Similaridade de representação, não de gradiente. Só faz sentido sobre as mesmas imagens, isto é, dentro de um dataset. | Kornblith et al., ICML 2019 | Forward em um conjunto de imagens comum; não serve entre datasets. |
+
+**Plano de execução:**
+
+1. **E0.2.1 — Verificação das fontes.**
+   - Ler a fonte primária (arXiv/proceedings) de cada candidato. Registrar a fórmula exata, a
+     definição de conflito/afinidade, a venue/ano, se já foi usado em FL, e as limitações declaradas.
+   - Corrigir qualquer item da tabela acima que divergir.
+   - Entregável: `docs/GRADIENT_CONFLICT_METHODS.md`, com uma seção por método e a referência em
+     BibTeX pronta para o `papers/ciarp2026/refs.bib`. Esse arquivo também alimenta a E5.
+2. **E0.2.2 — Protótipo offline.**
+   - Estender `scripts/gradient_conflict_controls.py` com os candidatos que sobreviverem à E0.2.1.
+     Prioridade: M1, M2, M2' e M3, que são computáveis a partir de estados salvos.
+   - Rodar sobre 4 estados já existentes, sem treino novo:
+     - (a) 29/09 na inicialização;
+     - (b) 29/09 no final;
+     - (c) braço `dataset` de 30 rodadas;
+     - (d) braço `client` de 30 rodadas.
+   - O estado (c) é o mais informativo, porque tem alinhamento intra-dataset real.
+3. **E0.2.3 — Controles de validação.** Todo candidato tem de passar nos três:
+   - **Positivo:** clientes do mesmo dataset com personalização igual devem ter alta
+     similaridade/afinidade. Isso já está demonstrado para o cosseno.
+   - **Negativo (novo):** um cliente sintético cujo alvo é invertido (máscara `1 − m` na seg; rótulo
+     trocado na cls) treina sobre os mesmos dados. O método **tem** de reportar conflito: cosseno < 0,
+     afinidade < 0. É o primeiro teste da sensibilidade a conflito.
+   - **Teto:** reportar a concordância intra-cliente (batches diferentes) para normalizar e para
+     saber o que é detectável.
+4. **E0.2.4 — Medir o custo de cada candidato** em tempo de GPU por rodada e em memória, extrapolado
+   para 200 rodadas com amostragem (por exemplo, 1 rodada a cada 10).
+5. **E0.2.5 — Matriz de decisão.**
+   - Tabela de candidatos × C1–C6, com os números dos controles e do custo.
+   - Recomendação provável, a confirmar com os dados: **um geométrico (M1, incluindo M3 de graça)
+     e um funcional (M2 ou M2')**. **O usuário escolhe os 2.**
+
+**Treino necessário?** **Não.** A E0.2 roda só sobre estados salvos (GPU local, minutos). O treino
+completo fica para a E0.3, depois da escolha.
+
+**Critério de pronto.**
+- Fontes verificadas e documentadas.
+- Cada candidato prototipado com resultados dos 3 controles e custo medido.
+- Matriz de decisão apresentada e escolha registrada.
+
+**Riscos.**
+- M2 exige distribuir os deltas a todos os clientes. Na simulação dá para fazer via disco, mas isso
+  precisa ser verificado na E0.3.
+- O controle negativo com alvo invertido pode ser "fácil demais". Se todos os métodos passarem,
+  acrescentar um conflito parcial: inverter apenas 25% dos alvos.
+
+#### E0.2.2–E0.2.5 — Resultado da prototipagem (2026-10-09)
+
+**Script:** `scripts/gradient_conflict_methods.py`.
+- Reaproveita os helpers de `gradient_conflict_controls.py`, `train_local`, `evaluate_local` e os
+  pesos reais de agregação de `FedPerStrategy`.
+- Cria um **adversário** para o primeiro cliente de cada grupo (dataset, tarefas): mesmas imagens e
+  mesma personalização, alvos invertidos (`1 − máscara`, `(classe + 1) mod K`).
+- Repete tudo sobre os batches de duas rodadas (a/b) para medir a estabilidade.
+- Estados analisados:
+  - **29/09 final** (seed por cliente, rodada 200);
+  - **`dataset` 30r final** (seed por dataset, rodada 30).
+- Artefatos em `runs/validation/gradient_conflict_methods/`.
+
+| | Controle negativo (adversário × gêmeo) | Pares reais | Estabilidade a/b (pares reais) | Observação |
+|---|---|---|---|---|
+| **M1** cos do gradiente | **−0.17** (normalizado −0.35) / **−0.11** (−0.19) | intra 0.013 / **0.25** | 0.16 / **0.92** | Detecta conflito. Fica ruidoso no fim do treino, quando o teto intra-cliente é baixo. |
+| **M1** magnitude Φ | 0.31 / 0.56 | ISIC seg×cls: **0.33** em 29/09 | — | Informação nova: revela o domínio de magnitude que o cosseno não vê. |
+| **M3** pureza de sinal | −0.02 / −0.06 (excesso sobre a base) | ≈ 0 | — | Sinal fraco e redundante com o M1. **Descartar.** |
+| **M2** lookahead (Δ real, val) | **−0.96** / **−0.17**, contra +0.08 / +0.02 do próprio passo | entre datasets, efeitos de ±1e-3 invisíveis ao cosseno | 0.41 / 0.32 por par | É o detector mais forte. Enxerga interação entre datasets. Ruidoso por par: exige média sobre rodadas, como o TAG faz. |
+| **M2'** ganho da federação | falha em 2/5 gêmeos em 29/09 (o ganho **sobe** com o adversário) | ISIC: +0.025 | 0.99 (inflado pelos adversários) | Na rodada 200 o próprio passo **piora** a val do ISIC (self Z = −0.026, overfitting). O "ganho" mede só a diluição de passos que fazem overfitting. **Ambíguo; não passa no C3.** |
+
+**Achados laterais (descritivos):**
+- M2 no estado `dataset` 30r, em Z ×1e-4, rep a | rep b:
+  - TCGA → BUSI: **+14.8 | +10.4** (transferência positiva);
+  - TCGA → ISIC: **−9.6 | −8.6** (negativa);
+  - SIIM → BUSI: **−5.1 | −4.7** (negativa).
+  
+  São interações entre datasets que o cosseno (≈ 0) não mostra.
+- Em 29/09, a rodada 200, quase toda a matriz Z é negativa, inclusive intra-ISIC e intra-BUSI, e o
+  self Z do ISIC é −258e-4. **Isso é overfitting, não interferência:** M2 calculado na validação
+  confunde as duas coisas.
+
+**Matriz de decisão:**
+
+| | C1 transf. negativa | C2 indep. otimizador | C3 controles | C4 custo | C5 fonte | C6 complementar | Decisão |
+|---|---|---|---|---|---|---|---|
+| M1 (cos + Φ) | proxy de 1ª ordem | ✔ | ✔ | ~+10% com 1 rodada a cada 10 | PCGrad ✔ | ✔ magnitude | **recomendado** |
+| M2 (TAG, Δ real) | ✔ funcional | parcial | ✔ (o mais forte) | estimado +15–25% com 1 rodada a cada 10 (16×16 forwards × 8 batches) | TAG ✔, adaptado | ✔ | **recomendado** |
+| M2' | ✔, mas ambíguo | parcial | ✘ (2/5) | grátis com M2 | adaptação | — | não; reportar Z(agg→j) como subproduto do M2 |
+| M3 | proxy local | ✔ | fraco | grátis | GradDrop ✔ | redundante | não |
+
+**Ajustes necessários se M1 + M2 forem escolhidos** (entram no detalhamento da E0.3):
+1. **M2 também sobre o batch de treino do alvo**, como o TAG original. O Apêndice B.4 diz que treino
+   aproxima validação para i ≠ j. Ter os dois separa interferência (treino) de overfitting (val).
+2. **Média sobre rodadas amostradas** (TAG: `Ẑ = (1/T) Σ Zᵗ`), porque a estabilidade por par numa
+   única rodada é baixa (0.3–0.4).
+3. **M1 sempre reportado com o teto intra-cliente** e o cosseno normalizado.
+4. Medir o custo real online antes do treino completo.
+
+#### E0.3 — Implementação online de M1 + M2 (escolha do usuário em 2026-10-09)
+
+**Requisito inviolável: a telemetria não pode alterar o treino.**
+- Toda coleta roda dentro de `_preserve_rng_state` (`src/federated/client.py:93`), que já existe para
+  validação observacional.
+- O modelo é restaurado ao estado anterior antes do treino local.
+- Os gradientes/updates de treino ficam bit a bit iguais com a coleta ligada ou desligada (teste em
+  CPU, E0.3.5).
+
+**E0.3.1 — Configuração (fora do hash científico).**
+- Bloco novo:
+  ```yaml
+  runtime:
+    diagnostics:
+      gradient_conflict:
+        enabled: false           # padrão: runs existentes inalterados
+        every_n_rounds: 10       # rodadas amostradas: 1, 11, 21, …, sempre incluindo a última
+        probe_batches: 10        # M1: batches do sampler da própria rodada
+        sketch_dim: 65536        # M1: CountSketch com seed fixa (ver E0.3.2)
+        lookahead:
+          enabled: true
+          val_batches: 8
+          train_batches: 8
+  ```
+- `runtime` já é removido da assinatura de resume (`training_federated._resume_config_signature`) e do
+  hash de estudo (`study_runner`).
+- Validação em `validate_runtime_config` (`src/utils/training_runtime.py`).
+- Só vale para `standalone: false`. No local-only não há trunk comum.
+
+**E0.3.2 — M1 no cliente** (`fit`, antes de `train_local`, só nas rodadas amostradas).
+- Gradiente bruto do trunk no θ recebido, sobre os `probe_batches` da rodada: reutilizar o
+  procedimento do `grad10` de `scripts/gradient_conflict_controls.py`, movido para
+  `src/federated/conflict_diagnostics.py`.
+- As duas metades dos batches dão gᴬ e gᴮ: g = média, e o **teto intra-cliente** = cos(gᴬ, gᴮ), sem
+  custo extra.
+- Persistência:
+  - O vetor exato tem 18,6 MB por cliente e rodada (~6 GB num run). Em vez disso, gravar um
+    **CountSketch** de dimensão `sketch_dim`: hash e sinal por coordenada, com seed fixa e comum a todos
+    os clientes, e soma via `index_add_`.
+  - O sketch preserva produtos internos em esperança.
+  - Arquivo: `fold_k/conflict/round_r/<client>_m1.npz` (gᴬ, gᴮ e as normas **exatas** de g, gᴬ, gᴮ,
+    para Φ e para normalizar o cosseno).
+  - Erro do sketch: validado contra o cosseno exato no teste E0.3.5, com tolerância a definir a
+    partir de 1/√k ≈ 0.004.
+- Também por bloco (encoder2…bottleneck), com um sketch por bloco, de dimensão proporcional ao bloco.
+
+**E0.3.3 — M2 no fluxo fit → aggregate → evaluate.**
+1. `fit` (rodada amostrada): o cliente grava um snapshot da sua personalização **pré-fit** em
+   `fold_k/conflict/round_r/<client>_pre.pt`. O TAG mantém fixos os parâmetros específicos da tarefa.
+2. `aggregate_fit` (servidor): grava θ_r (o trunk enviado) e os 16 Δᵢ (os updates reais da rodada) em
+   `fold_k/conflict/round_r/deltas.npz` (~300 MB, temporário). O caminho vai para os clientes via
+   `configure_evaluate` → `config["conflict_round_dir"]`.
+3. `evaluate` (cliente j, rodada amostrada): carrega o snapshot pré-fit e θ_r, e calcula Lⱼ nos
+   `val_batches` (val) e nos `train_batches` (batch do sampler da rodada, sem augmentation) para:
+   - θ_r (base);
+   - θ_r + Δᵢ, para cada cliente i (inclusive j, que dá o "self");
+   - θ_agg (subproduto M2').
+
+   Grava `fold_k/conflict/round_r/<client>_m2.csv` com colunas
+   `source, target, split ∈ {train, val}, loss, z`.
+4. Ao fim da rodada, apagar `deltas.npz` e os snapshots `_pre.pt`. Ficam só os CSVs e os sketches.
+
+**E0.3.4 — Consolidação e relatório** (`src/federated/conflict_diagnostics.py`, chamado no fim do run,
+no mesmo ponto e com a mesma política não-fatal do `negative_transfer`).
+- `conflict_m1_pairs.csv`: rodada, i, j, bloco, cos, cos normalizado `cos / √(tetoᵢ·tetoⱼ)`, Φ,
+  tetos.
+- `conflict_m2_lookahead.csv`: rodada, origem, alvo, split, Z.
+- `conflict_summary.csv`, com média ± dp **sobre as rodadas amostradas** (`Ẑ = (1/T) Σ Zᵗ`, como no
+  TAG), por par de **datasets** e por classe de par, nos splits train e val, separadamente.
+- Linha no `execution.log`.
+- O HTML fica para o app da E2, que lê os CSVs.
+- Leitura: Z(train) < 0 e Z(val) < 0 → interferência; Z(train) ≥ 0 e Z(val) < 0 → overfitting, não
+  interferência.
+
+**E0.3.5 — Testes** (`tests/test_conflict_diagnostics.py`).
+- CountSketch: o cosseno e o produto interno estimados ficam dentro da tolerância do exato em vetores
+  aleatórios correlacionados (cos ∈ {−0.5, 0, 0.5, 0.99}).
+- Fórmulas: Φ (iguais → 1), Z (passo nulo → 0; passo que dobra a loss → −1), normalização pelo teto.
+- **Não-perturbação:** `fit` de um cliente minúsculo em CPU com a coleta ligada e desligada →
+  parâmetros finais e histórico idênticos.
+- Rodada não amostrada: nenhum arquivo é escrito.
+- Leitura tolerante de runs sem a pasta `conflict/` → `n/a`.
+- Smoke: `python -m scripts.smoke_federated --setup federated --holdout --samples 2` com a
+  coleta ligada (eu executo).
+
+**E0.3.6 — Custo real.** Rodar 3 rodadas do run de 29/09 na GPU com `every_n_rounds: 1` e medir o
+acréscimo por rodada (`runtime_events.csv`). Se o custo extrapolado para 200 rodadas passar de 25%,
+reduzir `val_batches`/`train_batches` ou aumentar `every_n_rounds`.
+
+**E0.3 — Resultado da implementação (2026-10-09).**
+- Código:
+  - módulo novo `src/federated/conflict_diagnostics.py`;
+  - ganchos em `client.fit/evaluate`, `FedPerStrategy.aggregate_fit/aggregate_evaluate` e
+    `training_federated`;
+  - padrões e validação em `src/utils/training_runtime.py`;
+  - `local_objective` extraído de `train_local` sem mudança numérica.
+- Toda falha da coleta é registrada no log (`observational`) e nunca interrompe o treino. Com menos de
+  2 batches-sonda, o M1 é pulado com aviso.
+- Testes: `tests/test_conflict_diagnostics.py`, 14 testes. Suíte completa: 158 OK.
+- Smoke: `python -m scripts.smoke_federated --setup federated --holdout --samples 4 --conflict-diagnostics`
+  → `SMOKE_OK`, M1 e M2 nas 2 rodadas, transitórios removidos.
+- **Não-perturbação em escala real** (GPU, configuração de 29/09, 3 rodadas, coleta em todas as
+  rodadas vs desligada): as métricas de teste são idênticas em todos os 8 pares dataset/tarefa. A única
+  diferença é o SIIM seg, 0.0192 vs 0.0191, na 4ª casa, que é não-determinismo do cuDNN/BF16.
+- **Custo medido** (`runs/validation/conflict_cost/`):
+  - por rodada amostrada, o M1 acrescenta ~2 s ao `fit` (27 → 29 s) e o M2 ~64 s ao `evaluate`
+    (9 → 73 s, com 8+8 batches);
+  - com 1 rodada a cada 10, isso dá ~+27% num run de 200 rodadas, acima do limite de 25%;
+  - **ajuste:** `val_batches` e `train_batches` de 8 para 4. O custo do M2 escala linearmente com os
+    batches, então a estimativa é de ~+14%;
+  - a variabilidade de Z vem sobretudo de Δ, e não dos batches de avaliação (E0.2), por isso a
+    redução custa pouca precisão.
+
+**E0.4 — Resultado dos treinos completos (executados pelo usuário em 2026-10-14, em paralelo).**
+
+Runs:
+- `runs/20261014_211153_…` (`personalized_init_seed: client`);
+- `runs/20261014_211215_…` (`dataset`).
+
+Ambos com 200 rodadas, 21 rodadas amostradas e 0 falhas da coleta. Scripts de análise em
+`runs/validation/gradient_conflict_full/`. Um run por braço, uma seed, um holdout: **descritivo**.
+
+1. **Piso de ruído entre execuções.** O run `client` difere do de 29/09 em até ~0.02 nas métricas
+   finais (BUSI cls 0.613 vs 0.590; ISIC cls 0.255 vs 0.274).
+   - A divergência começa **no 1º step da rodada 1**, antes de qualquer atualização (ISIC seg: loss
+     1.38250065 vs 1.38249981), e cresce suavemente, sem saltos nas rodadas amostradas.
+   - Isso é não-determinismo do BF16/cuDNN (`cuda_benchmark: true`), e não perturbação pela coleta.
+   - **Consequência: diferenças de ~±0.02 entre dois runs quaisquer estão dentro do ruído.**
+2. **M1 (cosseno do gradiente bruto), média sobre as rodadas amostradas:**
+
+   | classe de par | `client` | `dataset` |
+   |---|---|---|
+   | intra-dataset, mesmas tarefas | 0.003 (normalizado 0.002) | **0.157 (normalizado 0.55)** |
+   | intra-dataset, tarefas diferentes (ISIC seg×cls) | 0.003 | 0.008 |
+   | inter-dataset | −0.001 | −0.001 |
+
+   - Com seed por dataset, o alinhamento intra-dataset vai de 0.54 (rodada 1) a ~0.05–0.15 na segunda
+     metade do treino e ≈ 0 na rodada 200. O teto intra-cliente fica entre 0.3 e 0.5.
+   - **Entre datasets e entre seg×cls do ISIC, não há conflito de 1ª ordem em nenhuma das duas
+     políticas.**
+   - Similaridade de magnitude inter ≈ 0.41: as normas dos gradientes diferem ~4× entre datasets.
+3. **M2 (lookahead com o update real):**
+   - O Z entre clientes é **negativo** no split de treino em 70–100% das rodadas, inclusive intra-dataset
+     na política `dataset`, onde o M1 é positivo.
+   - Como o M1 inter ≈ 0, o termo de 1ª ordem é nulo. O Z < 0 vem do **termo de 2ª ordem
+     (curvatura)** de aplicar o passo **inteiro** de outro cliente: L(θ+Δ) ≈ L + g·Δ + ½ΔᵀHΔ. O
+     "tragic triad" do PCGrad inclui justamente a curvatura.
+   - **Sem uma referência nula (passo aleatório com a mesma norma), Z < 0 não pode ser lido como
+     transferência negativa.**
+   - O **update agregado** que o servidor aplica de fato tem **Z > 0 no treino para os 4 datasets nos
+     dois runs**: BUSI +14/+17, TCGA +12/+16, ISIC +4/+8, SIIM +0.5/+0.8 (×1e-4). A média encolhe
+     cada passo, e a curvatura cai com o quadrado do peso.
+   - Na validação, o próprio passo **piora** BUSI, ISIC e TCGA (overfitting no fim do treino), enquanto
+     o agregado continua ≥ 0, exceto TCGA na política `dataset`.
+4. **Métricas de teste, `dataset` vs `client`:**
+   - acima do piso de ruído: ISIC cls 0.255 → 0.386, TCGA cls 0.885 → 0.923, TCGA seg 0.604 → 0.641;
+   - **SIIM seg colapsa: 0.066 → 0.000**;
+   - BUSI dentro do ruído.
+
+**Conclusão da E0 (o que os dados sustentam):**
+- Os dois métodos concordam que **não há conflito de 1ª ordem entre datasets**. As atualizações entre
+  datasets não interagem nem de forma construtiva nem destrutiva.
+- O dano aparente nos pares (M2 < 0) é efeito de curvatura de passos inteiros e não acontece no update
+  realmente aplicado, que ajuda todos os datasets no treino.
+- **Isso não prova ausência de transferência negativa no desempenho.** Para isso falta o par
+  federado × local-only com a configuração atual.
+
+**Pendências abertas pela E0.4** (propostas; decisão do usuário):
+- (a) Referência nula no M2: avaliar Lⱼ(θ + r) com r aleatório de norma igual à mediana de ‖Δ‖, que
+  custa +2 avaliações por cliente. Sem isso, o Z pareado não é interpretável.
+- (b) Runs local-only pareados com os dois runs acima, para a pergunta de desempenho.
+- (c) Investigar o colapso da seg do SIIM com seed por dataset; liga-se a A1/A2 da E1.
+- (d) Repetir com `cuda_benchmark: false` ou com mais seeds para medir o piso de ruído de forma
+  controlada.
+- (e) Memória: os atores Ray chegaram a 2.3–3.3 GB de RSS + ~0.8 GB de swap cada. Registrar a memória
+  por processo na E1.
+
+**E0.3.7 — Handoff de treino (usuário).** As configurações estão prontas em
+`runs/validation/gradient_conflict_full/{client,dataset}.yaml`. Diferença em relação ao run de 29/09:
+apenas `federated.personalized_init_seed` e o bloco `runtime.diagnostics.gradient_conflict` (ligado,
+a cada 10 rodadas, 10 batches-sonda, sketch de 65536, lookahead com 4+4 batches). Proposta original:
+- (a) o run de 29/09 com a coleta ligada e `personalized_init_seed: client`;
+- (b) o mesmo com `personalized_init_seed: dataset`.
+
+Ambos com 200 rodadas. O (a) também serve de verificação de não-perturbação em escala real: as
+métricas finais devem bater com as de 29/09, a menos do não-determinismo do cuDNN.
+
+**Treino necessário?** Sim. As métricas novas são coletadas durante o treino e não podem ser
+recalculadas a partir dos artefatos existentes, porque nenhum artefato guarda o trunk pós-fit por
+rodada. O handoff virá na E0.3: provavelmente uma re-execução da configuração de 29/09 com a
+telemetria nova ligada, que é só diagnóstica e não muda o resultado.
+
+**E0.3.8 — Resultado dos treinos completos (2026-10-14).**
+
+Runs:
+- `runs/20261014_211153_*`: `personalized_init_seed: client`;
+- `runs/20261014_211215_*`: `personalized_init_seed: dataset`.
+
+Os dois rodaram em paralelo, levaram ~2h14 cada, não registraram nenhum aviso da coleta e geraram os
+3 CSVs de conflito. **Uma seed, um holdout: tudo é descritivo.**
+
+1. **Ruído entre runs (GPU).**
+   - O run `client` não reproduz 29/09 bit a bit. As trajetórias divergem **desde o 1º step**
+     (|Δloss| de 1e-5 a 3e-4), e dois runs **sem** coleta (29/09 vs `conflict_cost/off`) divergem
+     com a mesma magnitude. A causa é `cuda_benchmark` + BF16, e não a telemetria; a
+     não-perturbação está provada bit a bit em CPU.
+   - Diferença de teste 29/09 → `client` depois de 200 rodadas:
+     - BUSI: balanced acc 0.551 → 0.603, Dice positivo 0.631 → 0.650;
+     - ISIC: balanced acc 0.352 → 0.351;
+     - TCGA: balanced acc 0.854 → 0.858, Dice 0.594 → 0.604.
+   - **Ruído de referência por run: até ~0.05 no BUSI (dataset pequeno) e ~0.01 nos demais.**
+     Nenhuma comparação de run único deve tratar diferenças dessa ordem como efeito.
+
+2. **M1 (cosseno do gradiente bruto).**
+   - `client`: intra-dataset ≈ 0 nas 21 rodadas amostradas (−0.009 a +0.014). Confirma a
+     ortogonalidade estrutural ao longo de todo o treino.
+   - `dataset`: intra-dataset em 0.54 na rodada 1, depois 0.43 (r11), 0.25 (r31), ~0.05–0.17 a
+     partir de r91. Por dataset (média do run): TCGA 0.28, SIIM 0.19, ISIC 0.14, BUSI 0.09. No
+     final, concentrado em encoder2/3 (0.08–0.10) contra bottleneck 0.01.
+   - Entre datasets: ≈ 0 nas duas políticas, em todas as rodadas.
+   - O cosseno normalizado pelo teto é instável (> 1 em algumas rodadas). Com 5 batches por metade,
+     o teto é ruidoso: usar só como indicação.
+   - **Magnitude Φ:** intra-dataset 0.89–0.94; ISIC seg×cls 0.57–0.61; **entre datasets
+     0.40–0.43**. As normas de gradiente diferem muito entre datasets, então alguns datasets
+     dominam a direção do trunk. Isso é informação que o cosseno não dá.
+
+3. **M2 (lookahead com o update real), em Z × 1e-4, médias sobre 21 rodadas:**
+
+   | classe de par | `client` train / val | `dataset` train / val |
+   |---|---|---|
+   | self | +7.9 / −11.1 | +11.2 / −32.9 |
+   | aggregate | +5.4 / +2.4 | +8.3 / +3.4 |
+   | intra, mesmas tarefas | −10.3 / −4.1 | −36.3 / −23.0 |
+   | intra, tarefas diferentes (ISIC seg×cls) | −15.0 / −7.0 | −25.2 / −14.1 |
+   | entre datasets | −7.6 / −2.8 | −7.5 / −1.5 |
+
+   - Entre datasets, o efeito é **negativo e consistente** no split de treino (80–100% das rodadas
+     com média < 0 na maioria dos pares) e **cresce no fim do treino** (r ≤ 61: −3.2; r ≥ 141:
+     −12.4).
+   - O alvo mais afetado é o **BUSI**: ISIC → BUSI −33 / −13 (95% das rodadas negativas), TCGA →
+     BUSI −22 / −6. O SIIM quase não reage (|Z| < 0.5), porque a loss dele quase não se move.
+   - **Self no fim:** train ≈ 0, val −52 a −67, ou seja, overfitting nas duas políticas (coerente
+     com A3/A4).
+   - **Aggregate > 0 nas duas políticas**: a média federada reduz a loss, e mais com a seed por
+     dataset.
+   - **⚠ Limitação que impede afirmar transferência negativa:** Z aplica o Δᵢ **inteiro** de outro
+     cliente. Perto de um mínimo, *qualquer* passo dessa norma que não esteja alinhado aumenta a
+     loss pela curvatura (½ ΔᵀHΔ > 0). O Z negativo entre datasets pode ser só curvatura, e não
+     conflito. Falta um **controle nulo**: a mesma conta com uma direção aleatória de mesma norma
+     (e/ou com Δᵢ escalado pelo peso real de agregação wᵢ, já que o custo de curvatura escala com
+     wᵢ² e o efeito de 1ª ordem com wᵢ).
+
+4. **Desempenho: `dataset` vs `client` (diferenças maiores que o ruído do item 1 em negrito):**
+   - TCGA: balanced acc **0.858 → 0.907**, Dice positivo **0.604 → 0.641**, AUC 0.931 → 0.956.
+   - ISIC cls: balanced acc 0.351 → 0.390, **macro-F1 0.214 → 0.271**, AUC 0.756 → 0.785.
+   - BUSI: balanced acc 0.603 → 0.661, que está dentro do ruído do BUSI. A dispersão entre os 2
+     clientes cai (Dice mín/máx 0.553/0.747 → 0.588/0.707).
+   - **SIIM seg colapsa para 0.000 nos 4 clientes** (contra 0.066 no `client`). O Dice de validação
+     cai a 0 a partir de r100 e não volta, enquanto no `client` ele sobe no fim (0.012 → 0.079).
+     SIIM cls: macro-F1 0.494 → 0.462.
+
+**Conclusão da E0** (formulação para relatório; uma seed):
+- A métrica de cosseno é válida. Com stems inicializados por cliente, ela mostra **ausência de
+  interação** entre clientes ao longo de todo o treino.
+- A seed por dataset cria alinhamento intra-dataset real, que decai com o treino mas não some, e
+  está associada a ganhos acima do ruído em TCGA e ISIC cls. Também está associada ao colapso
+  completo da segmentação do SIIM.
+- Entre datasets, o cosseno é ≈ 0, mas o lookahead é sistematicamente negativo, sobretudo sobre o
+  BUSI. Isso é **compatível com transferência negativa**, mas **ainda não a demonstra**: falta o
+  controle nulo de curvatura (item 3).
+
+**E0.3.9 — Controle nulo do M2 (2026-10-15).**
+
+`scripts/gradient_conflict_methods.py --null-control`, offline, sobre o estado final (r200) dos dois
+treinos completos. Para cada par (i → j), Z foi calculado com quatro passos:
+- o Δᵢ real;
+- uma direção **aleatória com a mesma norma por tensor**;
+- Δᵢ × wᵢ, com o peso real de agregação;
+- a direção aleatória × wᵢ.
+
+Saída: `runs/validation/gradient_conflict_methods/20261015_*/m2_null_control.csv`.
+
+| Z × 1e-4 (train / val) | Δ real | aleatório, mesma norma | Δ × wᵢ | aleatório × wᵢ |
+|---|---|---|---|---|
+| **entre datasets**, `client` | **−16.1 / −4.4** | +0.6 / +1.9 | +0.4 / +1.4 | +0.7 / +1.9 |
+| **entre datasets**, `dataset` | **−22.1 / −6.7** | +0.3 / −0.6 | −0.2 / −0.2 | +0.1 / −0.2 |
+| intra, mesmas tarefas, `dataset` | −149.0 / −40.0 | +0.2 / −0.4 | +0.2 / +2.3 | +0.1 / −1.0 |
+| self, `client` | +467 / −182 | +1.0 / −0.3 | **+60 / +8** | +1.3 / +1.0 |
+| self, `dataset` | +493 / −58 | −0.5 / +0.1 | **+50 / +0.4** | +0.7 / +0.9 |
+
+**Leitura:**
+1. **A curvatura genérica não explica o Z negativo.** Uma direção aleatória de mesma norma quase
+   não muda a loss (|Z| < 2e-4). O update real de outro dataset é bem pior que o aleatório (−16 a
+   −22 no train): ele aponta para direções de **alta curvatura da loss do alvo**. Isso é
+   interferência real, embora o cosseno de 1ª ordem seja ≈ 0. É coerente com o "tragic triad" do
+   PCGrad: o conflito aqui é de curvatura, e não de direção.
+2. **Na escala em que a agregação realmente aplica o update (× wᵢ), a interferência entre datasets
+   some:** −0.2 a +0.4e-4, indistinguível do aleatório escalado. O custo de curvatura escala com wᵢ²
+   e os pesos são pequenos (6–12% por cliente), por isso ele fica desprezível.
+3. **O efeito dominante da federação é a diluição do próprio passo.** O self cai de +467/+493 com o
+   Δ inteiro para +50/+60 com Δ × wⱼ, ou seja, cerca de 10× menos progresso por rodada no próprio
+   objetivo. Os outros clientes não compensam (intra/inter × wᵢ ≈ 0).
+4. Entre clientes do mesmo dataset na política `dataset`, o Δ inteiro de um irmão é muito prejudicial
+   (−149), mas também é desprezível na escala real (+0.2).
+
+**Conclusão sobre transferência negativa** (estado final, uma seed, um holdout):
+> Não há transferência negativa entre datasets **na escala aplicada pela agregação**. Os updates
+> de outros datasets interferem por curvatura quando aplicados inteiros, mas os pesos hierárquicos
+> os reduzem a um efeito desprezível. O custo mensurável da federação é a **diluição** do passo de
+> cada cliente (~10×), e não o conflito entre datasets.
+
+Ressalvas: só foi medido o estado final, e o M2 online mostrou o efeito entre datasets crescendo
+ao longo do treino (com Δ inteiro). O M2 online não registra a versão escalada; incluir Δ × wᵢ na
+coleta online é uma melhoria simples para a E3.
+
+**Pendências antes de fechar a E0:**
+- ~~(a) Controle nulo do M2~~ → **feito na E0.3.9.**
+- ~~(b) Investigar o colapso do SIIM seg~~ → **movido para a E3/E4** (decisão do usuário em
+  2026-10-15).
+- ~~(c) Replicar com mais seeds~~ → **movido para a E3/E4** (decisão do usuário em 2026-10-15).
+
+**Critério de pronto.**
+- A métrica atual foi validada ou refutada com controles.
+- Os 2 métodos novos estão implementados, testados e rodados num treino completo.
+- Os conflitos medidos foram interpretados.
+- D9 da E1 usa os métodos validados.
+
+**Registro.**
+- 2026-10-08 — etapa criada a pedido do usuário, após a constatação de cosseno ≈ 0 em todos os pares.
+- 2026-10-08 — E0.1 concluída: a métrica é válida, e a ortogonalidade vem dos stems/cabeças
+  inicializados por cliente (H3). Próximo passo: decisão do usuário sobre o desenho e, depois, E0.2.
+- 2026-10-14 — Treinos completos analisados (E0.4).
+  - Não há conflito de 1ª ordem entre datasets.
+  - O M2 pareado precisa de uma referência nula.
+  - O piso de ruído entre execuções é de ~±0.02.
+  - Pendências (a)–(e) aguardam decisão.
+- 2026-10-15 — Controle nulo do M2 (E0.3.9). O Z entre datasets é interferência de curvatura com o
+  Δ inteiro, e desprezível na escala real da agregação; o custo dominante é a diluição (~10×).
+  (b) e (c) foram para a E3/E4. **E0 concluída**, faltando apenas o PR.
+- 2026-10-14 — Treinos completos concluídos e analisados (E0.3.8).
+  - O ruído GPU entre runs (até ~0.05 no BUSI) foi quantificado.
+  - A seed por dataset cria alinhamento intra-dataset, ganha em TCGA/ISIC cls e colapsa o SIIM seg.
+  - O M2 entre datasets é negativo, mas falta o controle nulo de curvatura para concluir.
+- 2026-10-09 — E0.3 implementada e testada.
+  - Não-perturbação confirmada na GPU.
+  - Custo ajustado para ~+14%.
+  - **Aguardando os 2 treinos completos do usuário (E0.3.7).**
+- 2026-10-09 — E0.2 concluída.
+  - Protótipo e controle adversário executados.
+  - **O usuário escolheu M1 (cosseno + magnitude do gradiente bruto) e M2 (lookahead TAG com o
+    update real, em train e val, com média sobre rodadas).**
+  - E0.3 detalhada.
+- 2026-10-09 — E0.2.1 concluída: fontes verificadas em `docs/GRADIENT_CONFLICT_METHODS.md`.
+  - Correções: título do TAG ("for"); venues de GradVac, FedFomo e FedHCA² não confirmadas no texto
+    primário; FedBone é preprint.
+  - M2' ganhou precedente (FedFomo, Eq. 3).
+  - O FedHCA² usa deltas de rodada, como a nossa métrica atual.
+  - TAG com η pequeno reduz-se a um produto interno, por isso usar o delta real.
+- 2026-10-09 — E0.1b concluída: com `personalized_init_seed: dataset`, o cosseno intra-dataset
+  começa em 0.39, chega a 0.57 e cai para 0.25 na rodada 30. Os stems permanecem idênticos
+  (cos ≥ 0.999), e o cosseno inter-dataset continua ≈ 0.
+
+---
+
+## B0 — Baselines não federados por dataset
+
+**Objetivo** (pedido do usuário em 2026-10-15, antes de continuar). Ter uma referência de quanto um
+treinamento normal, **não federado**, alcança em cada dataset, separadamente para segmentação,
+classificação e multitarefa.
+
+**Decisões do usuário:**
+- **Partição congelada:** treino com a união dos clientes de cada dataset no mesmo master do
+  federado, avaliado com `unified_eval` nas **mesmas fatias de teste por cliente**, e portanto
+  diretamente comparável aos runs federados.
+- **MTnnUNet:** o mesmo modelo do federado, com só a loss de seg, só a de cls, ou as duas.
+- **1 seed (1993):** diferenças menores que o ruído entre runs (até ~0.05 no BUSI, ~0.01 nos demais;
+  E0.3.8) não são efeito.
+
+**Implementação** (`src/training_baseline.py`):
+- O pool de treino/val de um (dataset, modo) é a união das fatias `train`/`val` de todos os clientes
+  daquele dataset que possuem a(s) tarefa(s). O código recusa uma imagem que apareça em dois clientes.
+- No modo multitarefa, a função `pivot_multitask_mapping` deixa uma linha por imagem só com a
+  supervisão concedida. No ISIC, os pools de seg e cls são disjuntos, então o baseline multitarefa é
+  parcialmente supervisionado (`has_mask`/`has_label`).
+- A loss multitarefa usa os mesmos λ do federado (`aggregation.task_weights`, seg 0.8 / cls 0.2). Os
+  pesos de classe são `balanced_fold` e o critério de classificação é o de cada dataset, como nos
+  clientes.
+- O laço de treino é **centralizado e normal**: até `training.epochs` (200) épocas, com seleção do
+  melhor modelo e early stopping pela loss de validação do pool (`max_patience` 50) e o scheduler
+  configurado (plateau).
+  - **Diferente do budget fixo de 200 rodadas do federado, por desenho:** o baseline mede o que um
+    treino comum alcança.
+- Saída em `runs/baseline/<segmentation|classification|multitask>/<dataset>_<timestamp>/`:
+  - `config.yaml`, `execution.log`;
+  - `history.csv` (por época);
+  - `fold_0/best.pt`;
+  - `baseline_test_results.csv` e `baseline_cls_predictions.csv` (mesmo esquema do federado,
+    `setup=baseline`).
+- Testes: `tests/test_training_baseline.py` (composição do pool, ISIC disjunto, teste fora do pool,
+  imagem duplicada).
+- Smoke na GPU: os 12 baselines com 1 época e 16 amostras passaram (`runs/validation/baseline_smoke/`).
+
+**Tamanhos e tempo medidos:**
+- Pools medidos: SIIM 6.743 imagens de treino (~30 s/época) e ISIC cls 5.578 (~20 s/época).
+- Os demais pools foram estimados pela proporção: BUSI ~250 (~1 s/época) e TCGA/ISIC seg ~2.700
+  (~12 s/época).
+- Pior caso, sem early stopping: ~3h (seg) + ~3.5h (cls) + ~4h (multitarefa) em sequência. Com
+  early stopping deve ser bem menos.
+
+**Treino pelo usuário** (configuração = a do run de 29/09, que fixa o protocolo):
+```bash
+python -m src.training_baseline --config runs/20260929_082717_FEDERATED_MTnnUNet_Curated_BUSI-ISIC_2018-TCGA_LGG-SIIM_ACR/config.yaml --mode segmentation --dataset all
+python -m src.training_baseline --config runs/20260929_082717_FEDERATED_MTnnUNet_Curated_BUSI-ISIC_2018-TCGA_LGG-SIIM_ACR/config.yaml --mode classification --dataset all
+python -m src.training_baseline --config runs/20260929_082717_FEDERATED_MTnnUNet_Curated_BUSI-ISIC_2018-TCGA_LGG-SIIM_ACR/config.yaml --mode multitask --dataset all
+```
+- Os três comandos podem rodar em paralelo, um por terminal. Usam pouca memória de GPU, e cada um
+  roda os 4 datasets em sequência.
+- Sucesso: 4 linhas `BASELINE_OK` por comando e um `baseline_test_results.csv` em cada pasta.
+
+**Critério de pronto.**
+- 12 runs concluídos.
+- Tabela baseline × federado (`client`/`dataset`) por dataset e tarefa registrada aqui, com a faixa
+  de ruído.
+
+**Resultado (2026-10-16).**
+- Os 12 runs foram concluídos.
+- Relatório: `runs/baseline/report.html`, com tabela, gráfico, matrizes de confusão de cls e de
+  pixel, e curvas. Gerador: `scripts/baseline_report.py`; recriar com
+  `bash runs/baseline/build_report.sh`.
+- Uma seed, um holdout. "Ruído" = |29/09 − federado seed/cliente|, que são dois runs com a mesma
+  configuração.
+
+| dataset | métrica | base seg | base cls | base multitask | fed seed/cliente | fed seed/dataset | ruído |
+|---|---|---|---|---|---|---|---|
+| BUSI | balanced acc | — | 0.473 | 0.505 | 0.603 | **0.661** | ±0.052 |
+| ISIC | balanced acc | — | 0.481 | **0.549** | 0.351 | 0.390 | ±0.001 |
+| SIIM | balanced acc | — | **0.772** | 0.763 | 0.590 | 0.583 | ±0.002 |
+| TCGA | balanced acc | — | 0.887 | **0.923** | 0.858 | 0.907 | ±0.004 |
+| BUSI | Dice positivo | **0.683** | — | 0.678 | 0.650 | 0.648 | ±0.020 |
+| ISIC | Dice positivo | **0.880** | — | 0.876 | 0.842 | 0.846 | ±0.001 |
+| SIIM | Dice positivo | 0.005 | — | 0.000 | **0.066** | 0.000 | ±0.002 |
+| TCGA | Dice positivo | **0.733** | — | 0.709 | 0.604 | 0.641 | ±0.009 |
+
+**Leitura:**
+1. **Classificação: o federado fica bem abaixo do baseline em ISIC e SIIM.**
+   - ISIC: 0.35–0.39 vs 0.48–0.55.
+   - SIIM: 0.59 vs 0.77.
+   - As matrizes mostram o porquê:
+     - No ISIC, o federado desloca as predições para **MEL**: 50% dos NV são preditos como MEL no
+       `seed/cliente`, enquanto o baseline acerta 63–68% dos NV.
+     - No SIIM, o federado marca a maioria dos negativos como pneumotórax (recall de
+       `no_pneumothorax` 0.38–0.46, contra 0.70–0.74 no baseline).
+   - Em ambos, o federado erra **muito mais** que o baseline treinado com os mesmos dados.
+2. **BUSI é a exceção.** O federado supera o baseline (0.60–0.66 vs 0.47–0.51), acima do ruído do
+   BUSI (±0.05). As curvas mostram o baseline de cls do BUSI com validação muito ruidosa (dataset
+   pequeno, ~250 imagens): o early stopping escolhe um checkpoint instável.
+3. **Segmentação: o baseline é melhor ou igual.** ISIC +0.04 e TCGA +0.09/+0.13, acima do ruído;
+   BUSI +0.03, no limite do ruído.
+4. **SIIM seg não é aprendida por nenhum setup**, nem pelo baseline centralizado (Dice positivo
+   0.005; a matriz de pixel mostra 99.6–100% dos pixels de lesão preditos como fundo; a loss de
+   validação estaciona em 0.25 depois de ~50 épocas). **O colapso do SIIM não é causado pela
+   federação nem pela seed por dataset:** a tarefa, com esta resolução (128 px) e esta loss, não é
+   aprendida. Isso reforça a entrada da E4 (resolução) e da E3 (loss) para o SIIM.
+5. **Multitarefa vs tarefa única (baseline):**
+   - melhora a classificação: ISIC +0.07, TCGA +0.04, BUSI +0.03 (dentro do ruído do BUSI);
+   - mantém ou piora levemente a segmentação: TCGA −0.02, demais ≈ iguais.
+6. **FP em imagem vazia (BUSI) = 1.0 em todos os setups.** Toda imagem `normal` de teste recebe
+   algum pixel predito como lesão. Isso é comum a todos os setups e deve ser investigado na E1
+   (limiar ou pós-processamento estão fora do protocolo atual).
+
+**Ressalvas:**
+- O orçamento é diferente por desenho: os baselines usam early stopping pela validação e o federado
+  usa 200 rodadas fixas, com avaliação na última. Parte da vantagem do baseline na classificação
+  pode vir da seleção do checkpoint, já que o federado faz overfitting no fim (E0.3.8, self Z val
+  < 0).
+- **Teto de épocas:** seg SIIM (melhor época 199), seg TCGA (190), multitask BUSI (167) e multitask
+  TCGA (177) pararam nas 200 épocas ainda melhorando. Esses baselines podem estar
+  **subestimados**.
+
+**Registro.**
+- 2026-10-16 — 12 baselines concluídos; relatório gerado; resultados acima.
+- 2026-10-15 — etapa criada a pedido do usuário. Implementação, testes e smoke concluídos;
+  aguardando os treinos.
+
+---
+
 ## E1 — Validação do treinamento
 
 **Objetivo.** Verificar se há problemas durante o treinamento (numéricos, de convergência, de
@@ -76,13 +898,19 @@ próximos treinos.
 **Situação atual.**
 - Checagens de config/contrato em `src/federated/local_trainer.py`, `client.py`, `server.py` e
   `src/training_federated.py`.
+- **Já existe guarda de loss não-finita:** `PrecisionPolicy.ensure_finite`
+  (`src/utils/training_runtime.py:65`) levanta `FloatingPointError` no treino e na validação locais.
 - NaN-mean na agregação. `server.py` já marca NaN quando o delta de um cliente é zero.
 - Artefatos disponíveis para auditoria:
   - `fold_*/client_*/training_history.csv`: formato longo, um registro por step.
   - `fold_*/aggregation_history.json`: cosseno entre deltas e `negative_transfer`.
   - `gpu_telemetry.csv`, `runtime_events.csv`, `training_curves/history.csv` e `execution.log`.
-- **Lacuna:** não há guarda por step para loss NaN/Inf, nem detecção de divergência, nem monitoramento
-  de norma de gradiente ou abort antecipado.
+- **Lacunas:**
+  - não há norma de gradiente registrada;
+  - em BF16 não há `GradScaler`, então um gradiente não-finito com loss finita chega ao
+    `optimizer.step()` sem ser detectado;
+  - não há detecção de divergência, estagnação ou overfitting;
+  - não há diagnóstico automático dos artefatos ao fim do run.
 
 **Entregáveis (macro).**
 1. **Diagnóstico offline** dos runs existentes: `runs/20260929_*` e os estudos `multi_dataset_*` e
@@ -106,10 +934,122 @@ Guardas cobertas por testes. `python -m unittest discover -v` passando.
 **Riscos/dependências.** As guardas não podem alterar o resultado numérico de runs saudáveis, pois
 isso afetaria a reprodutibilidade. O custo da norma de gradiente por step precisa ser medido.
 
-**Detalhamento.** _(a preencher quando a etapa iniciar)_
+**Detalhamento.**
+
+#### E1.0 — Auditoria preliminar (feita em 2026-10-08)
+
+Script exploratório, fora do repo, sobre `runs/20260929_082717_FEDERATED_MTnnUNet_Curated_BUSI-ISIC_2018-TCGA_LGG-SIIM_ACR`:
+- 4 datasets e 16 clientes;
+- CV=1 (holdout), seed 1993, BF16;
+- modo `steps` (10 steps/rodada × 200 rodadas);
+- `task_weights` seg 4 : cls 1.
+
+Os resultados são descritivos: um holdout e uma seed.
+
+| # | Achado | Evidência | Severidade |
+|---|---|---|---|
+| A1 | **SIIM-ACR cls não aprende** | Loss de treino cls ≈ 0.69 ≈ ln 2 (acaso binário) do início ao fim, em todos os 4 clientes (variação de −0.7% a −1.4%). Balanced acc. de val 0.52–0.55. | crítica |
+| A2 | **SIIM-ACR seg colapsada em 2 de 4 clientes** | `mt_1` e `mt_3` terminam com val dice_positive ≈ 0.000, com pico de 0.03 nas primeiras rodadas. `mt_0` e `mt_2` ≈ 0.16. Teste: dice_positive 0.064 ± 0.075. | crítica |
+| A3 | **Overfitting de cls com avaliação na última rodada** | A val loss cls sobe enquanto a de treino cai: `Curated_BUSI_mt_1` (melhor na rodada 87; 0.90 → 1.23) e `TCGA_LGG_mt_0` (melhor na 92; 0.45 → 0.72). Por desenho do protocolo, a avaliação final usa a última rodada. | alta |
+| A4 | **ISIC-2018 cls não generaliza** | Treino cai 31–36%. A val loss de `cls_0` fica estável (1.90 → 1.93). Balanced acc. máx. ≈ 0.41–0.46. A acc de teste, 0.274, está abaixo do preditor constante "NV" (0.669), o que é coerente com o `balanced_fold`. | alta |
+| A5 | Nenhum valor não-finito | 0 NaN/Inf nos históricos dos 16 clientes. | ok |
+| A6 | ~~Sem conflito de gradiente~~ **Sem interação entre clientes** | Cancelamento `overall` = 0.667 ≈ referência ortogonal 0.668. A E0.1 mostrou que a métrica é válida e que os updates são ortogonais por causa dos stems/cabeças inicializados por cliente. | alta (desenho) |
+| A7 | ISIC-2018 seg saudável | val dice 0.84–0.87, ainda subindo no fim. | ok |
+| A8 | Duplicação no histórico | `post_local_round/train` repete exatamente os valores de `local_step/train` (agregado). Não é erro, mas o diagnóstico deve contar cada série uma única vez. | info |
+
+Leitura: A1 e A2 sugerem que o SIIM-ACR, com 128 px e `λ_cls = 0.2`, está subtreinado ou desbalanceado
+entre tarefas. Pneumotórax é uma lesão pequena, e o downsample pode apagá-la. A3 e A4 apontam para a
+interação entre o budget e a escolha da rodada final. **Esses achados são entradas para E3 (loss e
+ponderação) e E4 (pré-processamento/resolução); a E1 não os corrige.** O objetivo da E1 é que eles
+passem a ser detectados automaticamente em todo run.
+
+#### E1.1 — Diagnóstico offline: `src/experiments/training_diagnostics.py` (novo)
+
+- **Entrada:** um diretório de run (`runs/<ts>_*`) ou de estudo (`runs/studies/<id>/`). Num estudo,
+  itera sobre os runs listados em `run_index.csv`.
+- **Leitura:**
+  - `fold_*/client_*/training_history.csv` e `metadata.yaml`;
+  - `fold_*/aggregation_history.json`;
+  - `negative_transfer_summary.csv`;
+  - `{setup}_test_results.csv`;
+  - `config.yaml`, de onde vêm número de classes, critério e modo de budget.
+- Cada série é lida uma única vez: treino via `local_step`, validação via `post_aggregation_round`
+  (federado) ou a fase equivalente no standalone.
+- O leitor é tolerante a campos ausentes. Runs antigos sem `negative_transfer` ou sem histórico por
+  step recebem status `n/a`, e não erro.
+- **Checagens.** Cada uma gera um *finding*: `check_id, severity, fold, dataset, client_id, task,
+  metric, evidence, threshold`.
+
+| id | Checagem | Regra (limiar padrão) |
+|---|---|---|
+| D1 | valores não-finitos | qualquer NaN/Inf em `value` → crítica |
+| D2 | loss no nível do acaso | último terço da loss de treino cls ≥ 0.95·ln K (CE; K = nº de classes) → crítica. Só vale para CE, pois a Focal muda a referência. |
+| D3 | estagnação | variação relativa entre o primeiro e o último terço da loss de treino > −5% → alta |
+| D4 | divergência | último terço da loss de treino > primeiro terço, ou picos de step > mediana + 10·MAD em > 1% dos steps → crítica |
+| D5 | overfitting | melhor rodada de val loss < 60% das rodadas, val loss final > 1.15 × mínima e treino ainda caindo → alta. Reporta a melhor rodada. |
+| D6 | seg colapsada | val dice_positive do último terço < 0.05 → crítica |
+| D7 | cls no piso | val balanced_accuracy do último terço ≤ 1/K + 0.05 → crítica |
+| D8 | heterogeneidade intra-dataset | (máx − mín) da métrica de teste entre clientes do mesmo dataset/tarefa > 0.15 com algum cliente em D6/D7 → alta |
+| D9 | conflito de gradiente | `overall − orthogonal_reference` > 0.05 (ou intra por dataset) → alta |
+| D10 | exposição por budget | épocas efetivas por cliente (steps × batch / `effective_train_examples`); razão máx/mín > 5 → info |
+| D11 | gradiente (quando houver E1.2) | norma de gradiente não-finita → crítica; mediana do último terço > 10 × a do primeiro → alta |
+
+- Os limiares ficam num dicionário de constantes do módulo e podem ser sobrescritos por flags da CLI.
+  **Nada entra em `config.yaml`**, para não mexer no hash científico dos estudos.
+- **Saída** em `<run>/diagnostics/`:
+  - `findings.csv`;
+  - `summary.json`, com contagem por severidade e status `ok`/`warning`/`critical`;
+  - `summary.md`, legível.
+  - Num estudo, também `runs/studies/<id>/diagnostics/` com o consolidado por braço.
+  - O app da E2 consome `findings.csv`/`summary.json`.
+- **CLI:** `python -m src.experiments.training_diagnostics <run_dir|study_dir> [--out DIR] [--threshold D6=0.05 ...]`.
+- **Integração:** chamada não-fatal no fim de `src/training_federated.py`, no mesmo ponto onde já roda
+  o `negative_transfer`, com um `try/except` que só loga a falha. O resultado do run não muda.
+
+#### E1.2 — Guardas online de gradiente: `src/federated/local_trainer.py`
+
+- Depois de `loss.backward()` e antes de `optimizer.step()`, calcular a norma L2 total dos gradientes
+  com `torch.nn.utils.get_total_norm`. A função é apenas leitura e não altera gradientes, portanto não
+  muda os números de runs saudáveis.
+  - Se a norma for não-finita → `FloatingPointError` com contexto (cliente, rodada, step), mantendo a
+    política atual de `ensure_finite`.
+  - Registrar `grad_norm` como `metric_name` adicional: por step quando `record_step_history`, e
+    média e máximo por época/rodada. A análise lida com o formato longo, e `training_curves.py`
+    filtra por nome de métrica, então a linha nova não quebra os dashboards.
+  - Expor `grad_norm_mean` e `grad_norm_max` no dicionário retornado por `train_local`.
+- Medir o custo no `scripts.benchmark_training_runtime`. Se passar de 2% do tempo de step, tornar a
+  medição desligável via `runtime.diagnostics.grad_norm` (o bloco `runtime` já é excluído do hash em
+  `study_runner.py`).
+- **Servidor** (`src/federated/server.py`, em `aggregate_fit`): verificar a finitude dos parâmetros do
+  trunk recebidos de cada cliente antes de agregar. Se um cliente devolver valor não-finito, falhar
+  com mensagem clara, em vez de propagar NaN para o trunk global.
+
+#### E1.3 — Testes: `tests/test_training_diagnostics.py` (novo) e extensão de testes existentes
+
+- Fixtures sintéticas de `training_history.csv`, uma por checagem D1–D10: um caso que dispara e um
+  saudável que não dispara.
+- Leitura de um run antigo sem `negative_transfer` → `n/a`, sem exceção.
+- `train_local` com um gradiente forçado a Inf → `FloatingPointError`.
+- `train_local` num modelo minúsculo em CPU com seed fixa: as losses e os pesos finais são
+  **idênticos** com e sem a medição de norma (garantia de não-regressão).
+- `aggregate_fit` com um cliente devolvendo NaN → erro explícito.
+
+#### E1.4 — Execução e relatório
+
+1. Rodar o diagnóstico sobre o run de 29/09 e sobre os 10 braços de `runs/studies/multi_dataset_balance_v1`.
+   Os outros estudos têm só o plano, sem runs.
+2. Confirmar que D2, D6, D5 e D7 reproduzem A1–A4.
+3. Registrar os achados consolidados abaixo, em "Registro".
+4. Rodar `python -m scripts.smoke_federated --setup both --holdout --samples 2` (CPU, curto; eu
+   executo) e `python -m unittest discover -v`.
+
+**Treino pelo usuário:** **não é necessário na E1.** As guardas são somente leitura, então não há
+motivo para refazer runs. Os achados A1–A4 orientam os braços da E3/E4, e lá haverá o handoff de treino.
 
 **Registro.**
 - 2026-10-04 — etapa planejada (macro).
+- 2026-10-08 — branch `feat/training-validation` criada; auditoria preliminar (E1.0) feita;
+  detalhamento E1.1–E1.4 escrito.
 
 ---
 
@@ -219,6 +1159,22 @@ consolida e verifica as decisões já existentes antes das ablações.
 
 **Critério de pronto.** Loss escolhida, com evidência descritiva e fonte registrada.
 
+**Entradas vindas da E0** (2026-10-15):
+- **Colapso do SIIM seg com `personalized_init_seed: dataset`.** O Dice positivo de teste cai para
+  0.000 nos 4 clientes; a validação vai a 0 a partir de r100 e não volta. Com seed por cliente,
+  fica em 0.066. Hipóteses a testar nos braços:
+  - λ_seg vs λ_cls (hoje 0.8/0.2);
+  - DiceBCE em uma lesão pequena (classe positiva rara no pixel);
+  - interação com o alinhamento intra-dataset (4 clientes idênticos de início).
+
+  Incluir o SIIM como dataset-alvo explícito da ablação da loss.
+- **Replicação com seeds.** O ruído GPU entre runs é de até ~0.05 (BUSI) e ~0.01 (demais) num único
+  run. **Todo braço da E3 precisa de ≥ 3 seeds** (o perfil `final` do `study_runner`: 1993/1994/1995)
+  antes de qualquer conclusão de efeito. Incluir também o braço `personalized_init_seed: dataset` vs
+  `client` nessa replicação.
+- Métricas de conflito (M1/M2 da E0) ligadas em todos os braços, para ler o efeito da loss no
+  conflito e não só no desempenho.
+
 **Riscos/dependências.** O número de braços cresce rápido, então é preciso priorizar. Métodos
 adaptativos interagem com a agregação (FedBone), o que exige cuidado na interpretação.
 
@@ -239,6 +1195,13 @@ adaptativos interagem com a agregação (FedBone), o que exige cuidado na interp
 - **Augmentation:** flip H/V e rotação em `src/dataset/BUSI_dataset.py`.
 - **Legado:** CLAHE, SOBEL, brilho e contraste como canais extras.
 - **Normalização:** hook existe, mas está desligado (`federated_dataloader.py`, `normalization=None`).
+
+**Entradas vindas da E0** (2026-10-15):
+- **SIIM seg (pneumotórax a 128 px).** O colapso da segmentação na política `dataset` e o Dice
+  ≈ 0.06 na `client` sugerem que a lesão pode estar sendo apagada pela redução para 128 px. Isso
+  exige uma variante de maior resolução, ou um recorte, como braço da E4, com uma nova variante e
+  sem tocar em `processed_128`.
+- **Replicação com ≥ 3 seeds**, pelo mesmo motivo de ruído entre runs registrado na E3.
 
 **Restrição central.** Ablações que alteram a imagem gravada exigem uma **nova variante** de dataset,
 sem sobrescrever `processed_128` nem regerar a partição congelada. Por isso a preferência vai para

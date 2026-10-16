@@ -100,11 +100,25 @@ def runtime_config(config: dict) -> dict:
     telemetry.setdefault("enabled", True)
     telemetry.setdefault("gpu_interval_seconds", 1.0)
 
+    diagnostics = dict(configured.get("diagnostics", {}) or {})
+    conflict = dict(diagnostics.get("gradient_conflict", {}) or {})
+    conflict.setdefault("enabled", False)
+    conflict.setdefault("every_n_rounds", 10)
+    conflict.setdefault("probe_batches", 10)
+    conflict.setdefault("sketch_dim", 65536)
+    lookahead = dict(conflict.get("lookahead", {}) or {})
+    lookahead.setdefault("enabled", True)
+    lookahead.setdefault("val_batches", 8)
+    lookahead.setdefault("train_batches", 8)
+    conflict["lookahead"] = lookahead
+    diagnostics["gradient_conflict"] = conflict
+
     return {
         "inference_batch_size": int(configured.get("inference_batch_size", 32)),
         "dataloader": loader,
         "federated": federated,
         "telemetry": telemetry,
+        "diagnostics": diagnostics,
     }
 
 
@@ -129,6 +143,21 @@ def validate_runtime_config(config: dict) -> None:
         raise ValueError("runtime.telemetry.enabled must be a boolean")
     if float(telemetry["gpu_interval_seconds"]) <= 0:
         raise ValueError("runtime.telemetry.gpu_interval_seconds must be positive")
+    conflict = runtime["diagnostics"]["gradient_conflict"]
+    prefix = "runtime.diagnostics.gradient_conflict"
+    for name, value in (("enabled", conflict["enabled"]),
+                        ("lookahead.enabled", conflict["lookahead"]["enabled"])):
+        if not isinstance(value, bool):
+            raise ValueError(f"{prefix}.{name} must be a boolean")
+    for name, value in (("every_n_rounds", conflict["every_n_rounds"]),
+                        ("probe_batches", conflict["probe_batches"]),
+                        ("sketch_dim", conflict["sketch_dim"]),
+                        ("lookahead.val_batches", conflict["lookahead"]["val_batches"]),
+                        ("lookahead.train_batches", conflict["lookahead"]["train_batches"])):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"{prefix}.{name} must be a positive integer")
+    if conflict["probe_batches"] < 2:
+        raise ValueError(f"{prefix}.probe_batches must be at least 2 (two halves give the ceiling)")
 
 
 def dataloader_kwargs(config: dict, *, federated: bool = False) -> dict:

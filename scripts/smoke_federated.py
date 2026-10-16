@@ -12,6 +12,7 @@ import json
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -86,6 +87,26 @@ def _verify_gradient_conflict(run_path):
                 raise RuntimeError(f"Cosine diagonal is {row[index]}, expected 1.0")
 
 
+def _verify_conflict_diagnostics(run_path):
+    """Both online methods wrote results for every round and dropped their transients."""
+    from src.federated import conflict_diagnostics as cd
+
+    run_path = Path(run_path)
+    for name in (cd.M1_FILE, cd.M2_FILE, cd.SUMMARY_FILE):
+        if not (run_path / name).exists():
+            raise RuntimeError(f"Gradient-conflict diagnostics did not write {name}")
+    m2 = pd.read_csv(run_path / cd.M2_FILE)
+    if set(m2["round"]) != {1, 2} or set(m2["split"]) != {"train", "val"}:
+        raise RuntimeError("M2 lookahead does not cover both rounds and both splits")
+    self_rows = m2[m2.source == m2.target]
+    if self_rows.empty or not np.isfinite(self_rows.z).all():
+        raise RuntimeError("M2 lookahead has no finite self-affinity rows")
+    leftovers = list((run_path / "fold_0" / cd.CONFLICT_DIR).glob(f"round_*/{cd.DELTAS_FILE}"))
+    leftovers += list((run_path / "fold_0" / cd.CONFLICT_DIR).glob("round_*/*_pre.pt"))
+    if leftovers:
+        raise RuntimeError(f"Transient lookahead files were not removed: {leftovers[:2]}")
+
+
 def _verify_paired_controls(federated_path, standalone_path):
     """Check that the two smoke arms differ only by federation, not budget or RNG policy."""
     fed_config = yaml.safe_load((Path(federated_path) / "config.yaml").read_text())
@@ -129,6 +150,11 @@ def main():
         choices=("single_task", "multi_task"),
         default="single_task",
         help="BUSI client topology; multi_task builds its own temporary master",
+    )
+    parser.add_argument(
+        "--conflict-diagnostics",
+        action="store_true",
+        help="also exercise the online M1/M2 gradient-conflict diagnostics on every round",
     )
     args = parser.parse_args()
     if args.samples < 1:
@@ -177,7 +203,14 @@ def main():
             }
             local_training = arm_config["federated"].setdefault("local_training", {})
             if local_training.get("mode") == "steps":
-                local_training["steps_per_round"] = 1
+                # M1 splits the round's batches into two halves, so it needs at least two.
+                local_training["steps_per_round"] = 2 if args.conflict_diagnostics else 1
+            if args.conflict_diagnostics:
+                arm_config["runtime"]["diagnostics"] = {"gradient_conflict": {
+                    "enabled": True, "every_n_rounds": 1, "probe_batches": 2,
+                    "sketch_dim": 4096,
+                    "lookahead": {"enabled": True, "val_batches": 2, "train_batches": 2},
+                }}
             for dataset in arm_config.get("datasets", {}).values():
                 dataset["batch_size"] = 1
 
@@ -196,6 +229,8 @@ def main():
                     _verify_multitask(run_path, setup)
                 if setup == "federated":
                     _verify_gradient_conflict(run_path)
+                    if args.conflict_diagnostics:
+                        _verify_conflict_diagnostics(run_path)
                 print(f"SMOKE_OK setup={setup} topology={args.topology} run_path={run_path}")
             finally:
                 Path(temporary.name).unlink(missing_ok=True)
