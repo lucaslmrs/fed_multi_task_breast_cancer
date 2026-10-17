@@ -41,6 +41,7 @@ Never edit a discovery link: edit `.agents/skills/<name>/` and load the skill ma
 | `error-investigator` | A traceback, crash, failing test, or unexplained numeric result |
 | `grill-me` | Stress-testing a plan or design before building it |
 | `python-plotting` | Creating, reviewing, or standardizing Python charts and scientific figures |
+| `color-palette` | Any visual work: the default palette (ink, wine, burgundy, rose, cream) in `plot_style.py`, reports, the monitor and new visuals, plus its CVD/contrast validator |
 | `drive-sync` | Syncing the repo to Google Drive with rclone, or setting rclone up on a new machine |
 
 After adding, renaming, or removing a skill, run `python -m scripts.sync_agent_assets`. Content
@@ -79,6 +80,9 @@ python -m src.experiments.study_runner --dry-run
 python -m src.experiments.study_runner --smoke --seed-profile operational
 python -m scripts.benchmark_training_runtime  # paired FP32-sequential vs BF16-dual GPU gate
 python -m src.experiments.study_runner --seed-profile operational
+
+# Local monitor: browse, follow live and compare runs/studies/baselines (read-only, 127.0.0.1)
+python -m src.monitor --runs runs --port 8765   # then open http://127.0.0.1:8765/
 
 # Tests, and the agent-asset consistency check
 python -m unittest discover -v
@@ -397,6 +401,16 @@ working default that drifts between experiments. Precision and `cuda_benchmark` 
 inputs; `runtime` and NVML telemetry are operational and excluded. See
 `docs/TRAINING_ACCELERATION.md`.
 
+
+## Monitoring app
+
+`python -m src.monitor` (package `src/monitor/`) is a local, **read-only** web app: standard
+library `http.server` plus one static page, so it adds no Python dependency. It lists loose runs,
+study arms (including planned and running ones), baselines and smokes; it shows per-client curves,
+aggregation weights, cancellation, conflict, GPU telemetry and the E1 diagnostics; it polls a
+running run, and it compares several runs side by side with comparability warnings (budget mode,
+master, topology). It reuses the readers of `training_diagnostics.py` and never recomputes a
+result or writes into a run (on-demand diagnostics run in memory). See `docs/MONITOR_APP.md`.
 
 ## Dice+BCE and partial supervision
 

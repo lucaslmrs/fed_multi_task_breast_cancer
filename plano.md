@@ -29,7 +29,7 @@ Criado em 2026-10-04.
 | E0 | Métodos adicionais de verificação de conflito de gradientes | ✅ | `feat/gradient-conflict` | 2026-10-15 |
 | B0 | Baselines não federados por dataset (seg / cls / multitask) | ✅ | `feat/baselines` | 2026-10-16 |
 | E1 | Validação do treinamento | ✅ | `feat/training-validation-v2` | 2026-10-16 |
-| E2 | App local de monitoramento e comparação | 🟨 | `feat/monitor-app` | 2026-10-16 |
+| E2 | App local de monitoramento e comparação | ✅ | `feat/monitor-app` | 2026-10-16 |
 | E5 | Validação das fontes (consolidação) | ⬜ | `docs/sources` | — |
 | E3 | Ablação: loss fed multitask multi-dataset | ⬜ | `exp/loss-ablation` | — |
 | E4 | Ablação: pré-processamento de imagens | ⬜ | `exp/preprocessing-ablation` | — |
@@ -1247,7 +1247,8 @@ atualiza um run em andamento. Os testes da camada de leitura de artefatos passam
 runs, então o leitor precisa ser tolerante a campos ausentes (ex.: `negative_transfer` em históricos
 antigos).
 
-**Detalhamento** (iniciado em 2026-10-16, ao fechar a E1; **ainda não aprovado**).
+**Detalhamento** (iniciado em 2026-10-16, ao fechar a E1; decisões respondidas; aprovado
+pelo usuário em 2026-10-16).
 
 #### E2.0 — Fontes de dados que o app consome (nada é recalculado pelo app)
 
@@ -1267,20 +1268,110 @@ antigos).
 `read_log_series` de `src/experiments/training_diagnostics.py`, que já toleram as três vintages
 (federado novo, estudo antigo sem histórico, baseline). O app não duplica regras de leitura.
 
-#### E2.1 — Decisões em aberto (para o usuário)
+#### E2.1 — Decisões (respondidas pelo usuário em 2026-10-16)
 
-1. **Stack:** servidor stdlib (`http.server`) + HTML/JS estático (sem dependência nova) **ou**
-   Streamlit (nova dependência; validar contra `numpy<2` e `protobuf>=4`).
-2. **Ao vivo:** refresh periódico relendo os CSVs de um run em andamento (o `training_history.csv` é
-   reescrito atomicamente pelo cliente) e rodando o diagnóstico sob demanda.
-3. **Memória por processo** (pendência E0.4 (e)): incluir no painel de recursos se o treino passar
-   a registrar RSS por ator; hoje só há `gpu_telemetry.csv`.
+1. **Stack:** servidor stdlib (`http.server.ThreadingHTTPServer`) + página estática HTML/JS. Nenhuma
+   dependência Python nova; `numpy<2`/`protobuf>=4` intocados. Gráficos com Plotly.js carregado de
+   CDN com versão fixa (o app avisa na página se o CDN não carregar).
+2. **Ao vivo:** polling da página (padrão 10 s, configurável) relendo os artefatos pelo `mtime`. O
+   diagnóstico exibido é o salvo em `diagnostics/`; um botão o recalcula **sob demanda** em memória,
+   sem escrever na pasta do run.
+3. **Memória RSS por ator Ray:** fora da E2 (o app é só leitura e não muda o treino). O painel de
+   recursos mostra `gpu_telemetry.csv` e `runtime_events.csv` quando existem. Pendência mantida.
+
+#### E2.2 — Fatos levantados na auditoria (2026-10-16)
+
+- `discover_runs` só reconhece um run com `{kind}_test_results.csv`, portanto **não vê run em
+  andamento**. O catálogo do app estende a descoberta sem alterar a função da E1.
+- Durante o treino federado, o que é atualizado por rodada:
+  - `fold_*/client_*/training_history.csv` (reescrito via `.csv.tmp` + replace);
+  - a linha por rodada do `execution.log` (lida por `read_log_series`);
+  - `gpu_telemetry.csv`.
+- `fold_*/aggregation_history.json` só é gravado **ao fim do fold** (`training_federated.py:462`),
+  então pesos/cosseno/cancelamento aparecem apenas para folds concluídos.
+- Baseline: `history.csv` é reescrito a cada época (`training_baseline.py:214`).
+- Estudos: os braços vêm de `run_index.csv` + `runs/seed_*/<arm>`; o `execution_plan.csv` lista
+  também braços ainda não iniciados. Pastas `*.incomplete_*` são tentativas preservadas.
+- E1 ainda não está na `main`: a branch `feat/monitor-app` parte de `feat/training-validation-v2`.
+
+#### E2.3 — Arquitetura (`src/monitor/`)
+
+| Arquivo | Conteúdo |
+|---|---|
+| `catalog.py` | Descoberta e status. Fontes: runs avulsos em `runs/`, `runs/validation/`, `runs/baseline/<modo>/<ds>_<ts>` e estudos `runs/studies/<id>`. Cada run tem um status: `complete` (há `*_test_results.csv`), `running` (sem resultados e `execution.log`/históricos modificados há < `--stale-minutes`, padrão 15), `stale` (sem resultados e parado) ou `pending` (braço do `execution_plan.csv` sem pasta). Cada entrada traz: `kind`, setup, datasets, `local_training.mode`, caminho do master (`_master_path`), folds, selo do diagnóstico salvo e relatórios estáticos existentes. Reusa `run_kind`/`discover_runs`. |
+| `readers.py` | Payloads JSON, todos tolerantes a ausência (`{"available": false, "reason": ...}`): `curves` (por cliente via `read_client_series`; baseline via `read_baseline_series`; fallback `read_log_series`; treino = `local_step`/`local_epoch` por rodada, val = `post_aggregation_round`, A8), `final_metrics` (`*_test_results.csv`), `aggregation` (pesos por cliente/rodada e `negative_transfer` de `aggregation_history.json`/`negative_transfer_rounds.csv`), `conflict` (`conflict_*.csv`, com a ressalva E0.3.9), `diagnostics` (salvo) e `diagnose_now` (`diagnose()` em memória), `resources` (`gpu_telemetry.csv`, `runtime_events.csv`). Cache por `(caminho, mtime, tamanho)`. |
+| `compare.py` | Comparação de N runs: métricas finais lado a lado por `dataset/task` (média ± dp entre clientes × folds, com delta contra o run de referência) e curvas médias por dataset/tarefa. **Avisos de comparabilidade:** `local_training.mode` diferente (regra do AGENTS.md), master diferente (regra da D12), topologia diferente (comparação só agregada, não pareada por cliente). Nenhum p-valor nem a palavra "significativo". |
+| `server.py` + `__main__.py` | `python -m src.monitor [--runs runs] [--host 127.0.0.1] [--port 8765] [--refresh 10]`. Rotas `GET /api/runs`, `/api/run`, `/api/curves`, `/api/final`, `/api/aggregation`, `/api/conflict`, `/api/resources`, `/api/diagnostics`, `/api/compare?paths=...`; `POST /api/diagnose`; `GET /files/<rel>` serve os HTMLs estáticos existentes. Escuta só em `127.0.0.1` por padrão; todo caminho é resolvido e precisa ficar dentro de `--runs` (anti path traversal); somente leitura. |
+| `static/{index.html, app.js, style.css}` | Três vistas: **Runs** (árvore estudo → seed → braço + avulsos + baselines, com selo de status/diagnóstico e filtro); **Run** (curvas por dataset → cliente com seletor de métrica e fold, painéis de agregação/cancelamento, conflito, recursos, achados filtráveis por check/severidade/dataset/cliente e links aos relatórios estáticos); **Comparar** (≥ 2 runs marcados na lista). Polling liga sozinho em runs `running`. Tema claro/escuro e paleta de `plot_style.py`. |
+
+#### E2.4 — Testes (`tests/test_monitor.py`, fixtures sintéticas em `tempfile`)
+
+1. Catálogo: um run completo, um em andamento (sem resultados, log recente), um parado, um baseline,
+   e um estudo com braço no índice, braço fora do índice e braço só no `execution_plan.csv`. Os
+   status esperados são `complete`/`running`/`stale`/`complete`/`pending`.
+2. Curvas: a validação vem de `post_aggregation_round` e ignora `post_local_round`. Um histórico
+   antigo, sem `training_history.csv`, cai no fallback do `execution.log`.
+3. Tolerância: `aggregation_history.json` sem `negative_transfer` e run sem `conflict_*` devolvem
+   `available: false` com o motivo, sem exceção.
+4. Comparação: dois runs com `local_training.mode` diferentes geram o aviso de budget; masters
+   diferentes geram o aviso de master.
+5. Servidor: sobe numa porta efêmera; `GET /api/runs` devolve JSON. `GET /files/../config.yaml` e
+   caminhos fora de `--runs` dão 403/404. `POST /api/diagnose` não cria nem altera arquivos no run.
+6. Cache: reler um arquivo sem mudança de `mtime` não chama o leitor de novo.
+
+#### E2.5 — Validação e entrega
+
+1. `python -m unittest discover -v` (os 197 da E1 mais os novos) e
+   `python -m scripts.sync_agent_assets --check`.
+2. Manual nos artefatos reais: a lista mostra os 3 runs avulsos, o estudo `multi_dataset_balance_v1`
+   (10 braços), os baselines e os smokes da E1. Comparar `primary` × `local_only`.
+3. Ao vivo: rodar `python -m scripts.smoke_federated --setup both` com o app aberto. O run aparece
+   como `running`, as curvas crescem a cada rodada, e o status vira `complete` ao fim.
+4. Documentação: comando em `AGENTS.md` ("Commands") e um parágrafo em `docs/`; o sync é verificado.
+5. Commits: (a) `catalog`/`readers`/`compare` + testes; (b) servidor + front-end + teste do servidor;
+   (c) docs + registro no `plano.md`.
 
 
 **Registro.**
 - 2026-10-04 — etapa planejada (macro).
 - 2026-10-16 — detalhamento iniciado ao fechar a E1 (fontes de dados, leitor reaproveitado da E1,
   decisões em aberto).
+- 2026-10-16 — decisões E2.1 respondidas (stdlib + HTML/JS, polling + diagnóstico sob demanda,
+  RSS fora). Auditoria E2.2, arquitetura E2.3, testes E2.4 e validação E2.5 escritas. Branch
+  `feat/monitor-app` criada a partir de `feat/training-validation-v2`.
+- 2026-10-16 — **E2 concluída.** `src/monitor/` (`catalog`, `readers`, `compare`, `server`,
+  `static/`) e `tests/test_monitor.py` (14 testes; suíte 211 OK; sync OK).
+  - Nos artefatos reais, o catálogo lista 79 entradas em 2.4 s: 3 runs avulsos, 6 estudos (com os
+    10 braços do `multi_dataset_balance_v1` e 25 braços planejados como `pending`), 12 baselines e
+    os smokes.
+  - Comparar `primary` × `local_steps_ce` × `ablation_budget` mostra o aviso de budget
+    (`epochs` vs `steps`).
+  - Ao vivo, com `smoke_federated --setup both` e o app aberto, os dois braços passaram de
+    `running` a `complete` sozinhos, com as curvas crescendo por rodada (0 → 37 → 55 → 73 → 110
+    pontos). O diagnóstico em memória não grava nada no run. Smokes movidos para
+    `runs/validation/e2_smoke/`.
+
+  **Divergências em relação ao plano:**
+  - O payload de curvas de um run de 200 rodadas tem cerca de 1.3 MB; o servidor comprime com gzip.
+  - A telemetria de GPU é resumida em ≈ 600 médias por bin, em vez de uma amostragem com passo
+    fixo, porque a série de 1 Hz é ilegível.
+  - As mensagens dos leitores (`reason`) ficaram em inglês; a página e os avisos de comparação
+    estão em português.
+- 2026-10-16 — ajustes pedidos pelo usuário após o primeiro uso (suíte 216 OK; 19 testes do
+  monitor):
+  - O botão de câmera baixa o gráfico sempre no tema claro, em 2× o tamanho na tela.
+  - Card de destaques por dataset: Dice positivo e balanced accuracy de teste, com sparkline da
+    validação. Em run sem resultados, mostra o último valor de validação.
+  - Identificação do treino: selos `FED`/`LOCAL`/`BASE` e `MTL`/`ST`/`MTL+ST`/`SEG`/`CLS`, nome
+    legível, tabela de composição por dataset (tarefas, topologia, clientes por papel) e blocos
+    separados de Segmentação e Classificação para métricas e curvas. Também uma legenda
+    ("? Legenda"). O selo vem das pastas de cliente do primeiro fold, ou de
+    `federated.n_clients` antes do primeiro fold.
+  - Paleta do projeto como padrão de figuras, relatórios e monitor: skill `color-palette` (preto,
+    vinho, bordô, rosé e creme), validada para daltonismo e contraste nos dois temas. Ela substituiu
+    a primeira versão inspirada na Amazon.
+  - Esclarecido: os baselines têm 1 fold (holdout 70/30). O "n" nos cards e tabelas é o número de
+    fatias de teste dos clientes, não de folds.
 
 ---
 

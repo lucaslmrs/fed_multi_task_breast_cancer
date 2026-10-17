@@ -22,12 +22,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
+from matplotlib.colors import TwoSlopeNorm
 
-from src.utils.plot_style import ACCENT_RED, CATEGORICAL_8, EMBED_DPI, MARKERS, PLOT_RC, style_axis
+from src.utils.plot_style import (ACCENT, CATEGORICAL_8, EMBED_DPI, MARKERS, PLOT_RC,
+                                  REFERENCE_LINE, TINT, colormap, style_axis)
 
-DIVERGING = LinearSegmentedColormap.from_list(
-    "blue_red", ["#08519C", "#6BAED6", "#FCFAE1", "#CABD91", "#9F2B2C"])
+# Conflict (negative cosine) on the burgundy pole, alignment on the blue one, as in negative_transfer.
+DIVERGING = colormap("diverging_r")
 DATASETS = ["Curated_BUSI", "ISIC_2018", "SIIM_ACR", "TCGA_LGG"]
 SHORT = {"Curated_BUSI": "BUSI", "ISIC_2018": "ISIC", "SIIM_ACR": "SIIM", "TCGA_LGG": "TCGA"}
 
@@ -59,8 +60,8 @@ def fig_m1_trajectory(m1s):
                 ax.plot(series.index, series.values, marker=MARKERS[index], markersize=3.5,
                         color=CATEGORICAL_8[index], label=SHORT[dataset])
         inter = total[total.pair_class == "inter"].groupby("round").cos.mean()
-        ax.plot(inter.index, inter.values, color="#6F6357", linestyle="--", label="entre datasets")
-        ax.axhline(0, color="#CABD91", linewidth=0.8)
+        ax.plot(inter.index, inter.values, color="#6B5559", linestyle="--", label="entre datasets")
+        ax.axhline(0, color=REFERENCE_LINE, linewidth=0.8)
         ax.set_title(f"seed por {name}")
         ax.set_xlabel("rodada")
         style_axis(ax)
@@ -114,7 +115,7 @@ def fig_m2_heatmaps(m2s):
                     value = matrix.values[i, j]
                     if np.isfinite(value):
                         ax.text(j, i, f"{value:.1f}", ha="center", va="center", fontsize=8,
-                                color="white" if abs(value) > 0.55 * limit else "#584A47")
+                                color="white" if abs(value) > 0.55 * limit else "#1E1216")
             ax.set_xticks(range(len(DATASETS)), [SHORT[d] for d in DATASETS])
             ax.set_yticks(range(len(DATASETS)), [SHORT[d] for d in DATASETS])
             ax.set_xlabel("alvo (loss avaliada)")
@@ -137,7 +138,7 @@ def fig_null(nulls):
             positions = np.arange(len(variants)) + (index - 0.5) * width
             ax.bar(positions, values.values, width, color=CATEGORICAL_8[index],
                    label=f"seed por {name}")
-        ax.axhline(0, color="#584A47", linewidth=0.8)
+        ax.axhline(0, color="#1E1216", linewidth=0.8)
         ax.set_xticks(range(len(variants)), labels)
         ax.set_title(f"{title} — split de treino")
         ax.set_ylabel("Z × 1e-4")
@@ -159,9 +160,9 @@ def fig_performance(results, reference_name):
             high = np.maximum(means[reference_name], means["client"])
             for position, (lo, hi) in enumerate(zip(low, high)):
                 ax.add_patch(plt.Rectangle((position - 0.3, lo), 0.6, max(hi - lo, 1e-3),
-                                           color="#EDE2B5", zorder=0))
+                                           color=TINT, zorder=0))
         for index, name in enumerate(names):
-            color = ACCENT_RED if name == "dataset" else CATEGORICAL_8[0 if name == "client" else 2]
+            color = ACCENT if name == "dataset" else CATEGORICAL_8[0 if name == "client" else 2]
             ax.scatter(np.arange(len(DATASETS)) + (index - 1) * 0.12, means[name].values,
                        marker=MARKERS[index], s=55, color=color, zorder=3, label=name)
         ax.set_xticks(range(len(DATASETS)), [SHORT[d] for d in DATASETS])
@@ -221,10 +222,10 @@ def main():
     page = f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Conflito de gradientes — E0</title>
-<style>body{{font-family:system-ui,sans-serif;color:#584A47;max-width:1100px;margin:24px auto;
-padding:0 16px;background:#fff}}h1{{color:#08519C}}h2{{color:#08519C;font-size:1.15em;
-margin-top:32px}}img{{max-width:100%;border:1px solid #EDE2B5}}code{{font-size:.85em}}
-.note{{background:#FCFAE1;border-left:4px solid #9F2B2C;padding:8px 12px}}</style></head><body>
+<style>body{{font-family:system-ui,sans-serif;color:#1E1216;max-width:1100px;margin:24px auto;
+padding:0 16px;background:#FFF7F1}}h1{{color:#7B2032}}h2{{color:#7B2032;font-size:1.15em;
+margin-top:32px}}img{{max-width:100%;border:1px solid #E6D6D1}}code{{font-size:.85em}}
+.note{{background:#F3E6E1;border-left:4px solid #7B2032;padding:8px 12px}}</style></head><body>
 <h1>Conflito de gradientes — resultados da E0</h1>
 <p class="note">Uma seed e um holdout: todos os números são descritivos. Diferenças menores que o
 ruído entre runs (faixa bege no último gráfico) não devem ser lidas como efeito.</p>

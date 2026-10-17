@@ -12,9 +12,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
-BLUES_6 = ["#EFF3FF", "#C6DBEF", "#9ECAE1", "#6BAED6", "#3182BD", "#08519C"]
-EARTH_5 = ["#FCFAE1", "#EDE2B5", "#CABD91", "#6F6357", "#584A47"]
-ACCENT_RED = "#9F2B2C"
+from src.utils.plot_style import (CATEGORICAL_8, INK, PRIMARY, REFERENCE_LINE, ROSE, colormap,
+                                  setup_color, with_plot_style)
 
 
 def save_figure(fig: plt.Figure, output: Path) -> None:
@@ -35,7 +34,7 @@ fig, ax = plt.subplots(figsize=(7.2, 4.2), constrained_layout=True)
 
 for label, group in summary.groupby("setup", sort=False):
     group = group.sort_values("round")
-    color = {"federated": "#08519C", "local-only": "#6F6357"}[label]
+    color = setup_color(label)
     ax.plot(group["round"], group["mean"], label=label, color=color, linewidth=2)
     ax.fill_between(
         group["round"],
@@ -65,7 +64,7 @@ sns.boxplot(
     x="group",
     y="value",
     order=order,
-    color="#C6DBEF",
+    color=ROSE,
     width=0.55,
     fliersize=0,
     ax=ax,
@@ -75,7 +74,7 @@ sns.stripplot(
     x="group",
     y="value",
     order=order,
-    color="#08519C",
+    color=PRIMARY,
     alpha=0.65,
     jitter=0.18,
     size=4,
@@ -92,11 +91,11 @@ boxen, ECDF, hexbin ou densidade, evitando uma nuvem ilegível.
 
 ```python
 ordered = summary.sort_values("value", ascending=True)
-colors = ["#9F2B2C" if x == focus else "#6BAED6" for x in ordered["category"]]
+colors = [PRIMARY if x == focus else REFERENCE_LINE for x in ordered["category"]]
 
 fig, ax = plt.subplots(figsize=(7.2, 4.2), constrained_layout=True)
 bars = ax.barh(ordered["category"], ordered["value"], color=colors)
-ax.bar_label(bars, fmt="%.2f", padding=3, color="#584A47")
+ax.bar_label(bars, fmt="%.2f", padding=3, color=INK)
 ax.set(xlabel="Valor (unidade)", ylabel=None)
 ax.set_xlim(left=0)
 ax.grid(axis="x", alpha=0.3)
@@ -116,7 +115,7 @@ sns.scatterplot(
     y="y",
     hue="group",
     style="group",
-    palette={"A": "#08519C", "B": "#9F2B2C", "C": "#6F6357"},
+    palette=dict(zip(["A", "B", "C"], CATEGORICAL_8)),  # scatter: no máximo 3 slots
     alpha=0.7,
     s=45,
     ax=ax,
@@ -131,9 +130,7 @@ regressão deve vir acompanhada do modelo/escopo apropriado; correlação visual
 ## Heatmap
 
 ```python
-from matplotlib.colors import LinearSegmentedColormap
-
-cmap = LinearSegmentedColormap.from_list("reference_blues", BLUES_6)
+cmap = colormap("sequential")
 fig, ax = plt.subplots(figsize=(7.0, 5.5), constrained_layout=True)
 sns.heatmap(
     matrix,
@@ -151,7 +148,7 @@ ax.set(xlabel="Coluna", ylabel="Linha")
 ```
 
 Defina `vmin`/`vmax` pela semântica e mantenha-os iguais entre painéis comparáveis. Para diferenças em
-torno de zero, use uma paleta divergente e `TwoSlopeNorm(vcenter=0)`.
+torno de zero, use `colormap("diverging")` (ou `"diverging_r"`) e `TwoSlopeNorm(vcenter=0)`.
 
 ## Painéis
 
@@ -170,7 +167,7 @@ for ax, (dataset, group) in zip(axes, df.groupby("dataset", sort=False), strict=
         x="round",
         y="metric",
         hue="setup",
-        palette=COLOR_BY_SETUP,
+        palette={s: setup_color(s) for s in df["setup"].unique()},
         errorbar=None,
         ax=ax,
     )
@@ -191,7 +188,7 @@ fig = px.scatter(
     y="y",
     color="group",
     symbol="group",
-    color_discrete_map={"A": "#08519C", "B": "#9F2B2C", "C": "#6F6357"},
+    color_discrete_map=dict(zip(["A", "B", "C"], CATEGORICAL_8)),
     hover_data={"sample_id": True, "x": ":.3f", "y": ":.3f"},
     labels={"x": "X (unidade)", "y": "Y (unidade)", "group": "Grupo"},
     template="plotly_white",

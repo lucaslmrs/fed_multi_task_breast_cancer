@@ -1,45 +1,57 @@
 #!/usr/bin/env python3
-"""Render the reference palettes bundled with the python-plotting skill."""
+"""Render the project's default palettes (color-palette skill) from src/utils/plot_style.py."""
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+import matplotlib
 
-BLUES_6 = ["#EFF3FF", "#C6DBEF", "#9ECAE1", "#6BAED6", "#3182BD", "#08519C"]
-EARTH_5 = ["#FCFAE1", "#EDE2B5", "#CABD91", "#6F6357", "#584A47"]
-ACCENT_RED = "#9F2B2C"
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.patches import Rectangle  # noqa: E402
+
+REPO_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "src" / "utils").is_dir())
+sys.path.insert(0, str(REPO_ROOT))
+
+from src.utils import plot_style as ps  # noqa: E402
 
 
-def _draw_palette(ax: plt.Axes, title: str, colors: list[str]) -> None:
+def _draw_palette(ax: plt.Axes, title: str, colors, surface=ps.CREAM, ink=ps.INK) -> None:
     ax.set_xlim(0, len(colors))
     ax.set_ylim(0, 1)
-    ax.set_title(title, loc="left", fontsize=12, fontweight="semibold", color="#584A47")
-    ax.axis("off")
+    ax.set_facecolor(surface)
+    ax.set_title(title, loc="left", fontsize=12, fontweight="semibold", color=ps.INK)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
     for index, color in enumerate(colors):
-        ax.add_patch(Rectangle((index, 0.25), 1, 0.55, facecolor=color, edgecolor="white"))
-        ax.text(
-            index + 0.5,
-            0.12,
-            color,
-            ha="center",
-            va="center",
-            fontsize=9,
-            color="#584A47",
-        )
+        # A swatch equal to its surface (cream on cream) gets an outline so it stays visible.
+        edge = ps.GRID if color.upper() == surface.upper() else surface
+        ax.add_patch(Rectangle((index, 0.3), 1, 0.55, facecolor=color, edgecolor=edge, linewidth=2))
+        ax.text(index + 0.5, 0.14, color, ha="center", va="center", fontsize=8, color=ink)
 
 
 def render(output: Path) -> None:
-    fig, axes = plt.subplots(3, 1, figsize=(9.2, 5.2), constrained_layout=True)
-    fig.patch.set_facecolor("white")
-    _draw_palette(axes[0], "Blues 6 · sequential", BLUES_6)
-    _draw_palette(axes[1], "Earth 5 · sequential / neutral", EARTH_5)
-    _draw_palette(axes[2], "Accent red · highlight", [ACCENT_RED])
+    light, dark = ps.SURFACE["light"], ps.SURFACE["dark"]
+    rows = [
+        ("Base colours (priority)", ps.BASE_COLORS, light, ps.INK),
+        ("Categorical · light", ps.CATEGORICAL["light"], light, ps.TEXT["light"]),
+        ("Categorical · dark", ps.CATEGORICAL["dark"], dark, ps.TEXT["dark"]),
+        ("Sequential (cream · rose · burgundy · wine)", ps.SEQUENTIAL, light, ps.INK),
+        ("Diverging (blue · cream · burgundy)", ps.DIVERGING, light, ps.INK),
+        ("Status · light", tuple(ps.STATUS["light"].values()), light, ps.INK),
+        ("Status · dark", tuple(ps.STATUS["dark"].values()), dark, ps.TEXT["dark"]),
+    ]
+    fig, axes = plt.subplots(len(rows), 1, figsize=(9.6, 1.25 * len(rows)), constrained_layout=True)
+    fig.patch.set_facecolor(light)
+    for ax, (title, colors, surface, ink) in zip(axes, rows):
+        _draw_palette(ax, title, colors, surface, ink)
     output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=180, bbox_inches="tight", facecolor="white")
+    fig.savefig(output, dpi=180, bbox_inches="tight", facecolor=ps.CREAM)
     plt.close(fig)
 
 

@@ -1,133 +1,65 @@
 # Paletas e estilo visual
 
-As cores abaixo foram extraídas dos swatches enviados pelo usuário. Use os códigos exatamente como
-definidos para manter consistência entre figuras.
+A paleta padrão do projeto é definida em `src/utils/plot_style.py` e documentada na skill
+`color-palette` (`.agents/skills/color-palette/SKILL.md`): cinco cores-base escolhidas pelo usuário
+(preto `#0A0B0F`, vinho `#1E1216`, bordô `#7B2032`, rosé `#C2A19A`, creme `#FFF7F1`) mais cores
+derivadas validadas. Aquela skill é a dona das cores: valores, papéis, modo claro/escuro e o
+validador. Este arquivo resume o uso em gráficos; se algo aqui divergir dela, ela vence.
 
-## Paletas-base
+Nunca escreva um hex literal em código de plot: importe o token nomeado de `plot_style.py`. Se
+precisar de uma cor nova, adicione-a lá e rode
+`python .agents/skills/color-palette/scripts/validate_palette.py --css`.
+
+## Tokens principais
 
 ```python
-BLUES_6 = ["#EFF3FF", "#C6DBEF", "#9ECAE1", "#6BAED6", "#3182BD", "#08519C"]
-EARTH_5 = ["#FCFAE1", "#EDE2B5", "#CABD91", "#6F6357", "#584A47"]
-ACCENT_RED = "#9F2B2C"
-
-# Ordem pensada para categorias sobre fundo claro. Não é uma escala contínua.
-CATEGORICAL_8 = [
-    "#08519C", "#9F2B2C", "#6F6357", "#3182BD",
-    "#584A47", "#6BAED6", "#CABD91", "#9ECAE1",
-]
+from src.utils.plot_style import (
+    BURGUNDY, CREAM, INK_BLACK, ROSE, WINE_BLACK,   # as cinco cores-base
+    PRIMARY,            # bordô #7B2032: método proposto / série principal
+    ACCENT,             # azul #2B7EC9: série de contraste, loss, centralizado
+    CATEGORICAL_8,      # 8 matizes em ordem fixa (bordô, azul, ocre, violeta, terracota, ciano, oliva, teal)
+    SEQUENTIAL,         # creme -> rosé -> bordô -> vinho
+    DIVERGING,          # azul -> creme -> bordô
+    GRID, INK, MUTED_INK, REFERENCE_LINE, TINT,
+    colormap,           # colormap("sequential" | "diverging" | "diverging_r")
+    categorical_color, fold_style, metric_color, setup_color, split_style, style_axis,
+    with_plot_style,
+)
 ```
-
-### `BLUES_6`
-
-Paleta sequencial do mais claro ao mais escuro. Use para magnitude ordenada, intensidade, frequência,
-densidade ou progresso. Em linhas/categorias sobre fundo branco, comece em `#6BAED6` ou mais escuro;
-os três primeiros tons funcionam melhor como preenchimento, fundo ou faixa de incerteza.
-
-### `EARTH_5`
-
-Paleta sequencial neutra e quente do marfim ao marrom. Use para contexto, baseline, grupos secundários,
-fundos editoriais ou uma escala ordenada discreta. `#FCFAE1` e `#EDE2B5` não oferecem contraste
-suficiente para texto pequeno sobre branco. `#584A47` é o tom preferido para texto escuro dentro desta
-família.
-
-### `ACCENT_RED`
-
-`#9F2B2C` é um destaque único. Use para chamar atenção a uma série focal, erro, alerta, referência ou
-diferença importante. Não use uma lista de tons vermelhos inventados para completar categorias; combine
-o vermelho com azuis e neutros quando a semântica pedir contraste.
 
 ## Escolha semântica
 
-| Necessidade | Escolha inicial | Observação |
+| Necessidade | Escolha | Observação |
 |---|---|---|
-| Uma série principal | `#08519C` | Alta legibilidade em fundo claro |
-| Série principal + referência | `#08519C`, `#6F6357` | Referência neutra, sem competir |
-| Método proposto + baseline | `#08519C`, `#584A47` | Adicione marcador ou traço distinto |
-| Destaque de um item | contexto em `#CABD91`, foco em `#9F2B2C` | Vermelho deve ter significado explícito |
-| Intensidade contínua | `BLUES_6` | Claro = menor, escuro = maior |
-| Contexto editorial quente | `EARTH_5` | Evite textos nos tons claros |
-| Valores abaixo/acima de um centro | azul escuro → neutro claro → vermelho | Só use se houver centro semântico real |
-
-Para uma escala divergente, uma opção coerente com as referências é:
-
-```python
-DIVERGING_BLUE_RED = ["#08519C", "#6BAED6", "#FCFAE1", "#CABD91", "#9F2B2C"]
-```
-
-Defina explicitamente o centro (`TwoSlopeNorm` no Matplotlib, `color_continuous_midpoint` no Plotly).
-Não trate uma paleta divergente como sequencial.
+| Uma série principal | `PRIMARY` | Título nomeia a série; sem legenda |
+| Método proposto + baseline | `setup_color()` (federado `PRIMARY`, local-only `MUTED_INK`) | Varie também marcador/traço |
+| Destaque de um item | contexto em `REFERENCE_LINE`, foco em `PRIMARY` | O destaque precisa de significado explícito |
+| Várias categorias | `categorical_color(i)` na ordem, sem pular | Mais de 8: agrupe em "outros" ou facetas |
+| Dispersão/small multiples | só os 3 primeiros slots | Só eles passam a checagem de todos os pares |
+| Faixa de incerteza, área | `ROSE` ou a cor da série com alpha | Rosé não é linha nem texto sobre creme |
+| Intensidade contínua | `colormap("sequential")` | Claro = menor, escuro = maior |
+| Desvio em torno de um centro real | `colormap("diverging")` ou `"diverging_r"` | Conflito (negativo) no polo bordô; `TwoSlopeNorm` |
+| Estado (ok/alerta/crítico) | `STATUS["light"]` | Reservado; sempre com rótulo ou ícone |
 
 ## Matplotlib e Seaborn
 
-```python
-from matplotlib.colors import LinearSegmentedColormap
-import matplotlib.pyplot as plt
-import seaborn as sns
-
-BLUES_6 = ["#EFF3FF", "#C6DBEF", "#9ECAE1", "#6BAED6", "#3182BD", "#08519C"]
-EARTH_5 = ["#FCFAE1", "#EDE2B5", "#CABD91", "#6F6357", "#584A47"]
-ACCENT_RED = "#9F2B2C"
-
-blues_cmap = LinearSegmentedColormap.from_list("reference_blues", BLUES_6)
-earth_cmap = LinearSegmentedColormap.from_list("reference_earth", EARTH_5)
-
-sns.set_theme(
-    style="whitegrid",
-    context="paper",
-    palette=["#08519C", ACCENT_RED, "#6F6357", "#3182BD", "#584A47"],
-)
-plt.rcParams.update({
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "axes.titleweight": "semibold",
-    "axes.labelcolor": "#584A47",
-    "text.color": "#584A47",
-    "xtick.color": "#6F6357",
-    "ytick.color": "#6F6357",
-    "grid.color": "#CABD91",
-    "grid.alpha": 0.35,
-    "legend.frameon": False,
-    "savefig.facecolor": "white",
-})
-```
-
-Não altere globalmente `rcParams` dentro de uma biblioteca reutilizável. Nesse caso, use
-`matplotlib.rc_context` ou um contexto Seaborn para limitar o estilo à figura.
+Decore o construtor com `@with_plot_style` (usa `rc_context`, não muda `rcParams` global; fundo
+creme) e finalize os eixos com `style_axis(ax)`. Para Seaborn, passe
+`palette=list(CATEGORICAL_8[:n])` e `ax=` explicitamente.
 
 ## Plotly
 
 ```python
 import plotly.express as px
+from src.utils.plot_style import CATEGORICAL_8, CREAM, SEQUENTIAL
 
-categorical = ["#08519C", "#9F2B2C", "#6F6357", "#3182BD", "#584A47"]
-continuous_blues = [
-    [0.00, "#EFF3FF"],
-    [0.20, "#C6DBEF"],
-    [0.40, "#9ECAE1"],
-    [0.60, "#6BAED6"],
-    [0.80, "#3182BD"],
-    [1.00, "#08519C"],
-]
-
-fig = px.scatter(
-    df,
-    x="x",
-    y="y",
-    color="group",
-    color_discrete_sequence=categorical,
-    template="plotly_white",
-)
+fig = px.scatter(df, x="x", y="y", color="group", color_discrete_sequence=list(CATEGORICAL_8))
+fig.update_layout(paper_bgcolor=CREAM, plot_bgcolor=CREAM)
+continuous = [[i / (len(SEQUENTIAL) - 1), c] for i, c in enumerate(SEQUENTIAL)]
 ```
 
-Para categorias persistentes, prefira um dicionário explícito a uma sequência posicional:
-
-```python
-COLOR_BY_SETUP = {
-    "federated": "#08519C",
-    "local-only": "#6F6357",
-    "highlight": "#9F2B2C",
-}
-```
+No app de monitoramento, use `seriesColor(i)` e as variáveis CSS (`--series-N`), que mudam com o
+tema; veja a skill `color-palette`.
 
 ## Tipografia e densidade
 
@@ -138,16 +70,15 @@ COLOR_BY_SETUP = {
   agregação, intervalo, amostra e fonte quando necessário.
 - Rótulos diretos podem substituir legendas em poucas séries. Em muitas séries, reduza o número de
   destaques e deixe o restante como contexto neutro.
-- Grid deve ajudar a leitura de valores. Use apenas no eixo relevante e mantenha-o visualmente atrás
-  dos dados.
+- Grid deve ajudar a leitura de valores. Use apenas no eixo relevante e mantenha-o atrás dos dados.
 
 ## Acessibilidade e checagem
 
-- Garanta contraste suficiente entre marca e fundo. Tons claros são preenchimentos, não traços finos.
+- A segurança para daltonismo e o contraste da paleta são **calculados** pelo validador da skill
+  `color-palette`, não avaliados a olho.
+- Texto usa `INK`/`MUTED_INK`, nunca a cor da série.
 - Para duas ou mais séries importantes, varie também marcador, tracejado ou anotação direta.
-- Verifique a figura em escala de cinza quando a separação entre séries for crítica.
-- Evite combinações em que azul e vermelho sejam a única distinção sem rótulos ou formas.
-- Em heatmaps, escolha a cor do texto das células conforme a luminância do fundo ou omita anotações
-  quando a matriz for densa.
-- Inspecione o arquivo salvo, não apenas a janela interativa: exportação pode cortar rótulos ou mudar
-  fontes e proporções.
+- Tons claros das rampas são preenchimento ou faixa de incerteza, não traço fino.
+- Em heatmaps, escolha a cor do texto das células pela luminância do fundo ou omita anotações em
+  matrizes densas.
+- Inspecione o arquivo salvo, não apenas a janela interativa.
