@@ -31,7 +31,7 @@ Criado em 2026-10-04.
 | E1 | Validação do treinamento | ✅ | `feat/training-validation-v2` | 2026-10-16 |
 | E2 | App local de monitoramento e comparação | ✅ | `feat/monitor-app` | 2026-10-16 |
 | E5 | Validação das fontes (consolidação) | ✅ | `docs/sources` | 2026-10-16 |
-| E3 | Ablação: loss fed multitask multi-dataset | ⬜ | `exp/loss-ablation` | — |
+| E3 | Ablação: loss fed multitask multi-dataset | 🟦 | `exp/loss-ablation` | 2026-10-16 |
 | E4 | Ablação: pré-processamento de imagens | ⬜ | `exp/preprocessing-ablation` | — |
 
 Ordem de execução: **E0 → E1 → E2 → E5 → E3 → E4**.
@@ -884,6 +884,11 @@ python -m src.training_baseline --config runs/20260929_082717_FEDERATED_MTnnUNet
 
 **Registro.**
 - 2026-10-16 — 12 baselines concluídos; relatório gerado; resultados acima.
+- 2026-10-16 — **correção do item 4 da Leitura** (no detalhamento da E3). A seg do SIIM **é**
+  aprendida no início: o Dice positivo de validação chega a 0.237 na época 14 e depois cai para
+  ≈ 0, enquanto a val loss continua caindo, e o checkpoint escolhido é o da época 199. O problema é
+  um desalinhamento entre a loss e a métrica, não só a resolução. O texto original foi mantido acima
+  como registro.
 - 2026-10-15 — etapa criada a pedido do usuário. Implementação, testes e smoke concluídos;
   aguardando os treinos.
 
@@ -1572,10 +1577,184 @@ A lista final pode crescer durante a verificação; cada linha nova entra com o 
 **Riscos/dependências.** O número de braços cresce rápido, então é preciso priorizar. Métodos
 adaptativos interagem com a agregação (FedBone), o que exige cuidado na interpretação.
 
-**Detalhamento.** _(a preencher)_
+**Detalhamento.**
+
+#### E3.0 — Fatos que moldam a matriz (levantados em 2026-10-16)
+
+- **Custo:** um run federado de 4 datasets com 200 rodadas leva de 1h20 (29/09) a 2h15 (14/10, com
+  M1/M2 e dois runs simultâneos). Um baseline seg dos 4 datasets leva ~3 h no pior caso.
+- **A seg do SIIM é aprendida e depois desaprendida** (releitura do `history.csv` da B0). O Dice
+  positivo de validação chega a **0.237 na época 14** e vai a 0.003–0.007 no fim, enquanto a val
+  loss continua caindo (checkpoint escolhido: época 199). Nos outros 3 datasets, pico, checkpoint e
+  última época ficam próximos (BUSI 0.660/0.637/0.627; ISIC 0.895/0.894/0.892; TCGA
+  0.777/0.747/0.736). É um **desalinhamento entre loss e métrica**: com ~78% de imagens vazias,
+  minimizar o DiceBCE (Dice por amostra, smoothing 1) leva a prever "nada". Logo, é assunto da E3,
+  não só da E4. Correção registrada na B0.
+- **A falha da cls é específica da federação:** o baseline centralizado usa a mesma loss (CE +
+  `balanced_fold`) e aprende (SIIM 0.77, ISIC 0.48–0.55), enquanto no federado a CE do SIIM fica em
+  ln 2 (A1) e as predições derivam para a classe minoritária (D13).
+- **Acoplamento:** `aggregation.task_weights` (seg 4 : cls 1) define o λ local dos clientes
+  `multi_task` (`src/federated/client.py::_task_lambdas`) **e** o peso de agregação dentro do ISIC,
+  que é `single_task` (seg 80% e cls 20% da massa do dataset, em `server.py::_task_factor`).
+- **Conflito intra-cliente ≈ 0** na E0 (cos M1 entre tarefas), por isso PCGrad/CAGrad locais ficam
+  de fora.
+
+#### E3.1 — Decisões (grill com o usuário em 2026-10-16)
+
+1. **Duas fases.** Fase A: triagem da loss de seg no baseline centralizado (1 seed, barata). Fase B:
+   só a vencedora vai para a matriz federada com 3 seeds.
+2. **Seg na Fase A:** Batch Dice, DiceBCE 0.8/0.2 e FocalDICE, contra o controle DiceBCE 0.5/0.5
+   (os baselines seg da B0, reaproveitados). A deep supervision nnU-Net (Div-1) **fica fora da E3**
+   e continua aberta em `docs/DECISION_SOURCES.md`.
+3. **Cls:** sem Fase A, CE fixa. A Focal fica fora (colapsou para NV no estudo antigo e tem a
+   Div-2); o PR da Div-2 só é feito se ela voltar.
+4. **λ local desacoplado do peso de agregação** por uma chave nova (E3.4 b).
+5. **Braços da Fase B:** controle (com par local-only), λ local 1:1, agregação por tarefa 1:1,
+   Kendall e `personalized_init_seed: dataset`. Só o controle tem par local-only.
+6. **Critério da Fase A:** Dice positivo de **validação**, nunca de teste (E3.2).
+7. **Gate do SIIM:** Dice positivo de validação ≥ 0.10 no checkpoint escolhido **e** na última
+   época.
+8. **Conflito:** M1 + M2 ligados em todos os runs da Fase B (~+25% de tempo).
+9. **Orçamento:** modo `steps` (10 por rodada, 200 rodadas) em todos os braços. Pelo FedNova, o
+   modo `epochs` (τ_i ∝ n_i) introduziria inconsistência de objetivo (D25).
+
+#### E3.2 — Fase A: triagem da loss de segmentação (baseline centralizado)
+
+| Variante | Diferença em relação ao controle | Código novo |
+|---|---|---|
+| `control` | — (B0: `runs/baseline/segmentation/*_20261015_*`) | — |
+| `batch_dice` | `loss.dice_batch: true` | sim (E3.4 a) |
+| `dice_heavy` | `loss.dice_weight: 0.8`, `loss.bce_weight: 0.2` | não |
+| `focal_dice` | `loss.function: FocalDICE` | não |
+
+- **Configuração:** a do run de 29/09 (a mesma da B0), mais só a diferença da tabela. Os 3 configs
+  ficam versionados em `studies/e3_loss/phase_a/<variante>.yaml`, com um cabeçalho que diz de qual
+  config derivam e qual chave muda.
+- **Métricas lidas** (`history.csv` de cada run): `val_dice_positive_seg` no pico, no checkpoint
+  escolhido (`best`) e na última época; `val_empty_fp_image_rate_seg` (prever mais lesão não pode
+  custar FP em todas as imagens vazias).
+- **Regra de escolha** (só validação):
+  1. **Gate do SIIM:** passa se o Dice positivo de validação for ≥ 0.10 no checkpoint escolhido e na
+     última época.
+  2. Entre as que passam, vence a de maior Dice positivo de validação no SIIM (checkpoint escolhido),
+     desde que não piore BUSI, TCGA ou ISIC além do ruído (BUSI ±0.05; demais ±0.01).
+  3. Se nenhuma passar, a seg do SIIM vai para a E4 (resolução) e a escolha usa só os outros 3
+     datasets, pela mesma regra de não-piora.
+  4. Empate ou nenhuma melhora: fica o DiceBCE 0.5/0.5.
+- **Handoff de treino (Fase A):**
+  1. *O que alterar:* nada no `src/config.yaml`; os configs da tabela.
+  2. *Comando* (um por variante):
+     `python -m src.training_baseline --config studies/e3_loss/phase_a/<variante>.yaml --mode segmentation --dataset all --out-root runs/e3_loss/phase_a/<variante>`
+  3. *Tempo:* ~3 h por variante no pior caso, ~9 h no total.
+  4. *Artefatos:* `runs/e3_loss/phase_a/<variante>/segmentation/<dataset>_*/` (`history.csv`,
+     `baseline_test_results.csv`).
+  5. *Sucesso:* 12 runs com `history.csv` completo; nenhum D1 (valor não finito) no diagnóstico.
+
+#### E3.3 — Fase B: matriz federada
+
+- **Manifest:** `studies/e3_loss_ablation.yaml`, `study_id: e3_loss_ablation`. O protocolo é o do
+  `multi_dataset_siim_dice_bce` (4 datasets; BUSI/TCGA/SIIM `multi_task`; ISIC `single_task`;
+  hierárquica uniforme; `dataset_weights` 1:1; `steps` 10; 200 rodadas; CV=1; BF16), fixado em
+  `config_overrides`, mais a loss de seg vencedora da Fase A.
+- **Partição:** um master novo por seed, gerado pelo `study_runner` a partir do `study_id` (é a
+  regeneração intencional da E3; todos os braços leem o mesmo master por seed).
+
+| Braço | `setup` | Diferença em relação ao controle | Pergunta |
+|---|---|---|---|
+| `primary` | federated | — (λ local 4:1, agregação 4:1, seed pessoal `client`) | controle |
+| `local_only` | standalone | — | transferência do controle |
+| `lambda_1to1` | federated | `loss.task_lambdas: {seg: 0.5, cls: 0.5}` | a cls do SIIM está sub-ponderada? |
+| `agg_task_1to1` | federated | `aggregation.task_weights: {seg: 1, cls: 1}`, λ local fixo em 4:1 | a fatia dos clientes cls do ISIC no trunk importa? |
+| `kendall` | federated | `loss.task_weighting: uncertainty` | ponderação adaptativa ajuda? |
+| `init_seed_dataset` | federated | `federated.personalized_init_seed: dataset` | o colapso da E0 se replica com 3 seeds? |
+
+- **Seeds:** perfil `final` (1993/1994/1995) para todos: 18 runs.
+- **Conflito:** `runtime.diagnostics.gradient_conflict` com M1 e M2 ligados em todos (operacional,
+  fora do hash).
+- **Comparações** no manifest: `primary_vs_local` e cada braço contra o `primary`
+  (`effect_lambda_1to1`, `effect_agg_task_1to1`, `effect_kendall`, `effect_init_seed_dataset`).
+- **Handoff de treino (Fase B):**
+  1. *O que alterar:* nada no `src/config.yaml`; o manifest acima, com a loss da Fase A preenchida.
+  2. *Comando:* `python -m src.experiments.study_runner --manifest studies/e3_loss_ablation.yaml --seed-profile final`
+     (antes: `--dry-run` e `--smoke`).
+  3. *Tempo:* 18 runs × 1h20–2h15 × 1.25 (M1+M2) ≈ **32–50 h** de GPU.
+  4. *Artefatos:* `runs/studies/e3_loss_ablation/` (resultados por braço e seed, `analysis/`,
+     `conflict_*.csv`, `negative_transfer_*.csv`, `diagnostics/`).
+  5. *Sucesso:* 18 runs `complete` no monitor; `analysis/` gerado; nenhum D1.
+
+#### E3.4 — Código (antes da Fase A e da B)
+
+Toda chave nova é opcional. Ausente, o comportamento e o hash de estudo continuam idênticos aos dos
+runs existentes, e isso é coberto por teste.
+
+- **(a) Batch Dice.** `DiceBCELoss(..., batch=False)` repassa `batch` ao `DiceLoss` do MONAI;
+  `loss.dice_batch` (padrão `false`) chega por `init_criterion_segmentation`. Cobre os caminhos
+  federado, baseline e clássico.
+- **(b) Desacoplar λ.** `loss.task_lambdas` (opcional); quando ausente, `_task_lambdas` continua
+  derivando de `aggregation.task_weights`. Aplica-se a `client.py` e `training_baseline.py`; o
+  servidor continua lendo só `aggregation.task_weights`. O valor efetivo de λ já vai para a
+  telemetria do cliente (`task_lambdas`).
+- **(c) Kendall.** `loss.task_weighting: fixed | uncertainty` (padrão `fixed`). Com `uncertainty`,
+  num cliente com ≥ 2 tarefas a loss vira `Σ_t (λ_t · e^{−s_t} · L_t + s_t / 2)`, com `s_t = log σ_t²`
+  aprendido e inicializado em 0. Isso segue Kendall et al. 2018, Eq. 7, na forma usual em log, e a
+  forma exata é conferida no texto antes de implementar e registrada na E5. Os `s_t` ficam num
+  módulo do modelo com prefixo próprio, então pertencem ao estado **pessoal** (nunca agregados) e
+  entram no otimizador. Clientes `single_task` ignoram a chave. Tarefa ausente no batch continua
+  omitida, e o termo `s_t/2` também.
+- **(d) Manifest e configs** da Fase A e da Fase B.
+
+#### E3.5 — Testes
+
+- `DiceBCELoss` com `batch=True` iguala o Dice do MONAI calculado à mão sobre o batch; com o padrão,
+  a saída é bit a bit igual à de hoje.
+- `loss.task_lambdas` muda o λ local e **não** muda o peso de agregação; sem a chave, os λ continuam
+  iguais aos de hoje.
+- Kendall: os `s_t` estão no estado pessoal e fora de `shared_keys`; o gradiente chega aos `s_t`;
+  tarefa sem amostra supervisionada não contribui; `fixed` reproduz a loss atual.
+- Hash: um manifest sem as chaves novas gera o mesmo hash de antes.
+- Suíte completa, `sync_agent_assets --check`, smoke CPU de 2 rodadas com o braço `kendall`, e o
+  `study_runner --dry-run` do manifest da Fase B.
+
+#### E3.6 — Leitura e decisão
+
+- Por braço: média ± desvio entre as 3 seeds do Dice positivo e da balanced accuracy por dataset,
+  e o delta contra o `primary` pareado por seed.
+- Um efeito só conta se o delta médio superar o desvio entre seeds e o ruído GPU (BUSI ±0.05;
+  demais ±0.01). Descritivo; p-valores, se houver, são exploratórios.
+- Para cada braço, ler também o conflito (M1/M2), o cancelamento e o diagnóstico D1–D15 (A1, A2,
+  D13), para explicar o mecanismo e não só o número.
+- A decisão final (loss de seg, λ e ponderação) é registrada aqui e em `docs/DECISION_SOURCES.md`.
+
+#### E3.7 — Pendências conhecidas
+
+- Div-1 (deep supervision) fora da E3 por decisão do usuário; segue aberta.
+- Div-2 (Focal com pesos) só é corrigida se a Focal voltar.
+- O teto de épocas e rodadas (D15) não é tratado aqui: todos os braços usam o mesmo orçamento.
+
+#### E3.8 — Commits
+
+(a) Batch Dice e `loss.task_lambdas`, com testes; (b) Kendall, com testes; (c) configs da Fase A e
+manifest da Fase B; (d) registro no `plano.md` depois de cada fase.
 
 **Registro.**
 - 2026-10-04 — etapa planejada (macro).
+- 2026-10-16 — detalhamento escrito a partir do grill (E3.0–E3.8). A releitura da B0 mostra que a
+  seg do SIIM é aprendida e depois desaprendida (pico de val 0.237 na época 14). Branch
+  `exp/loss-ablation` criada a partir da `main`. Status 🟨, aguardando a aprovação do detalhamento.
+- 2026-10-16 — detalhamento aprovado; status 🟦. **E3.4 (a) e (b) implementadas:**
+  - `DiceBCELoss(batch=...)` e `loss.dice_batch`. Um único ponto de entrada,
+    `init_criterion_segmentation_from_config`, agora serve os caminhos federado, baseline e
+    clássico (antes eram 4 chamadas repetidas). `dice_batch` fora do DiceBCE é recusado, não
+    ignorado.
+  - `loss.task_lambdas` via `client_task_lambdas` (cliente e baseline). Sem a chave, o λ continua
+    vindo de `aggregation.task_weights`. Com a chave, ela precisa nomear toda tarefa do cliente.
+  - As chaves **não** entram no `src/config.yaml`: o hash de estudo cobre o config inteiro, e um
+    teste protege isso.
+  - `tests/test_e3_loss_options.py`: 13 testes; suíte com 229 OK; sync OK.
+  - Smoke CPU `multi_task` com as duas chaves ligadas passou. O cliente BUSI registrou λ 0.5/0.5,
+    e os pesos de agregação do ISIC ficaram em 4:1 (seg 4.0, cls 1.0). Smoke movido para
+    `runs/validation/e3_smoke/`.
+  - Próximo: E3.4 (c), Kendall.
 
 ---
 
