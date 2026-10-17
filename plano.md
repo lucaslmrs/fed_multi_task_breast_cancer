@@ -31,7 +31,7 @@ Criado em 2026-10-04.
 | E1 | Validação do treinamento | ✅ | `feat/training-validation-v2` | 2026-10-16 |
 | E2 | App local de monitoramento e comparação | ✅ | `feat/monitor-app` | 2026-10-16 |
 | E5 | Validação das fontes (consolidação) | ✅ | `docs/sources` | 2026-10-16 |
-| E3 | Ablação: loss fed multitask multi-dataset | 🟦 | `exp/loss-ablation` | 2026-10-16 |
+| E3 | Ablação: loss fed multitask multi-dataset | ⏳ | `exp/loss-ablation` | 2026-10-16 |
 | E4 | Ablação: pré-processamento de imagens | ⬜ | `exp/preprocessing-ablation` | — |
 
 Ordem de execução: **E0 → E1 → E2 → E5 → E3 → E4**.
@@ -1775,6 +1775,24 @@ manifest da Fase B; (d) registro no `plano.md` depois de cada fase.
     salvo no estado pessoal dos clientes BUSI/TCGA/SIIM e está ausente nos clientes `single_task`
     do ISIC.
   - Próximo: E3.4 (d), configs da Fase A e manifest da Fase B.
+- 2026-10-16 — **E3.4 (d) concluída; a E3 aguarda os treinos (⏳).**
+  - Fase A: `studies/e3_loss/phase_a/{batch_dice,dice_heavy,focal_dice}.yaml`, gerados a partir do
+    config da B0 (run de 29/09). Cada um muda só a seção `loss`, e o cabeçalho traz a origem e o
+    comando. Smoke de 1 época com 16 amostras nos 4 datasets: 12 runs OK, e a chave de cada
+    variante chegou ao `config.yaml` do run (`runs/validation/e3_phase_a_smoke/`).
+  - Fase B: `studies/e3_loss_ablation.yaml` (`study_id: e3_loss_ablation`, perfil padrão `final`).
+    Fixa no controle tudo o que os braços testam: task_weights 4:1, seed pessoal `client`, M1+M2
+    em `runtime`. O bloco `loss` tem um marcador para receber a vencedora da Fase A.
+    - `--dry-run`: 18 execuções. Cada braço difere do `primary` só na chave pretendida; o
+      `agg_task_1to1` fixa o λ local em 0.8/0.2, igual ao derivado do controle.
+    - `--smoke --seed-profile operational`: os 6 braços terminaram, e a análise traz as 5
+      comparações.
+    - O smoke gerou o master real de `seed_1993` em `data/federated_studies/e3_loss_ablation/`.
+      A assinatura da partição não usa nenhum campo que o smoke altera, então é o mesmo master
+      do run real.
+  - **Próximo passo do usuário:** treinar a Fase A (handoff em E3.2, ~9 h) e trazer os
+    `history.csv`. Depois: aplicar a regra de escolha, preencher a `loss` do manifest e rodar a
+    Fase B (handoff em E3.3, ~32–50 h).
 
 ---
 
