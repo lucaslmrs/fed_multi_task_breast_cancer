@@ -44,11 +44,11 @@ from src.dataset.federated_dataloader import (list_clients, load_client_mapping,
 from src.dataset.splitting import evaluation_metadata
 from src.experiments.training_diagnostics import run_training_diagnostics
 from src.federated import local_trainer, unified_eval
-from src.federated.client import _default_transforms, _task_lambdas, resolve_device
-from src.federated.config import (active_datasets, aggregation_config, dataset_config,
+from src.federated.client import _default_transforms, client_task_lambdas, resolve_device
+from src.federated.config import (active_datasets, dataset_config,
                                   partition_file, validate_federated_config)
 from src.utils.experiment_init import (device_setup, init_criterion_classification,
-                                       init_criterion_segmentation, init_lr_scheduler,
+                                       init_criterion_segmentation_from_config, init_lr_scheduler,
                                        init_multitask_model, init_optimizer)
 from src.utils.miscellany import init_log, seed_everything
 from src.utils.training_runtime import dataloader_kwargs, precision_policy, runtime_config
@@ -136,7 +136,7 @@ def train_and_evaluate(config, dataset, mode, run_path, device, max_epochs=None,
     training = config["training"]
     epochs = int(max_epochs or training["epochs"])
     loader_options = dataloader_kwargs(config)
-    task_lambdas = _task_lambdas(aggregation_config(config)["task_weights"], tasks)
+    task_lambdas = client_task_lambdas(config, tasks)
 
     rows, predictions, history = [], [], []
     for fold in range(int(training["CV"])):
@@ -160,9 +160,7 @@ def train_and_evaluate(config, dataset, mode, run_path, device, max_epochs=None,
             patience=opt_cfg.get("patience", 20), min_lr=float(opt_cfg.get("min_lr", 1e-6)),
             factor=opt_cfg.get("decrease_factor", 0.5),
         )
-        seg_criterion = init_criterion_segmentation(
-            config["loss"]["function"], config["loss"].get("dice_weight", 0.5),
-            config["loss"].get("bce_weight", 0.5))
+        seg_criterion = init_criterion_segmentation_from_config(config["loss"])
         class_weights = resolve_class_weights(
             master, fold, None, dataset, classes, data_cfg.get("class_weighting", "none"),
         ) if "cls" in tasks else None

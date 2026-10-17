@@ -196,19 +196,23 @@ def init_optimizer(model: torch.nn.Module, optimizer: str, learning_rate: float 
     return optimizer
 
 
-def init_criterion_segmentation(loss_function: str = "dice", dice_weight=0.5, bce_weight=0.5) -> torch.nn.Module:
+def init_criterion_segmentation(loss_function: str = "dice", dice_weight=0.5, bce_weight=0.5,
+                                dice_batch=False) -> torch.nn.Module:
     """
     This function initialize the segmentation criterion chosen.
     Note: All the loss functions are initialized with sigmoid activation by default. Then, the segmentation map
     predicted by the model mustn't to apply the activation in the output layer.
 
     :param loss_function: criterion chosen
+    :param dice_batch: batch Dice; only implemented for DiceBCE, refused elsewhere rather than ignored
     :return: PyTorch module
     """
 
     if loss_function == "DiceBCE":
         from src.utils.segmentation_loss import DiceBCELoss
-        return DiceBCELoss(dice_weight, bce_weight)
+        return DiceBCELoss(dice_weight, bce_weight, batch=dice_batch)
+    if dice_batch:
+        raise ValueError(f"loss.dice_batch is only supported with DiceBCE, not '{loss_function}'")
     if loss_function == 'DICE':
         loss_function_criterion = DiceLoss(include_background=True, sigmoid=True, smooth_dr=1, smooth_nr=1,
                                            squared_pred=True)
@@ -233,6 +237,14 @@ def init_criterion_segmentation(loss_function: str = "dice", dice_weight=0.5, bc
         sys.exit()
 
     return loss_function_criterion
+
+
+def init_criterion_segmentation_from_config(config_loss: dict) -> torch.nn.Module:
+    """Segmentation criterion from the ``loss:`` section; the single entry point for every path."""
+    return init_criterion_segmentation(
+        config_loss["function"], config_loss.get("dice_weight", 0.5),
+        config_loss.get("bce_weight", 0.5), dice_batch=config_loss.get("dice_batch", False),
+    )
 
 
 def init_criterion_classification(
@@ -326,7 +338,7 @@ def load_segmentation_experiment_artefacts(config_model, config_opt, config_loss
                                     width=config_model['width'], deep_supervision=config_model['deep_supervision'],
                                     save_folder=Path(run_path))
     optimizer = init_optimizer(model=model, optimizer=config_opt['opt'], learning_rate=config_opt['lr'])
-    criterion = init_criterion_segmentation(config_loss['function'], config_loss.get('dice_weight', 0.5), config_loss.get('bce_weight', 0.5))
+    criterion = init_criterion_segmentation_from_config(config_loss)
     scheduler = init_lr_scheduler(optimizer=optimizer, scheduler=config_opt['scheduler'], t_max=int(config_opt['t_max']),
                                   patience=int(config_opt['patience']), min_lr=float(config_opt['min_lr']),
                                   factor=float(config_opt['decrease_factor']))
@@ -344,7 +356,7 @@ def load_multitask_experiment_artefacts(
                                  deep_supervision=config_model['deep_supervision'],
                                  save_folder=Path(f'{run_path}/') if run_path is not None else None)
     optimizer = init_optimizer(model=model, optimizer=config_opt['opt'], learning_rate=config_opt['lr'])
-    segmentation_criterion = init_criterion_segmentation(config_loss['function'], config_loss.get('dice_weight', 0.5), config_loss.get('bce_weight', 0.5))
+    segmentation_criterion = init_criterion_segmentation_from_config(config_loss)
     classification_criterion = init_criterion_classification(n_classes=len(config_data['classes']),
                                                              classes_weighted=config_data.get("classes_weighted"),
                                                              class_weights=config_data.get("class_weights"),
