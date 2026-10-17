@@ -641,11 +641,11 @@ def _metric_boxplot(df, task, metrics, dataset=None, scheme=None):
                 manage_ticks=False,
             )
             boxes["boxes"][0].set(facecolor=color, alpha=0.82, hatch=hatch)
-            boxes["medians"][0].set(color="#232F3E", linewidth=1.5)
+            boxes["medians"][0].set(color="#1E1216", linewidth=1.5)
             for whisker in boxes["whiskers"]:
-                whisker.set(color="#545B64")
+                whisker.set(color="#6B5559")
             for cap in boxes["caps"]:
-                cap.set(color="#545B64")
+                cap.set(color="#6B5559")
         legend_handles.append(Patch(facecolor=color, hatch=hatch, alpha=0.82, label=label))
     axis.set_xticks(range(len(metrics)))
     axis.set_xticklabels(metrics, rotation=20, ha="right")
@@ -668,7 +668,7 @@ def _delta_bars(per_client, task, dataset=None):
     if dataset is not None:
         subset = subset[subset.dataset == dataset]
     subset["label"] = subset["client_id"].astype(str) + " f" + subset["fold"].astype(str)
-    colors = ["#146EB4" if delta >= 0 else ACCENT for delta in subset["delta"]]
+    colors = ["#7B2032" if delta >= 0 else ACCENT for delta in subset["delta"]]
     hatches = ["" if delta >= 0 else "//" for delta in subset["delta"]]
     fig, axis = plt.subplots(
         figsize=(max(6, len(subset) * 0.5), 4), constrained_layout=True
@@ -676,7 +676,7 @@ def _delta_bars(per_client, task, dataset=None):
     bars = axis.bar(subset["label"], subset["delta"], color=colors)
     for bar, hatch in zip(bars, hatches):
         bar.set_hatch(hatch)
-    axis.axhline(0, color="#232F3E", lw=0.9)
+    axis.axhline(0, color="#1E1216", lw=0.9)
     axis.tick_params(axis="x", rotation=60)
     prefix = f"{dataset} / " if dataset is not None else ""
     comparison = subset["comparison_id"].iloc[0] if not subset.empty else "comparison"
@@ -698,7 +698,7 @@ def _auc_bars(pooled, dataset=None):
     labels = overall["method_id"].astype(str) + " (" + overall["setup"] + ")"
     colors = [setup_color(label, index) for index, label in enumerate(labels)]
     bars = axis.bar(labels, overall["auc_pooled"], color=colors)
-    axis.bar_label(bars, fmt="%.3f", padding=3, color="#232F3E", fontsize=8)
+    axis.bar_label(bars, fmt="%.3f", padding=3, color="#1E1216", fontsize=8)
     axis.tick_params(axis="x", rotation=55)
     axis.set_ylim(0, 1)
     prefix = f"{dataset} - " if dataset is not None else ""
@@ -795,12 +795,12 @@ def build_html(df, summary, deltas, per_client, pooled, out, training_dashboard=
 
     html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>Comparison report</title><style>
-body{{font-family:system-ui,Arial,sans-serif;margin:2rem auto;max-width:1000px;color:#232F3E;background:#fff}}
-h1{{border-bottom:3px solid #146EB4}} h2{{margin-top:2rem;color:#146EB4}}
-img{{max-width:100%;border:1px solid #D5D9D9;border-radius:6px;background:#fff}}
-table{{border-collapse:collapse;font-size:.82rem}} th,td{{border:1px solid #D5D9D9;padding:4px 8px}}
-th{{background:#F0F2F2;color:#232F3E}} a{{color:#146EB4}}
-strong{{color:#B12704}}</style></head><body>
+body{{font-family:system-ui,Arial,sans-serif;margin:2rem auto;max-width:1000px;color:#1E1216;background:#FFF7F1}}
+h1{{border-bottom:3px solid #7B2032}} h2{{margin-top:2rem;color:#7B2032}}
+img{{max-width:100%;border:1px solid #E6D6D1;border-radius:6px;background:#FFF7F1}}
+table{{border-collapse:collapse;font-size:.82rem}} th,td{{border:1px solid #E6D6D1;padding:4px 8px}}
+th{{background:#F3E6E1;color:#1E1216}} a{{color:#7B2032}}
+strong{{color:#B3261E}}</style></head><body>
 <h1>Federated experiment comparison</h1>
 {figures}{tables}{training_section}
 </body></html>"""

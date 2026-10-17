@@ -2,12 +2,12 @@
 // Training monitor front-end (plano E2). Read-only: everything comes from /api/*.
 
 // Categorical series come from style.css (--series-1..8, one validated set per theme; see the
-// amazon-colors skill). LIGHT_SERIES mirrors the light set for exported PNGs.
-const LIGHT_SERIES = ["#146EB4", "#B75F0B", "#AE1A69", "#99740E", "#0698A4", "#B71A18", "#6F41C1",
-  "#087736"];
-// Conflict (negative) on the orange pole, alignment on the blue one, as in the Python reports.
-const DIVERGING_SCALE = [[0, "#B85F05"], [0.25, "#FDA856"], [0.5, "#EFF2F5"], [0.75, "#599DDF"],
-  [1, "#005896"]];
+// color-palette skill). LIGHT_SERIES mirrors the light set for exported PNGs.
+const LIGHT_SERIES = ["#7B2032", "#2B7EC9", "#A46E01", "#8864C0", "#BC5A29", "#089AC3", "#7F8002",
+  "#09A0A0"];
+// Conflict (negative) on the burgundy pole, alignment on the blue one, as in the Python reports.
+const DIVERGING_SCALE = [[0, "#7B2032"], [0.25, "#C2A19A"], [0.5, "#FFF7F1"], [0.75, "#7E93B9"],
+  [1, "#1D4587"]];
 const PRIMARY = { seg: "dice_positive", cls: "balanced_accuracy" };
 const SEVERITY_ORDER = { critical: 0, high: 1, info: 2 };
 
@@ -168,7 +168,7 @@ function plot(node, traces, layout = {}) {
 }
 
 // Light-theme tokens (style.css :root) used for exported images.
-const LIGHT = { text: "#232F3E", muted: "#545B64", grid: "rgba(35, 47, 62, 0.12)", bg: "#FFFFFF" };
+const LIGHT = { text: "#1E1216", muted: "#6B5559", grid: "rgba(30, 18, 22, 0.10)", bg: "#FFF7F1" };
 
 function seriesColor(index) {
   const slot = index % LIGHT_SERIES.length;

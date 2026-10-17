@@ -41,7 +41,7 @@ Never edit a discovery link: edit `.agents/skills/<name>/` and load the skill ma
 | `error-investigator` | A traceback, crash, failing test, or unexplained numeric result |
 | `grill-me` | Stress-testing a plan or design before building it |
 | `python-plotting` | Creating, reviewing, or standardizing Python charts and scientific figures |
-| `amazon-colors` | Choosing or changing any colour: the default Amazon-inspired palette in `plot_style.py`, reports and the monitor, plus its CVD/contrast validator |
+| `color-palette` | Any visual work: the default palette (ink, wine, burgundy, rose, cream) in `plot_style.py`, reports, the monitor and new visuals, plus its CVD/contrast validator |
 | `drive-sync` | Syncing the repo to Google Drive with rclone, or setting rclone up on a new machine |
 
 After adding, renaming, or removing a skill, run `python -m scripts.sync_agent_assets`. Content

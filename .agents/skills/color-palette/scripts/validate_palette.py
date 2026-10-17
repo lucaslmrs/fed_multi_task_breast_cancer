@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the Amazon-inspired palette: colour-vision safety and contrast, computed, not eyeballed.
+"""Validate the project palette (color-palette skill): colour-vision safety and contrast, computed.
 
 Checks (thresholds from the dataviz method; Delta E is Euclidean OKLab distance x100):
 
@@ -12,12 +12,13 @@ Checks (thresholds from the dataviz method; Delta E is Euclidean OKLab distance 
 
 Usage (from the repository root):
 
-    python .agents/skills/amazon-colors/scripts/validate_palette.py            # src/utils/plot_style.py
-    python .agents/skills/amazon-colors/scripts/validate_palette.py --css      # + src/monitor/static/style.css
-    python .agents/skills/amazon-colors/scripts/validate_palette.py \
-        --categorical "#146EB4,#C45500,..." --mode light --surface "#FFFFFF"
+    python .agents/skills/color-palette/scripts/validate_palette.py            # src/utils/plot_style.py
+    python .agents/skills/color-palette/scripts/validate_palette.py --css      # + src/monitor/static/style.css
+    python .agents/skills/color-palette/scripts/validate_palette.py \
+        --categorical "#7B2032,#2B7EC9,..." --mode light --surface "#FFF7F1"
 
-Exit 0 when nothing hard-FAILs, 1 otherwise. WARN rows (CVD floor band, sub-3:1 relief) obligate
+Exit 0 when nothing hard-FAILs, 1 otherwise. WARN rows (CVD floor band, sub-3:1 relief, a user
+-mandated base colour outside the lightness band) obligate
 secondary encoding (marker, dash, direct label) and are not failures.
 """
 
@@ -124,11 +125,15 @@ class Report:
             print(f"{state:4}  {scope:<{width}}  {check:<22} {detail}")
 
 
-def check_categorical(report, name, palette, mode, surface, pairs="adjacent"):
+def check_categorical(report, name, palette, mode, surface, pairs="adjacent", anchors=frozenset()):
     lo, hi = BAND[mode]
     off = [(c, round(oklch(c)[0], 3)) for c in palette if not lo <= oklch(c)[0] <= hi]
-    report.add(name, "lightness band", "FAIL" if off else "PASS",
-               f"outside L {lo}-{hi}: {off}" if off else f"all {len(palette)} inside L {lo}-{hi}")
+    # A base colour the user chose is kept even when it leaves the band; the separation and
+    # contrast gates below still apply to it in full.
+    state = "PASS" if not off else "WARN" if all(c.upper() in anchors for c, _ in off) else "FAIL"
+    report.add(name, "lightness band", state,
+               f"outside L {lo}-{hi}: {off}" + (" (user base colour)" if state == "WARN" else "")
+               if off else f"all {len(palette)} inside L {lo}-{hi}")
     grey = [(c, round(oklch(c)[1], 3)) for c in palette if oklch(c)[1] < CHROMA_FLOOR]
     report.add(name, "chroma floor", "FAIL" if grey else "PASS",
                f"below C {CHROMA_FLOOR}: {grey}" if grey else f"all C >= {CHROMA_FLOOR}")
@@ -176,8 +181,11 @@ def check_diverging(report, name, ramp):
                " | ".join(f"{oklch(c)[0]:.2f}" for c in ramp))
     c_mid = oklch(ramp[mid])[1]
     report.add(name, "neutral midpoint", "PASS" if c_mid < 0.04 else "FAIL", f"{ramp[mid]} C {c_mid:.3f}")
-    d = min(delta_e(ramp[0], ramp[-1], k) for k in ("protan", "deutan", "tritan"))
-    report.add(name, "poles under CVD", "PASS" if d >= 20 else "FAIL", f"min {d:.1f}")
+    # The poles carry the sign, so they get 1.5x the categorical CVD target; below the target
+    # itself the sign is unreadable for dichromats.
+    worst = min((delta_e(ramp[0], ramp[-1], k), k) for k in ("protan", "deutan", "tritan"))
+    state = "PASS" if worst[0] >= 1.5 * CVD_TARGET else "WARN" if worst[0] >= CVD_TARGET else "FAIL"
+    report.add(name, "poles under CVD", state, f"min {worst[0]:.1f} ({worst[1]})")
 
 
 def check_text(report, name, tokens, surface, minimum=TEXT_CONTRAST):
@@ -205,12 +213,13 @@ def validate_plot_style(report):
     for mode in ("light", "dark"):
         palette = ps.CATEGORICAL[mode]
         surface = ps.SURFACE[mode]
-        check_categorical(report, f"categorical/{mode}", palette, mode, surface)
-        check_categorical(report, f"categorical[:3]/{mode}", palette[:3], mode, surface, pairs="all")
+        anchors = {c.upper() for c in ps.ANCHORS}
+        check_categorical(report, f"categorical/{mode}", palette, mode, surface, anchors=anchors)
+        check_categorical(report, f"categorical[:3]/{mode}", palette[:3], mode, surface, pairs="all",
+                          anchors=anchors)
         check_text(report, f"text/{mode}", {"ink": ps.TEXT[mode], "muted": ps.MUTED[mode]}, surface)
         check_text(report, f"status/{mode}", ps.STATUS[mode], surface)
-    check_sequential(report, "sequential/blue", list(ps.SEQUENTIAL_BLUE), ps.SURFACE["light"])
-    check_sequential(report, "sequential/orange", list(ps.SEQUENTIAL_ORANGE), ps.SURFACE["light"])
+    check_sequential(report, "sequential", list(ps.SEQUENTIAL), ps.SURFACE["light"])
     check_diverging(report, "diverging", list(ps.DIVERGING))
 
 
@@ -224,17 +233,21 @@ def validate_css(report):
     dark = _css_tokens(text[text.index('[data-theme="dark"]'):])
     for mode, tokens in (("light", light), ("dark", dark)):
         surface = tokens["panel"]
-        check_text(report, f"css/{mode}", {"text": tokens["text"], "muted": tokens["muted"],
-                                           "accent": tokens["link"]}, surface)
+        text_tokens = ("text", "muted", "link", "critical", "warning", "ok", "info", "pending")
+        check_text(report, f"css/{mode}", {k: tokens[k] for k in text_tokens if k in tokens}, surface)
+        for fg, bg in (("on-accent", "accent"), ("on-brand", "brand")):
+            if fg in tokens and bg in tokens:
+                check_text(report, f"css/{mode}", {f"{fg} on {bg}": tokens[fg]}, tokens[bg])
         series = [tokens[f"series-{i}"] for i in range(1, 9) if f"series-{i}" in tokens]
-        check_categorical(report, f"css-series/{mode}", series, mode, surface)
+        anchors = {"#7B2032"}  # BURGUNDY, a user base colour (see plot_style.ANCHORS)
+        check_categorical(report, f"css-series/{mode}", series, mode, surface, anchors=anchors)
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--categorical", help="comma-separated hexes to validate instead of plot_style")
     parser.add_argument("--mode", choices=("light", "dark"), default="light")
-    parser.add_argument("--surface", help="chart surface (default #FFFFFF light, #161D26 dark)")
+    parser.add_argument("--surface", help="chart surface (default #FFF7F1 light, #1E1216 dark)")
     parser.add_argument("--pairs", choices=("adjacent", "all"), default="adjacent")
     parser.add_argument("--css", action="store_true", help="also validate src/monitor/static/style.css")
     args = parser.parse_args(argv)
@@ -242,7 +255,7 @@ def main(argv=None):
     report = Report()
     if args.categorical:
         palette = [c.strip() for c in args.categorical.split(",") if c.strip()]
-        surface = args.surface or ("#FFFFFF" if args.mode == "light" else "#161D26")
+        surface = args.surface or ("#FFF7F1" if args.mode == "light" else "#1E1216")
         check_categorical(report, f"cli/{args.mode}", palette, args.mode, surface, args.pairs)
     else:
         validate_plot_style(report)

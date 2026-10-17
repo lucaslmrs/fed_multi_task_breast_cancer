@@ -427,12 +427,12 @@ def build_run_artifacts(run_path, *, force=False):
             body = cards + "<h2>Inventário da telemetria</h2>" + inventory
         html = f"""<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'>
 <title>Curvas de treinamento</title><style>
-body{{font-family:system-ui,Arial,sans-serif;margin:2rem auto;max-width:1200px;color:#232F3E;background:#fff}}
-h1{{border-bottom:3px solid #146EB4;color:#232F3E}} h2{{color:#146EB4}}
-section{{margin:2rem 0}} img{{width:100%;height:auto;border:1px solid #D5D9D9;border-radius:7px;background:#fff}}
-.notice{{padding:1rem;border-left:5px solid #FF9900;background:#FFF4E5}} table{{border-collapse:collapse;font-size:.82rem}}
-th,td{{border:1px solid #D5D9D9;padding:4px 8px}} th{{background:#F0F2F2;color:#232F3E}}
-a{{color:#146EB4}}</style></head><body>
+body{{font-family:system-ui,Arial,sans-serif;margin:2rem auto;max-width:1200px;color:#1E1216;background:#FFF7F1}}
+h1{{border-bottom:3px solid #7B2032;color:#1E1216}} h2{{color:#7B2032}}
+section{{margin:2rem 0}} img{{width:100%;height:auto;border:1px solid #E6D6D1;border-radius:7px;background:#FFF7F1}}
+.notice{{padding:1rem;border-left:5px solid #7B2032;background:#F3E6E1}} table{{border-collapse:collapse;font-size:.82rem}}
+th,td{{border:1px solid #E6D6D1;padding:4px 8px}} th{{background:#F3E6E1;color:#1E1216}}
+a{{color:#7B2032}}</style></head><body>
 <h1>Desempenho do treinamento</h1><p>Loss e métricas são separadas por dataset e tarefa. As faixas mostram a dispersão entre clientes; a linha agregada usa os pesos efetivos da estratégia quando disponíveis.</p>
 {body}</body></html>"""
         (output / "dashboard.html").write_text(html, encoding="utf-8")
@@ -473,9 +473,9 @@ def build_study_artifacts(result_paths, out):
     )
     (out / "training_dashboard.html").write_text(
         "<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'><title>Treinamento do estudo</title>"
-        "<style>body{font-family:system-ui,Arial;margin:2rem auto;max-width:900px;color:#232F3E;"
-        "background:#fff}h1{border-bottom:3px solid #146EB4}li{margin:.6rem 0}"
-        "a{color:#146EB4}</style>"
+        "<style>body{font-family:system-ui,Arial;margin:2rem auto;max-width:900px;color:#1E1216;"
+        "background:#FFF7F1}h1{border-bottom:3px solid #7B2032}li{margin:.6rem 0}"
+        "a{color:#7B2032}</style>"
         f"</head><body><h1>Dashboards de treinamento por braço</h1><ul>{items}</ul></body></html>",
         encoding="utf-8",
     )

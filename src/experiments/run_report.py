@@ -40,18 +40,18 @@ TASK_METRICS = {"seg": SEG_METRICS, "cls": CLS_METRICS}
 TASK_LABELS = {"seg": "Segmentação", "cls": "Classificação"}
 
 STYLE = """
-body{font-family:system-ui,Arial,sans-serif;margin:2rem auto;max-width:1200px;color:#232F3E;
-background:#fff;padding:0 16px}
-h1{border-bottom:3px solid #146EB4} h2{color:#146EB4;margin-top:2.2rem} h3{color:#232F3E}
-table{border-collapse:collapse;font-size:.82rem;margin:.6rem 0} th,td{border:1px solid #D5D9D9;
-padding:4px 8px;text-align:left} th{background:#F0F2F2} td.num{text-align:right;
-font-variant-numeric:tabular-nums} a{color:#146EB4}
-.notice{padding:.8rem 1rem;border-left:5px solid #FF9900;background:#FFF4E5;margin:1rem 0}
-.meta{color:#545B64;font-size:.9rem} .scroll{overflow-x:auto}
+body{font-family:system-ui,Arial,sans-serif;margin:2rem auto;max-width:1200px;color:#1E1216;
+background:#FFF7F1;padding:0 16px}
+h1{border-bottom:3px solid #7B2032} h2{color:#7B2032;margin-top:2.2rem} h3{color:#1E1216}
+table{border-collapse:collapse;font-size:.82rem;margin:.6rem 0} th,td{border:1px solid #E6D6D1;
+padding:4px 8px;text-align:left} th{background:#F3E6E1} td.num{text-align:right;
+font-variant-numeric:tabular-nums} a{color:#7B2032}
+.notice{padding:.8rem 1rem;border-left:5px solid #7B2032;background:#F3E6E1;margin:1rem 0}
+.meta{color:#6B5559;font-size:.9rem} .scroll{overflow-x:auto}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:1rem}
-.card{border:1px solid #D5D9D9;border-radius:7px;padding:.6rem;background:#fff}
+.card{border:1px solid #E6D6D1;border-radius:7px;padding:.6rem;background:#FFFDFB}
 .card img{width:100%;height:auto} .card p{margin:.25rem 0;font-size:.82rem}
-.ok{color:#067D62;font-weight:600} .err{color:#B12704;font-weight:600}
+.ok{color:#23690D;font-weight:600} .err{color:#B3261E;font-weight:600}
 """
 
 

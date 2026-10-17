@@ -263,7 +263,7 @@ def _plot_heatmap(labels, matrix):
     from matplotlib.colors import TwoSlopeNorm
     from src.utils.plot_style import PLOT_RC, colormap
 
-    # Conflict (negative cosine) on the orange pole, alignment on the blue one.
+    # Conflict (negative cosine) on the burgundy pole, alignment on the blue one.
     cmap = colormap("diverging_r")
     size = max(5.0, 0.55 * len(labels) + 2.5)
     with matplotlib.rc_context(PLOT_RC):
@@ -277,12 +277,12 @@ def _plot_heatmap(labels, matrix):
                 for j in range(len(labels)):
                     if np.isfinite(matrix[i, j]):
                         axis.text(j, i, f"{round(matrix[i, j], 2) + 0.0:.2f}", ha="center", va="center",
-                                  fontsize=7, color="white" if abs(matrix[i, j]) > 0.6 else "#232F3E")
+                                  fontsize=7, color="white" if abs(matrix[i, j]) > 0.6 else "#1E1216")
         datasets = [label.split("/")[0] for label in labels]
         for index in range(1, len(labels)):
             if datasets[index] != datasets[index - 1]:
-                axis.axhline(index - 0.5, color="#232F3E", linewidth=1.2)
-                axis.axvline(index - 0.5, color="#232F3E", linewidth=1.2)
+                axis.axhline(index - 0.5, color="#1E1216", linewidth=1.2)
+                axis.axvline(index - 0.5, color="#1E1216", linewidth=1.2)
         axis.set_title("Cosseno médio entre deltas do trunk (vermelho = conflito)")
         fig.colorbar(image, ax=axis, shrink=0.8, label="cosseno")
     return fig
@@ -364,13 +364,13 @@ def build_html(run_path, rounds=None, summary=None):
 
     style = (
         "body{font-family:system-ui,Arial,sans-serif;margin:2rem auto;max-width:1100px;"
-        "color:#232F3E;background:#fff;padding:0 16px}h1{border-bottom:3px solid #146EB4}"
-        "h2{color:#146EB4;margin-top:2rem}table{border-collapse:collapse;font-size:.85rem}"
-        "th,td{border:1px solid #D5D9D9;padding:4px 8px}th{background:#F0F2F2}"
-        "td.num{text-align:right;font-variant-numeric:tabular-nums}a{color:#146EB4}"
-        "img{max-width:100%;height:auto;border:1px solid #D5D9D9;border-radius:7px}"
-        ".notice{padding:.8rem 1rem;border-left:5px solid #FF9900;background:#FFF4E5}"
-        ".meta{color:#545B64;font-size:.9rem}"
+        "color:#1E1216;background:#FFF7F1;padding:0 16px}h1{border-bottom:3px solid #7B2032}"
+        "h2{color:#7B2032;margin-top:2rem}table{border-collapse:collapse;font-size:.85rem}"
+        "th,td{border:1px solid #E6D6D1;padding:4px 8px}th{background:#F3E6E1}"
+        "td.num{text-align:right;font-variant-numeric:tabular-nums}a{color:#7B2032}"
+        "img{max-width:100%;height:auto;border:1px solid #E6D6D1;border-radius:7px}"
+        ".notice{padding:.8rem 1rem;border-left:5px solid #7B2032;background:#F3E6E1}"
+        ".meta{color:#6B5559;font-size:.9rem}"
     )
     document = (
         "<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'>"

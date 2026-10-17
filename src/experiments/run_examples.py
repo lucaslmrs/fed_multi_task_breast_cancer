@@ -27,7 +27,7 @@ PER_QUADRANT = 2
 CANDIDATES_FILE = "{setup}_example_candidates.csv"
 EXAMPLES_DIR = Path("report") / "examples"
 
-# Overlay colours: blue = hit, orange = false positive, magenta = missed lesion.
+# Overlay colours: burgundy = hit, blue = false positive, ochre = missed lesion.
 TP_COLOR, FP_COLOR, FN_COLOR = PRIMARY, ACCENT, CATEGORICAL_8[2]
 
 QUADRANT_LABELS = {

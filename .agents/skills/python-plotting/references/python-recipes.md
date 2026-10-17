@@ -12,8 +12,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
-from src.utils.plot_style import (ACCENT, CATEGORICAL_8, INK, PRIMARY, REFERENCE_LINE, SEQUENTIAL_BLUE,
-                                  colormap, setup_color, with_plot_style)
+from src.utils.plot_style import (CATEGORICAL_8, INK, PRIMARY, REFERENCE_LINE, ROSE, colormap,
+                                  setup_color, with_plot_style)
 
 
 def save_figure(fig: plt.Figure, output: Path) -> None:
@@ -64,7 +64,7 @@ sns.boxplot(
     x="group",
     y="value",
     order=order,
-    color=SEQUENTIAL_BLUE[1],
+    color=ROSE,
     width=0.55,
     fliersize=0,
     ax=ax,
@@ -91,7 +91,7 @@ boxen, ECDF, hexbin ou densidade, evitando uma nuvem ilegível.
 
 ```python
 ordered = summary.sort_values("value", ascending=True)
-colors = [ACCENT if x == focus else REFERENCE_LINE for x in ordered["category"]]
+colors = [PRIMARY if x == focus else REFERENCE_LINE for x in ordered["category"]]
 
 fig, ax = plt.subplots(figsize=(7.2, 4.2), constrained_layout=True)
 bars = ax.barh(ordered["category"], ordered["value"], color=colors)
@@ -130,7 +130,7 @@ regressão deve vir acompanhada do modelo/escopo apropriado; correlação visual
 ## Heatmap
 
 ```python
-cmap = colormap("blue")
+cmap = colormap("sequential")
 fig, ax = plt.subplots(figsize=(7.0, 5.5), constrained_layout=True)
 sns.heatmap(
     matrix,
