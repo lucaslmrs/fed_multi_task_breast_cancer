@@ -30,7 +30,7 @@ Criado em 2026-10-04.
 | B0 | Baselines não federados por dataset (seg / cls / multitask) | ✅ | `feat/baselines` | 2026-10-16 |
 | E1 | Validação do treinamento | ✅ | `feat/training-validation-v2` | 2026-10-16 |
 | E2 | App local de monitoramento e comparação | ✅ | `feat/monitor-app` | 2026-10-16 |
-| E5 | Validação das fontes (consolidação) | ⬜ | `docs/sources` | — |
+| E5 | Validação das fontes (consolidação) | ✅ | `docs/sources` | 2026-10-16 |
 | E3 | Ablação: loss fed multitask multi-dataset | ⬜ | `exp/loss-ablation` | — |
 | E4 | Ablação: pré-processamento de imagens | ⬜ | `exp/preprocessing-ablation` | — |
 
@@ -1407,10 +1407,122 @@ consolida e verifica as decisões já existentes antes das ablações.
 
 **Critério de pronto.** Toda decisão listada com status, e nenhuma divergência sem encaminhamento.
 
-**Detalhamento.** _(a preencher)_
+**Detalhamento.**
+
+#### E5.0 — Fontes já existentes (auditoria de 2026-10-16)
+
+| Onde | O que tem | Estado |
+|---|---|---|
+| `papers/ciarp2026/refs.bib` | 18 entradas (FedAvg, FedProx, FedPer, FedRep, nnU-Net, U-Net, IN, V-Net, Focal, BUSI, Wilcoxon, Flower…) | Bib do artigo; faltam MOCHA, FedHCA², FedBone, ConDistFL, UFPS, Hsu 2019 e os papers dos datasets ISIC/TCGA/SIIM |
+| `docs/GRADIENT_CONFLICT_METHODS.md` | M1–M6 com status, verificados em 2026-10-09 (arXiv/ar5iv) e BibTeX | **Já cumpre o padrão da E5**; só é referenciado |
+| `docs/RESEARCH_NOTES.md` | Narrativa do estudo BUSI-only | **Desatualizado**: diz `encoder1..5` compartilhado, `normal` excluído da seg e peso `num_examples × task_weight` (hoje: stem pessoal, máscaras vazias válidas, peso hierárquico por massa) |
+| `data/*/PAPER_NOTES.md` | Fatos medidos e papers de cada dataset | Fonte dos datasets; conferir citação primária |
+| `docs/DICE_BCE_SUPERVISION.md` | Contrato da loss e da supervisão parcial | **Sem citação** de fonte |
+| `referencies/To-do.md` | Busca pendente: como a literatura reporta cancelamento/transferência negativa | Aberto (7 itens) |
+| Memória do projeto (topologia HC-FMTL) | MOCHA, FedHCA², FedBone, ConDistFL/UFPS, verificados em 2026-08-19 | Fora do repo; trazer para o registro |
+
+O código quase não cita fontes (só docstrings dos modelos legados e menções a FedPer/FedAvg/FedBone/PCGrad).
+
+#### E5.1 — Inventário de decisões (linhas do registro)
+
+Cada linha: **decisão → local no código (`arquivo::símbolo`) → fonte primária → status → observação**.
+
+| # | Decisão | Local | Fonte candidata | Suspeita a verificar |
+|---|---|---|---|---|
+| D01 | FedAvg ponderado por amostras (modo `flat`) | `src/federated/server.py::_aggregate_flat` | McMahan 2017 | — |
+| D02 | FedPer: trunk compartilhado + cabeças pessoais | `src/federated/model_split.py::shared_keys` | Arivazhagan 2019; Collins 2021 (FedRep) | FedPer personaliza só as camadas finais; aqui decoder inteiro **e stem** são pessoais → adaptação |
+| D03 | Stem `encoder1` pessoal por modalidade | idem, `share_stem` | — | Provável decisão própria (aproximar de FedBN/Li 2021?) |
+| D04 | Agregação hierárquica + `dataset_weights` | `server.py::_aggregate_hierarchical` | — | Provável decisão própria; buscar precedente |
+| D05 | Peso de cliente por massa de supervisão por tarefa | `server.py::_task_factor` | — | Decisão própria |
+| D06 | Partição Dirichlet(α) por classe | `src/dataset/federated_partition.py::dirichlet_partition` | Hsu et al. 2019 (arXiv:1909.06335) | Conferir se a Dirichlet é por classe sobre clientes, como em Hsu |
+| D07 | Split agrupado por `lesion_id` / paciente | `federated_partition.py::_grouped_dirichlet_partition`, `fold_strategy: stratified_group` | Tschandl 2018 (HAM10000); Buda 2019 | — |
+| D08 | DiceBCE 0.5/0.5 com logits | `src/utils/segmentation_loss.py::DiceBCELoss` | Milletari 2016; Isensee 2021 (nnU-Net usa Dice+CE) | Pesos e smoothing |
+| D09 | Focal loss (multiclasse) | `src/utils/criterions.py::FocalLoss` | Lin 2017 | γ, α, versão multiclasse por one-hot |
+| D10 | Deep supervision `1/(n+1)` | `src/utils/supervision.py::_seg_loss` | Isensee 2021 | **nnU-Net usa `1/2^i` normalizado e descarta a menor escala**: provável divergência; conferir também a ordem de `reversed(outputs)` |
+| D11 | Mascaramento de supervisão parcial (`has_mask`/`has_label`; termo ausente ≠ zero) | `supervision.py::_combined_loss` | ConDistFL (arXiv:2308.04070); UFPS (Patterns 2024) | Simplificação: cabeças disjuntas, sem destilação |
+| D12 | λ fixos entre tarefas | `supervision.py::resolve_task_lambdas` | Caruana 1997; Kendall 2018 como alternativa | Decisão própria (ablação na E3) |
+| D13 | Topologia HC-FMTL (`multi_task`) | `federated_partition.py::_build_multitask_dataset` | FedHCA² (CVPR 2024); Smith 2017 (MOCHA) para desambiguar | Trazer da memória |
+| D14 | Conflito: cosseno entre deltas de clientes | `src/federated/conflict_diagnostics.py` | PCGrad; FedBone | Já em `GRADIENT_CONFLICT_METHODS.md` |
+| D15 | Razão de cancelamento (intra/inter, referência ortogonal) | `src/federated/negative_transfer.py::cancellation_from_gram` | Yin 2018 (gradient diversity) | Fechar o `To-do.md` aqui |
+| D16 | Class weighting `balanced_fold` | `src/dataset/federated_dataloader.py::resolve_class_weights` | King & Zeng 2001 / sklearn `balanced` | — |
+| D17 | Oversampling determinístico; proibido em `multi_task` | `src/dataset/BUSI_dataloader.py::deterministic_oversampling` | Aumente-Maestro 2025 (herdado) | — |
+| D18 | Wilcoxon pareado exploratório; holdout descritivo | `src/experiments/analyze.py::_paired_inference` | Wilcoxon 1945; Demšar 2006 / Dietterich 1998 (não independência) | — |
+| D19 | Métricas: Dice positivo, FP rate em vazios, bal-acc, macro-F1, AUC OvR | `src/federated/unified_eval.py` | Maier-Hein 2024 (Metrics Reloaded) | — |
+| D20 | InstanceNorm (sem BN em FL) | `src/models/multitask/MTnnUNet.py` | Ulyanov 2016; Hsieh 2020 (BN em non-IID) | — |
+| D21–D24 | Pré-processamento por dataset (BUSI `INTER_NEAREST` congelado; ISIC/TCGA/SIIM `INTER_AREA`; máscaras nearest; classe derivada da máscara em TCGA/SIIM) | `src/dataset/*_preprocessing.py` | Papers dos datasets (`PAPER_NOTES.md`) | BUSI nearest é **decisão herdada**, documentada como tal, nunca "corrigida" |
+| D25 | Orçamento local `steps` vs `epochs` | `src/federated/local_trainer.py` | McMahan 2017 (E, B); Wang 2020 (FedNova, heterogeneidade de passos) | — |
+
+A lista final pode crescer durante a verificação; cada linha nova entra com o mesmo formato.
+
+#### E5.2 — Método de verificação
+
+- **Status:** `verificado` (fórmula ou afirmação lida no texto primário), `divergente` (código difere
+  da fonte), `adaptação` (difere de propósito, e o motivo está escrito), `decisão própria` (sem fonte;
+  justificativa escrita) e `sem fonte` (pendência).
+- Leitura do texto primário (arXiv/ar5iv, página do publisher ou PDF em `referencies/`), como na E0.
+  Venue e ano são conferidos à parte; venue não confirmada fica anotada.
+- Cada linha registra a data de verificação e o trecho da fonte (seção ou equação), sem cópia longa.
+
+#### E5.3 — Entregáveis
+
+1. `docs/DECISION_SOURCES.md`, em português como `GRADIENT_CONFLICT_METHODS.md`: tabela D01–D25,
+   seção de divergências e BibTeX das fontes novas.
+2. **Divergências:** cada uma com proposta de encaminhamento. A E5 **não altera código de treino nem
+   de avaliação**, porque isso mudaria resultados já produzidos. Correções de código viram braço ou
+   tarefa da E3/E4, ou PR próprio. Correções só de documentação (ex.: `RESEARCH_NOTES.md`
+   desatualizado) entram na própria E5.
+3. Atualização da bibliografia (destino em E5.5).
+4. `referencies/To-do.md`: itens marcados, com a resposta registrada em D15.
+
+#### E5.4 — Testes
+
+- Nenhum teste novo: a E5 é só documentação (decisão do usuário em 2026-10-16). Os locais
+  `arquivo::símbolo` são conferidos à mão ao fechar a etapa.
+- Suíte completa (`python -m unittest discover -v`) e `python -m scripts.sync_agent_assets --check`,
+  para confirmar que nada fora de `docs/` mudou de comportamento.
+
+#### E5.5 — Decisões em aberto (para o usuário)
+
+1. Destino do BibTeX novo → **`docs/references.bib`, do projeto** (resposta de 2026-10-16). O
+   `refs.bib` do CIARP não é tocado.
+2. Escopo → **D01–D25 completo** (resposta de 2026-10-16).
+3. Teste automático do registro → **não**; E5 fica só em documentação (resposta de 2026-10-16).
+
+#### E5.6 — Commits
+
+(a) registro D01–D13 e fontes de FL e loss; (b) D14–D25 e To-do de cancelamento;
+(c) correções de documentação, bibliografia e registro no `plano.md`.
 
 **Registro.**
 - 2026-10-04 — etapa planejada (macro).
+- 2026-10-16 — detalhamento escrito (auditoria E5.0, inventário de 25 decisões, método, entregáveis
+  e testes). Branch `docs/sources` criada a partir de `feat/monitor-app`.
+- 2026-10-16 — decisões E5.5 respondidas: `docs/references.bib` do projeto, escopo D01–D25 e
+  nenhum teste novo. Status 🟦.
+- 2026-10-16 — **E5 concluída.** `docs/DECISION_SOURCES.md` (26 linhas: D01–D25 mais D06b) e
+  `docs/references.bib` (33 entradas, com venue e DOI conferidos no Crossref e nos proceedings).
+  Status final: 10 verificadas, 5 adaptações, 6 decisões próprias, 2 divergentes, 2 sem fonte e 1
+  adaptação congelada (BUSI `INTER_NEAREST`). Todos os `arquivo::símbolo` do registro foram
+  conferidos.
+  - **Divergências com encaminhamento** (nenhum código de treino ou avaliação alterado):
+    - Div-1, deep supervision: `1/(n+1)` nas 4 saídas, sem normalizar, contra `1/2^i` normalizado
+      e sem as 2 menores no nnU-Net. Vira braço `ds_nnunet` da E3.
+    - Div-2, Focal com pesos de classe: `p_t` sai da CE ponderada. Corrigir num PR antes de
+      qualquer braço Focal da E3. Os resultados federados e o B0 usam CE e não são afetados.
+    - Div-3, citação da Dirichlet: o código é Yurochkin 2019 / NIID-Bench (por classe sobre os
+      clientes), **não** Hsu 2019 (por cliente sobre as classes).
+    - Div-4 (origem do oversampling) e Div-5 (Metrics Reloaded): leituras pendentes.
+  - **Achados para a E3:** pelo FedNova, o modo `epochs` (τ_i ∝ n_i) cai no problema de
+    inconsistência de objetivo; o modo `steps` não. O FedBone foi publicado (JCST 2024), ao
+    contrário do que a nota de 2026-08-19 registrava. O FedBone não reporta métrica de conflito
+    por rodada, então a curva por rodada é contribuição nossa.
+  - **Documentação:** nota histórica no topo de `RESEARCH_NOTES.md` (o texto dos runs antigos foi
+    mantido); critério de classificação por dataset explicitado no `AGENTS.md`; 4 itens do
+    `referencies/To-do.md` fechados. GradNorm/CAGrad/Nash-MTL ficam para a E3.
+
+  **Divergência em relação ao plano:** o item 4 dos entregáveis (atualizar `refs.bib`) foi
+  substituído por `docs/references.bib`, por decisão do usuário; o `refs.bib` do CIARP não foi
+  tocado.
 
 ---
 
