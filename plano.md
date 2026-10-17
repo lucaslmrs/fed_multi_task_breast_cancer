@@ -1755,6 +1755,26 @@ manifest da Fase B; (d) registro no `plano.md` depois de cada fase.
     e os pesos de agregação do ISIC ficaram em 4:1 (seg 4.0, cls 1.0). Smoke movido para
     `runs/validation/e3_smoke/`.
   - Próximo: E3.4 (c), Kendall.
+- 2026-10-16 — **E3.4 (c) implementada (Kendall).**
+  - `loss.task_weighting: fixed | uncertainty`. A forma da Kendall et al. 2018 (§3.2, Eq. 10) foi
+    conferida no texto: usa-se a forma de classificação, `Σ λ_t e^{−s_t} L_t + s_t/2` com
+    `s = log σ²`, para as duas tarefas. Registrada como D12b (adaptação) em
+    `docs/DECISION_SOURCES.md`.
+  - Aplicada em `local_objective`, o ponto único usado pelo treino e pelas sondas de conflito, que
+    assim diferenciam o objetivo real. `s_t` fica num `ParameterDict` com prefixo próprio:
+    personalizado, nunca agregado, criado antes do otimizador, só em clientes com ≥ 2 tarefas.
+    Tarefa ausente no batch é omitida, inclusive o `s_t/2`. A loss de validação continua com λ
+    fixo, para comparar entre braços.
+  - `s_t` vai para `aggregation_history.json` por rodada como `train_task_log_var_<tarefa>`.
+  - **Bug pego pelo smoke e corrigido:** a avaliação final reconstrói o modelo e carrega o
+    `state.pt` em modo estrito, o que falhava com as chaves `task_log_vars.*`. Agora
+    `attach_saved_task_uncertainty` recria os slots a partir das chaves do próprio estado. Há
+    teste de regressão.
+  - `tests/test_e3_kendall.py` com 13 testes; suíte com 242 OK. Smoke CPU `multi_task` com
+    `uncertainty` passou nos dois setups (o standalone antes do rename da métrica). `s_t` foi
+    salvo no estado pessoal dos clientes BUSI/TCGA/SIIM e está ausente nos clientes `single_task`
+    do ISIC.
+  - Próximo: E3.4 (d), configs da Fase A e manifest da Fase B.
 
 ---
 
