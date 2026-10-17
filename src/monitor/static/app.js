@@ -255,8 +255,10 @@ async function openRun(path) {
     main.replaceChildren(el("p", { class: "banner critical" }, String(error)));
     return;
   }
+  state.lastFinal = null;
+  state.curves = null;
   const sections = {
-    header: el("div"), final: el("div"), curves: el("div"), aggregation: el("div"),
+    header: el("div"), highlights: el("div"), final: el("div"), curves: el("div"), aggregation: el("div"),
     conflict: el("div"), resources: el("div"), diagnostics: el("div"),
   };
   main.replaceChildren(...Object.values(sections));
@@ -331,7 +333,89 @@ function renderHeader(entry) {
       : null));
 }
 
+// ---- highlights: Dice and balanced accuracy per dataset ---------------------------------------
+
+const HIGHLIGHTS = [
+  { task: "seg", label: "Dice positivo", test: ["dice_positive", "dice"], curve: ["seg/dice_positive", "seg/dice"] },
+  { task: "cls", label: "Balanced accuracy", test: ["balanced_acc"], curve: ["cls/balanced_accuracy"] },
+];
+
+function meanValCurve(curves, dataset, keys) {
+  if (!curves || !curves.available) return null;
+  for (const key of keys) {
+    const points = new Map();
+    for (const s of curves.series) {
+      const xy = s.dataset === dataset && s.val[key];
+      if (!xy) continue;
+      xy.x.forEach((x, i) => {
+        if (xy.y[i] === null) return;
+        if (!points.has(x)) points.set(x, []);
+        points.get(x).push(xy.y[i]);
+      });
+    }
+    if (points.size) {
+      const xs = [...points.keys()].sort((a, b) => a - b);
+      return { x: xs, y: xs.map((x) => points.get(x).reduce((a, b) => a + b, 0) / points.get(x).length) };
+    }
+  }
+  return null;
+}
+
+function sparkline(curve) {
+  if (!curve || curve.y.length < 2) return null;
+  const w = 140, h = 30, pad = 3;
+  const lo = Math.min(...curve.y), hi = Math.max(...curve.y), span = hi - lo || 1;
+  const px = (i) => pad + (i * (w - 2 * pad)) / (curve.y.length - 1);
+  const py = (v) => h - pad - ((v - lo) * (h - 2 * pad)) / span;
+  const points = curve.y.map((v, i) => `${px(i).toFixed(1)},${py(v).toFixed(1)}`).join(" ");
+  const last = curve.y.length - 1;
+  return el("span", { class: "spark", title: `validação (média entre clientes): ${fmt(curve.y[0], 3)} → ${fmt(curve.y[last], 3)}`,
+    html: `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true">`
+      + `<polyline points="${points}" fill="none" stroke="var(--spark)" stroke-width="1.5" stroke-linejoin="round"/>`
+      + `<circle cx="${px(last).toFixed(1)}" cy="${py(curve.y[last]).toFixed(1)}" r="3" fill="var(--accent)"/></svg>` });
+}
+
+function renderHighlights() {
+  const container = state.sections && state.sections.highlights;
+  if (!container) return;
+  const final = state.lastFinal;
+  const curves = state.curves;
+  const summary = final && final.available ? final.summary : [];
+  const unit = curves && curves.unit === "epoch" ? "época" : "rodada";
+  const datasets = [...new Set([...summary.map((r) => r.dataset),
+    ...((curves && curves.available) ? curves.series.map((s) => s.dataset) : [])])]
+    .filter((d) => d && d !== "all").sort();
+  const groups = datasets.map((dataset) => {
+    const tiles = HIGHLIGHTS.map((h) => {
+      const row = h.test.map((m) => summary.find((r) => r.dataset === dataset && r.task === h.task && r.metric === m)).find(Boolean);
+      const curve = meanValCurve(curves, dataset, h.curve);
+      if (!row && !curve) return null;
+      const value = row ? row.mean : curve.y[curve.y.length - 1];
+      const detail = row
+        ? `teste · dp ${fmt(row.std, 3)} · n=${row.n}`
+        : `validação · ${unit} ${curve.x[curve.x.length - 1]} (média entre clientes)`;
+      return el("div", { class: "tile" },
+        el("div", { class: "tile-label" }, row && row.metric === "dice" ? "Dice" : h.label),
+        el("div", { class: "tile-value" }, fmt(value, 3)),
+        el("div", { class: "tile-detail" }, detail),
+        sparkline(curve));
+    }).filter(Boolean);
+    return tiles.length ? el("div", { class: "kpi-group" }, el("div", { class: "kpi-title" }, dataset), el("div", { class: "kpi-row" }, tiles)) : null;
+  }).filter(Boolean);
+  if (!groups.length) {
+    container.replaceChildren();
+    return;
+  }
+  const source = summary.length ? "métricas finais de teste (média entre cliente × fold)" : "run sem métricas finais: último valor de validação";
+  container.replaceChildren(el("section", { class: "card highlight" },
+    el("h2", {}, "Destaques: Dice e balanced accuracy"),
+    el("div", { class: "kpis" }, groups),
+    el("p", { class: "note" }, `Fonte: ${source}. A linha mostra a validação por ${unit} (média entre clientes); o ponto marca o último valor.`)));
+}
+
 function renderFinal(final) {
+  state.lastFinal = final;
+  renderHighlights();
   if (!final.available) {
     state.sections.final.replaceChildren(card("Métricas finais (teste)", unavailable(final)));
     return;
@@ -358,6 +442,7 @@ async function loadCurves() {
     const payload = await api(`/api/curves?path=${q(path)}`);
     if (path !== state.selected) return;
     state.curves = payload;
+    renderHighlights();
     renderCurves();
   } catch (error) {
     state.sections.curves.replaceChildren(card("Curvas", el("p", { class: "banner critical" }, String(error))));
