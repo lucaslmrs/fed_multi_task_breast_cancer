@@ -51,6 +51,7 @@ from src.utils.experiment_init import (device_setup, init_criterion_classificati
                                        init_criterion_segmentation_from_config, init_lr_scheduler,
                                        init_multitask_model, init_optimizer)
 from src.utils.miscellany import init_log, seed_everything
+from src.utils.supervision import attach_task_uncertainty, task_weighting_mode
 from src.utils.training_runtime import dataloader_kwargs, precision_policy, runtime_config
 
 MODES = {"segmentation": ("seg",), "classification": ("cls",), "multitask": ("seg", "cls")}
@@ -153,6 +154,8 @@ def train_and_evaluate(config, dataset, mode, run_path, device, max_epochs=None,
                              loader_options, tasks)
 
         model = _build_model(config, data_cfg, device)
+        if task_weighting_mode(config) == "uncertainty":
+            attach_task_uncertainty(model, tasks)
         optimizer = init_optimizer(model, config["optimizer"]["opt"], config["optimizer"]["lr"])
         opt_cfg = config["optimizer"]
         scheduler = init_lr_scheduler(

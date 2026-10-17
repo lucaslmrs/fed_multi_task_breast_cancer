@@ -131,6 +131,7 @@ class StudyHashGuardTests(unittest.TestCase):
         loss = yaml.safe_load((ROOT / "src" / "config.yaml").read_text(encoding="utf-8"))["loss"]
         self.assertNotIn("dice_batch", loss)
         self.assertNotIn("task_lambdas", loss)
+        self.assertNotIn("task_weighting", loss)
 
 
 if __name__ == "__main__":

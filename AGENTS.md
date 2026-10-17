@@ -320,6 +320,7 @@ the budget, not the federation.
 | `dirichlet_alpha` | Train partition skew (high = IID, low = non-IID) |
 | `aggregation.task_weights.{seg,cls}` | Per-task weight inside each dataset aggregate; also the local λ unless `loss.task_lambdas` is set |
 | `loss.task_lambdas.{seg,cls}` | Optional. Local-objective λ only (multi-task clients, baseline), decoupled from aggregation; must name every owned task |
+| `loss.task_weighting` | Optional. `fixed` (default) or `uncertainty`: Kendall weighting `Σ λ_t e^{-s_t} L_t + s_t/2` on clients with ≥2 tasks; `s_t` personalized, reported as `train_task_log_var_<task>`; validation loss stays on fixed λ |
 | `loss.dice_batch` | Optional, DiceBCE only. Batch Dice (intersection/union pooled over the batch) instead of per-sample |
 | `oversampling.{seg,cls}` | Per-task override of `data.oversampling` |
 | `device` | `auto` / `cpu` / `cuda` (resolved per worker) |

@@ -45,6 +45,7 @@ from src.utils.experiment_init import (
     init_optimizer,
 )
 from src.utils.miscellany import seed_everything
+from src.utils.supervision import LOG_VARS_ATTR, attach_task_uncertainty, task_weighting_mode
 from src.utils.training_runtime import (
     configure_worker_threads,
     dataloader_kwargs,
@@ -161,6 +162,9 @@ class FederatedClient(NumPyClient):
             deep_supervision=config["model"]["deep_supervision"],
             save_folder=None,
         ).to(self.device)
+        # Kendall log-variances must exist before the optimizer so it updates them too.
+        if task_weighting_mode(config) == "uncertainty":
+            attach_task_uncertainty(self.model, self.tasks)
         self.optimizer = init_optimizer(
             self.model, config["optimizer"]["opt"], config["optimizer"]["lr"]
         )
@@ -548,6 +552,13 @@ class FederatedClient(NumPyClient):
         for name in ("grad_norm_mean", "grad_norm_max"):
             if np.isfinite(train_result.get(name, float("nan"))):
                 metrics[f"train_{name}"] = float(train_result[name])
+        log_vars = getattr(self.model, LOG_VARS_ATTR, None)
+        if log_vars is not None:
+            # The learned s_t = log sigma_t^2 is the only window into what Kendall weighting chose.
+            for name, value in log_vars.items():
+                metrics[f"train_task_log_var_{name}"] = float(value.detach())
+            logging.info("[%s] round=%s task_log_var=%s", self.client_id, server_round,
+                         {name: round(float(v.detach()), 4) for name, v in log_vars.items()})
         metrics.update(self._scalar_metrics("train", {
             "loss": train_result["loss"],
             "task_losses": train_result["task_losses"],

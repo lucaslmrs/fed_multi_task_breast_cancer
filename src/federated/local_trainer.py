@@ -28,7 +28,7 @@ from src.utils.training_runtime import PrecisionPolicy, move_to_device
 
 from src.utils.supervision import (
     _seg_loss, _cls_loss, _prep_label, _avg_logits, resolve_tasks,
-    resolve_task_lambdas, _supervised, _combined_loss,
+    resolve_task_lambdas, _supervised, _combined_loss, LOG_VARS_ATTR, uncertainty_weighted_loss,
 )
 
 
@@ -175,6 +175,9 @@ def local_objective(model, data, inputs, owned, lambdas, device, num_classes, se
                 data, logits, outputs, owned, lambdas, device, num_classes,
                 seg_criterion, cls_criterion, inversely_weighted,
             )
+            log_vars = getattr(model, LOG_VARS_ATTR, None)
+            if log_vars is not None:
+                loss = uncertainty_weighted_loss(raw_terms, lambdas, log_vars)
     return loss, counted, raw_terms, logits, outputs
 
 
