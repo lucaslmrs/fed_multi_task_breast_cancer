@@ -179,7 +179,10 @@ Models live under `src/models/` in three sub-packages:
 Multi-task loss: `total = α * seg_loss + (1-α) * cls_loss`  
 - `α` is `training.alpha` in config (default 0.85, so segmentation dominates).
 - Segmentation criterion: configurable `DiceBCE` (default 0.5 Dice + 0.5 BCEWithLogitsLoss); Dice applies sigmoid internally — **pass logits to both terms**. Legacy Dice and other criteria remain selectable.
-- Classification criterion: Focal loss for multiclass, BCE for binary.
+- Classification criterion: Focal loss for multiclass (`loss.classification_criterion`), BCE for
+  binary. The federated and baseline paths read the per-dataset `classification_criterion` instead
+  (`CE` in the current manifest). Focal combined with class weights deviates from Lin et al. — see
+  `docs/DECISION_SOURCES.md` (D09).
 - Early stopping via `training.max_patience`; best checkpoint saved per fold.
 
 In the federated path `training.alpha` is not used. A `single_task` client optimizes the configured segmentation loss **or** the

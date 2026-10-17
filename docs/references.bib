@@ -1,0 +1,321 @@
+% Project bibliography for docs/DECISION_SOURCES.md (E5).
+% Venues and DOIs checked on 2026-10-16 against Crossref and the proceedings pages.
+% papers/ciarp2026/refs.bib is the frozen submission bibliography and is not edited from here;
+% entries shared with it keep the same keys.
+
+% --- Federated learning ---------------------------------------------------------------------
+
+@inproceedings{mcmahan2017,
+  author    = {McMahan, Brendan and Moore, Eider and Ramage, Daniel and Hampson, Seth and Ag{\"u}era y Arcas, Blaise},
+  title     = {Communication-efficient learning of deep networks from decentralized data},
+  booktitle = {Proceedings of the 20th International Conference on Artificial Intelligence and Statistics (AISTATS)},
+  series    = {PMLR},
+  volume    = {54},
+  pages     = {1273--1282},
+  year      = {2017}
+}
+
+@article{arivazhagan2019,
+  author  = {Arivazhagan, Manoj Ghuhan and Aggarwal, Vinay and Singh, Aaditya Kumar and Choudhary, Sunav},
+  title   = {Federated learning with personalization layers},
+  journal = {arXiv preprint arXiv:1912.00818},
+  year    = {2019}
+}
+
+@inproceedings{collins2021,
+  author    = {Collins, Liam and Hassani, Hamed and Mokhtari, Aryan and Shakkottai, Sanjay},
+  title     = {Exploiting shared representations for personalized federated learning},
+  booktitle = {Proceedings of the 38th International Conference on Machine Learning (ICML)},
+  series    = {PMLR},
+  volume    = {139},
+  pages     = {2089--2099},
+  year      = {2021}
+}
+
+@inproceedings{li2021fedbn,
+  author    = {Li, Xiaoxiao and Jiang, Meirui and Zhang, Xiaofei and Kamp, Michael and Dou, Qi},
+  title     = {{FedBN}: federated learning on non-{IID} features via local batch normalization},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2021},
+  note      = {arXiv:2102.07623}
+}
+
+@inproceedings{yurochkin2019,
+  author    = {Yurochkin, Mikhail and Agarwal, Mayank and Ghosh, Soumya and Greenewald, Kristjan and Hoang, Nghia and Khazaeni, Yasaman},
+  title     = {Bayesian nonparametric federated learning of neural networks},
+  booktitle = {Proceedings of the 36th International Conference on Machine Learning (ICML)},
+  series    = {PMLR},
+  volume    = {97},
+  pages     = {7252--7261},
+  year      = {2019}
+}
+
+@inproceedings{li2022niidbench,
+  author    = {Li, Qinbin and Diao, Yiqun and Chen, Quan and He, Bingsheng},
+  title     = {Federated learning on non-{IID} data silos: an experimental study},
+  booktitle = {2022 IEEE 38th International Conference on Data Engineering (ICDE)},
+  pages     = {965--978},
+  year      = {2022},
+  doi       = {10.1109/ICDE53745.2022.00077}
+}
+
+% Cited only to record that its Dirichlet (per client over classes) is NOT the one implemented.
+@article{hsu2019,
+  author  = {Hsu, Tzu-Ming Harry and Qi, Hang and Brown, Matthew},
+  title   = {Measuring the effects of non-identical data distribution for federated visual classification},
+  journal = {arXiv preprint arXiv:1909.06335},
+  year    = {2019}
+}
+
+@inproceedings{wang2020fednova,
+  author    = {Wang, Jianyu and Liu, Qinghua and Liang, Hao and Joshi, Gauri and Poor, H. Vincent},
+  title     = {Tackling the objective inconsistency problem in heterogeneous federated optimization},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  volume    = {33},
+  year      = {2020}
+}
+
+@inproceedings{hsieh2020quagmire,
+  author    = {Hsieh, Kevin and Phanishayee, Amar and Mutlu, Onur and Gibbons, Phillip},
+  title     = {The non-{IID} data quagmire of decentralized machine learning},
+  booktitle = {Proceedings of the 37th International Conference on Machine Learning (ICML)},
+  series    = {PMLR},
+  volume    = {119},
+  pages     = {4387--4398},
+  year      = {2020}
+}
+
+% --- Federated multi-task learning and partial supervision ----------------------------------
+
+@inproceedings{smith2017mocha,
+  author    = {Smith, Virginia and Chiang, Chao-Kai and Sanjabi, Maziar and Talwalkar, Ameet S.},
+  title     = {Federated multi-task learning},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  volume    = {30},
+  pages     = {4424--4434},
+  year      = {2017}
+}
+
+@inproceedings{lu2024fedhca2,
+  author    = {Lu, Yuxiang and Huang, Suizhi and Yang, Yuwen and Sirejiding, Shalayiding and Ding, Yue and Lu, Hongtao},
+  title     = {{FedHCA$^2$}: towards hetero-client federated multi-task learning},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  pages     = {5599--5609},
+  year      = {2024},
+  doi       = {10.1109/CVPR52733.2024.00535}
+}
+
+@article{chen2024fedbone,
+  author  = {Chen, Yiqiang and Zhang, Teng and Jiang, Xinlong and Chen, Qian and Gao, Chenlong and Huang, Wuliang},
+  title   = {{FedBone}: towards large-scale federated multi-task learning},
+  journal = {Journal of Computer Science and Technology},
+  volume  = {39},
+  number  = {5},
+  pages   = {1040--1057},
+  year    = {2024},
+  doi     = {10.1007/s11390-024-3639-x}
+}
+
+@inproceedings{wang2023condistfl,
+  author    = {Wang, Pochuan and Shen, Chen and Wang, Weichung and Oda, Masahiro and Fuh, Chiou-Shann and Mori, Kensaku and Roth, Holger R.},
+  title     = {{ConDistFL}: conditional distillation for federated learning from partially annotated data},
+  booktitle = {Lecture Notes in Computer Science},
+  pages     = {311--321},
+  publisher = {Springer},
+  year      = {2023},
+  doi       = {10.1007/978-3-031-47401-9_30}
+}
+
+@article{jiang2024ufps,
+  author  = {Jiang, Le and Ma, Li Yan and Zeng, Tie Yong and Ying, Shi Hui},
+  title   = {{UFPS}: a unified framework for partially annotated federated segmentation in heterogeneous data distribution},
+  journal = {Patterns},
+  volume  = {5},
+  number  = {2},
+  pages   = {100917},
+  year    = {2024},
+  doi     = {10.1016/j.patter.2024.100917}
+}
+
+% --- Multi-task learning, gradient conflict ---------------------------------------------------
+
+@article{caruana1997,
+  author  = {Caruana, Rich},
+  title   = {Multitask learning},
+  journal = {Machine Learning},
+  volume  = {28},
+  number  = {1},
+  pages   = {41--75},
+  year    = {1997}
+}
+
+@inproceedings{kendall2018,
+  author    = {Kendall, Alex and Gal, Yarin and Cipolla, Roberto},
+  title     = {Multi-task learning using uncertainty to weigh losses for scene geometry and semantics},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year      = {2018},
+  doi       = {10.1109/CVPR.2018.00781}
+}
+
+@inproceedings{yu2020pcgrad,
+  author    = {Yu, Tianhe and Kumar, Saurabh and Gupta, Abhishek and Levine, Sergey and Hausman, Karol and Finn, Chelsea},
+  title     = {Gradient surgery for multi-task learning},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  volume    = {33},
+  year      = {2020},
+  note      = {arXiv:2001.06782}
+}
+
+@inproceedings{yin2018diversity,
+  author    = {Yin, Dong and Pananjady, Ashwin and Lam, Max and Papailiopoulos, Dimitris and Ramchandran, Kannan and Bartlett, Peter},
+  title     = {Gradient diversity: a key ingredient for scalable distributed learning},
+  booktitle = {Proceedings of the 21st International Conference on Artificial Intelligence and Statistics (AISTATS)},
+  series    = {PMLR},
+  volume    = {84},
+  pages     = {1998--2007},
+  year      = {2018}
+}
+
+% --- Segmentation, losses, normalisation ------------------------------------------------------
+
+@article{isensee2021,
+  author  = {Isensee, Fabian and Jaeger, Paul F. and Kohl, Simon A. A. and Petersen, Jens and Maier-Hein, Klaus H.},
+  title   = {nn{U}-{N}et: a self-configuring method for deep learning-based biomedical image segmentation},
+  journal = {Nature Methods},
+  volume  = {18},
+  number  = {2},
+  pages   = {203--211},
+  year    = {2021},
+  doi     = {10.1038/s41592-020-01008-z}
+}
+
+@inproceedings{milletari2016,
+  author    = {Milletari, Fausto and Navab, Nassir and Ahmadi, Seyed-Ahmad},
+  title     = {{V}-{N}et: fully convolutional neural networks for volumetric medical image segmentation},
+  booktitle = {Fourth International Conference on 3D Vision (3DV)},
+  pages     = {565--571},
+  year      = {2016}
+}
+
+@inproceedings{lin2017,
+  author    = {Lin, Tsung-Yi and Goyal, Priya and Girshick, Ross and He, Kaiming and Doll{\'a}r, Piotr},
+  title     = {Focal loss for dense object detection},
+  booktitle = {Proceedings of the IEEE International Conference on Computer Vision (ICCV)},
+  pages     = {2980--2988},
+  year      = {2017}
+}
+
+@article{ulyanov2016,
+  author  = {Ulyanov, Dmitry and Vedaldi, Andrea and Lempitsky, Victor},
+  title   = {Instance normalization: the missing ingredient for fast stylization},
+  journal = {arXiv preprint arXiv:1607.08022},
+  year    = {2016}
+}
+
+@article{king2001,
+  author  = {King, Gary and Zeng, Langche},
+  title   = {Logistic regression in rare events data},
+  journal = {Political Analysis},
+  volume  = {9},
+  number  = {2},
+  pages   = {137--163},
+  year    = {2001},
+  doi     = {10.1093/oxfordjournals.pan.a004868}
+}
+
+@article{aumente2025,
+  author  = {Aumente-Maestro, Carlos and D{\'\i}ez, Jorge and Remeseiro, Beatriz},
+  title   = {A multi-task framework for breast cancer segmentation and classification in ultrasound imaging},
+  journal = {Computer Methods and Programs in Biomedicine},
+  volume  = {260},
+  pages   = {108540},
+  year    = {2025}
+}
+
+% --- Evaluation and statistics ----------------------------------------------------------------
+
+@article{wilcoxon1945,
+  author  = {Wilcoxon, Frank},
+  title   = {Individual comparisons by ranking methods},
+  journal = {Biometrics Bulletin},
+  volume  = {1},
+  number  = {6},
+  pages   = {80--83},
+  year    = {1945}
+}
+
+@article{demsar2006,
+  author  = {Dem{\v{s}}ar, Janez},
+  title   = {Statistical comparisons of classifiers over multiple data sets},
+  journal = {Journal of Machine Learning Research},
+  volume  = {7},
+  pages   = {1--30},
+  year    = {2006}
+}
+
+@article{dietterich1998,
+  author  = {Dietterich, Thomas G.},
+  title   = {Approximate statistical tests for comparing supervised classification learning algorithms},
+  journal = {Neural Computation},
+  volume  = {10},
+  number  = {7},
+  pages   = {1895--1923},
+  year    = {1998},
+  doi     = {10.1162/089976698300017197}
+}
+
+@article{maier-hein2024metrics,
+  author  = {Maier-Hein, Lena and Reinke, Annika and Godau, Patrick and Tizabi, Minu D. and others},
+  title   = {Metrics reloaded: recommendations for image analysis validation},
+  journal = {Nature Methods},
+  volume  = {21},
+  number  = {2},
+  pages   = {195--212},
+  year    = {2024},
+  doi     = {10.1038/s41592-023-02151-z}
+}
+
+% --- Datasets -----------------------------------------------------------------------------------
+
+@article{aldhabyani2020,
+  author  = {Al-Dhabyani, Walid and Gomaa, Mohammed and Khaled, Hussien and Fahmy, Aly},
+  title   = {Dataset of breast ultrasound images},
+  journal = {Data in Brief},
+  volume  = {28},
+  pages   = {104863},
+  year    = {2020}
+}
+
+@article{codella2019isic,
+  author  = {Codella, Noel and Rotemberg, Veronica and Tschandl, Philipp and Celebi, M. Emre and Dusza, Stephen and Gutman, David and Helba, Brian and Kalloo, Aadi and Liopyris, Konstantinos and Marchetti, Michael and Kittler, Harald and Halpern, Allan},
+  title   = {Skin lesion analysis toward melanoma detection 2018: a challenge hosted by the {International Skin Imaging Collaboration (ISIC)}},
+  journal = {arXiv preprint arXiv:1902.03368},
+  year    = {2019}
+}
+
+@article{tschandl2018ham10000,
+  author  = {Tschandl, Philipp and Rosendahl, Cliff and Kittler, Harald},
+  title   = {The {HAM10000} dataset, a large collection of multi-source dermatoscopic images of common pigmented skin lesions},
+  journal = {Scientific Data},
+  volume  = {5},
+  pages   = {180161},
+  year    = {2018},
+  doi     = {10.1038/sdata.2018.161}
+}
+
+@article{buda2019,
+  author  = {Buda, Mateusz and Saha, Ashirbani and Mazurowski, Maciej A.},
+  title   = {Association of genomic subtypes of lower-grade gliomas with shape features automatically extracted by a deep learning algorithm},
+  journal = {Computers in Biology and Medicine},
+  volume  = {109},
+  pages   = {218--225},
+  year    = {2019},
+  doi     = {10.1016/j.compbiomed.2019.05.002}
+}
+
+@misc{siimacr2019,
+  author       = {{Society for Imaging Informatics in Medicine (SIIM) and American College of Radiology (ACR)}},
+  title        = {{SIIM-ACR} Pneumothorax Segmentation},
+  howpublished = {Kaggle competition, \url{https://www.kaggle.com/c/siim-acr-pneumothorax-segmentation}},
+  year         = {2019}
+}

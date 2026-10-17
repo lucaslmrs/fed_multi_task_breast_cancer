@@ -4,6 +4,15 @@ Working notes for a future paper. Covers (1) objectives, (2) the system built, (
 experimental protocol and fairness controls, and (4) the results of the two comparison runs
 (`runs/comparison_2seg_2cls`, `runs/comparison_4seg_4cls`) with interpretation.
 
+> **Historical record (note added 2026-10-16, E5).** Sections 2–4 describe the BUSI-only system
+> *as it was when these runs were produced*, and are kept unchanged so the numbers stay traceable.
+> The current pipeline differs: `encoder1` is a personalized stem (`share_stem: False`), BUSI
+> `normal` empty masks now supervise segmentation (`seg_exclude_classes: []`, Dice+BCE protocol),
+> the client weight is `client_factor × Σ_t task_weight[t]·mass_t / n` with hierarchical
+> aggregation, and the federated classification criterion is per-dataset (`CE`). For the
+> Dirichlet partition, cite Yurochkin et al. 2019 / Li et al. 2022 (NIID-Bench), not Hsu et al.
+> 2019. Every implementation decision and its verified source is in `docs/DECISION_SOURCES.md`.
+
 ---
 
 ## 1. Objectives
