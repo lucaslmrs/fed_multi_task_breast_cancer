@@ -8,6 +8,7 @@ import gzip
 import json
 import logging
 import mimetypes
+import re
 from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +20,7 @@ from src.monitor import catalog, compare, readers
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 STATIC_FILES = {"index.html", "app.js", "style.css"}
 # Static reports and what they embed; nothing else under the runs root is served.
+STUDY_ARM = re.compile(r"^studies/(.+)/runs/seed_([^/]+)/([^/]+)$")
 SERVED_SUFFIXES = {".html", ".png", ".svg", ".jpg", ".jpeg", ".css", ".js", ".csv", ".json",
                    ".md", ".txt"}
 
@@ -43,9 +45,17 @@ class MonitorApp:
         return target
 
     def entry(self, run_dir):
-        group = catalog.relative(run_dir, self.root).split("/", 1)[0]
-        return asdict(catalog.describe_run(run_dir, self.root, group,
-                                                   stale_minutes=self.stale_minutes))
+        rel = catalog.relative(run_dir, self.root)
+        group = rel.split("/", 1)[0]
+        labels = {}
+        arm = STUDY_ARM.match(rel)
+        if arm:   # same labels the catalog gives a study arm, so names agree everywhere
+            group = "study"
+            labels = {"study_id": arm.group(1), "seed": arm.group(2), "arm_id": arm.group(3)}
+        elif group not in ("baseline", "validation") or rel == group:
+            group = "runs"
+        return asdict(catalog.describe_run(run_dir, self.root, group, labels,
+                                           stale_minutes=self.stale_minutes))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -135,7 +145,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(readers.diagnose_now(app.run_dir(first), app.baseline_root))
         if name == "config":
             return self._json({"root": str(app.root), "refresh_seconds": app.refresh_seconds,
-                               "stale_minutes": app.stale_minutes})
+                               "stale_minutes": app.stale_minutes,
+                               "task_modes": catalog.TASK_MODES})
         if name == "runs":
             return self._json(app.scan())
         if name == "run":

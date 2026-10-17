@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -96,6 +97,56 @@ class CatalogTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 catalog.resolve(root, "../etc")
             self.assertEqual(catalog.resolve(root, "a/b"), (Path(root) / "a/b").resolve())
+
+
+class TaskModeTests(unittest.TestCase):
+    def _run(self, root, name, clients, topology):
+        builder = RunBuilder(root)
+        builder.root = Path(root) / name
+        builder.config["datasets"]["DS"]["client_topology"] = topology
+        for client_id, tasks in clients:
+            builder.client(client_id, tasks=tasks)
+        return builder.write()
+
+    def test_multitask_clients_read_from_the_fold(self):
+        with tempfile.TemporaryDirectory() as root:
+            run = self._run(root, "mt", [("DS_mt_0", ("seg", "cls")), ("DS_mt_1", ("seg", "cls"))],
+                            "multi_task")
+            entry = catalog.asdict(catalog.describe_run(run, root, "runs"))
+            self.assertEqual(entry["task_mode"], "MTL")
+            self.assertEqual(entry["composition"], [{"dataset": "DS", "tasks": ["seg", "cls"],
+                                                     "topology": "multi_task",
+                                                     "clients": {"mt": 2}}])
+            self.assertTrue(entry["display_name"].startswith("Federado · DS"))
+
+    def test_separate_task_clients_are_single_task(self):
+        with tempfile.TemporaryDirectory() as root:
+            run = self._run(root, "st", [("DS_seg_0", ("seg",)), ("DS_cls_0", ("cls",))],
+                            "single_task")
+            entry = catalog.asdict(catalog.describe_run(run, root, "runs"))
+            self.assertEqual(entry["task_mode"], "ST")
+            self.assertEqual(entry["composition"][0]["clients"], {"seg": 1, "cls": 1})
+
+    def test_config_fallback_before_any_fold_and_seg_only(self):
+        with tempfile.TemporaryDirectory() as root:
+            run = self._run(root, "early", [("c0", ("seg",))], "multi_task")
+            shutil.rmtree(run / "fold_0")
+            config = yaml.safe_load((run / "config.yaml").read_text(encoding="utf-8"))
+            config["federated"]["n_clients"] = {"DS": {"seg": 3, "cls": 3}}
+            (run / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+            entry = catalog.asdict(catalog.describe_run(run, root, "runs"))
+            self.assertEqual(entry["composition"][0]["clients"], {"mt": 3})
+            self.assertEqual(entry["task_mode"], "MTL")
+            config["datasets"]["DS"]["client_topology"] = "single_task"
+            config["federated"]["n_clients"] = {"DS": {"seg": 2, "cls": 0}}
+            (run / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
+            self.assertEqual(catalog.describe_run(run, root, "runs").task_mode, "SEG")
+
+    def test_baseline_mode_and_name(self):
+        with tempfile.TemporaryDirectory() as root:
+            entry = catalog.describe_run(_baseline(root), root, "baseline")
+            self.assertEqual((entry.task_mode, entry.display_name), ("MTL", "DS · 15/10 22:40"))
+            self.assertEqual(entry.composition[0]["topology"], "pooled")
 
 
 class CurveTests(unittest.TestCase):
@@ -245,6 +296,14 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(json.loads(body)["available"])
         self.assertIn(b"<html", self._get("/")[1].lower())
         self.assertEqual(self._get("/files/run/run_report.html")[1], b"<html>report</html>")
+
+    def test_study_arm_keeps_its_name_when_opened(self):
+        _study(self.root)
+        status, body = self._get("/api/run?path=studies/toy/runs/seed_1/primary")
+        entry = json.loads(body)["entry"]
+        self.assertEqual((entry["display_name"], entry["group"], entry["study_id"]),
+                         ("primary", "study", "toy"))
+        self.assertIn("MTL", json.loads(self._get("/api/config")[1])["task_modes"])
 
     def test_paths_outside_the_root_or_unserved_are_refused(self):
         self.assertEqual(self._status("/api/curves?path=../"), 403)

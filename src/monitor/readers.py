@@ -144,10 +144,12 @@ def _log_payload(run_dir, fold=None):
         for key, values in record.items():
             if key == "mean_val_loss":
                 payload.append({"fold": fold_id, "client_id": "server (mean)", "dataset": "all",
-                                "tasks": ["combined"], "train": {},
-                                "val": {"combined/loss": _xy(values)}})
+                                "tasks": ["server"], "train": {},
+                                "val": {"server/loss": _xy(values)}})
                 continue
             dataset, _, task = key.partition("/")
+            # A multitask group ("seg+cls") logs one primary metric for both tasks together.
+            task = "combined" if "+" in task else task
             payload.append({"fold": fold_id, "client_id": f"{key} (server)", "dataset": dataset,
                             "tasks": [task], "train": {},
                             "val": {f"{task}/primary_metric": _xy(values)}})

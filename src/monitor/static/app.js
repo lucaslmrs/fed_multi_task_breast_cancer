@@ -59,7 +59,88 @@ function pill(text, cls) { return el("span", { class: `pill ${cls || text}` }, t
 function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 function plotReady() { return typeof window.Plotly !== "undefined"; }
 function shortName(entry) {
-  return entry.arm_id || entry.name;
+  return entry.display_name || entry.arm_id || entry.name;
+}
+
+// ---- vocabulary: what a run is and what it trains ----------------------------------------------
+
+const SETUPS = {
+  federated: { code: "FED", text: "Federado: os clientes compartilham o tronco (encoder) via FedAvg e mantêm cabeças próprias (FedPer)" },
+  standalone: { code: "LOCAL", text: "Local-only: cada cliente treina sozinho, sem federação (linha de base controlada)" },
+  baseline: { code: "BASE", text: "Baseline não federado: um modelo treinado com todos os dados de um dataset juntos (B0)" },
+};
+const MODE_FALLBACK = {
+  MTL: "multitarefa: seg e cls no mesmo cliente/modelo",
+  ST: "tarefa única por cliente: seg e cls em clientes separados",
+  "MTL+ST": "misto: alguns datasets multitarefa, outros com clientes separados por tarefa",
+  SEG: "só segmentação", CLS: "só classificação",
+};
+const METRIC_LABELS = {
+  dice_positive: "Dice positivo", iou_positive: "IoU positivo", dice: "Dice (global)", iou: "IoU (global)",
+  empty_fp_image_rate: "FP em imagens vazias", empty_predicted_area_fraction: "Área prevista em vazias",
+  sensitivity: "Sensibilidade", specificity: "Especificidade", precision: "Precisão",
+  balanced_accuracy: "Balanced accuracy", balanced_acc: "Balanced accuracy", accuracy: "Acurácia", acc: "Acurácia",
+  macro_f1: "Macro-F1", auc: "AUC", loss: "Loss", primary_metric: "Métrica primária (log do servidor)",
+  grad_norm: "Norma do gradiente", grad_norm_mean: "Norma do gradiente (média)", grad_norm_max: "Norma do gradiente (máx.)",
+};
+function metricLabel(metric) { return METRIC_LABELS[metric] || metric.replace(/_/g, " "); }
+
+function chip(code, cls, title) { return el("span", { class: `chip ${cls}`, title }, code); }
+function setupChip(kind) {
+  const setup = SETUPS[kind];
+  return setup ? chip(setup.code, `setup-${kind}`, setup.text) : null;
+}
+function modeChip(mode) {
+  if (!mode) return null;
+  const text = (state.config.task_modes || MODE_FALLBACK)[mode] || mode;
+  return chip(mode, `mode-${mode.replace("+", "-").toLowerCase()}`, text);
+}
+function taskChip(task) {
+  return { seg: chip("SEG", "mode-seg", "segmentação"), cls: chip("CLS", "mode-cls", "classificação"),
+    combined: chip("SEG+CLS", "mode-mtl", "seg e cls juntos"), server: chip("SERVIDOR", "setup-federated", "valor agregado pelo servidor") }[task] || null;
+}
+
+function compositionTable(entry) {
+  const rows = entry.composition || [];
+  if (!rows.length) return null;
+  const topology = (row) => ({
+    multi_task: "multitarefa: o mesmo cliente treina seg e cls sobre as mesmas imagens",
+    single_task: row.tasks.length > 1 ? "clientes separados por tarefa (um grupo só seg, outro só cls)" : "um cliente por tarefa",
+    pooled: entry.kind === "baseline" ? "um modelo único com todos os dados do dataset" : "—",
+  }[row.topology] || row.topology);
+  const clients = (row) => {
+    const c = row.clients || {};
+    if (c.pool) return "—";
+    if (c.mt) return `${c.mt} (seg + cls)`;
+    return ["seg", "cls"].filter((t) => c[t]).map((t) => `${c[t]} ${t}`).join(" + ") || "—";
+  };
+  return table([
+    { label: "dataset", key: "dataset" },
+    { label: "tarefas", value: (r) => el("span", {}, r.tasks.length ? r.tasks.map(taskChip) : "—") },
+    { label: "como as tarefas são treinadas", value: topology },
+    { label: "clientes", value: clients },
+  ], rows);
+}
+
+function glossary() {
+  const items = [
+    ["FED", SETUPS.federated.text], ["LOCAL", SETUPS.standalone.text], ["BASE", SETUPS.baseline.text],
+    ["MTL", MODE_FALLBACK.MTL], ["ST", MODE_FALLBACK.ST], ["MTL+ST", MODE_FALLBACK["MTL+ST"]],
+    ["SEG / CLS", "segmentação (máscara da lesão) / classificação (rótulo da imagem)"],
+    ["Rodada", "uma rodada federada: cada cliente treina localmente e o servidor agrega o tronco; nos baselines o eixo é a época"],
+    ["Validação", "medida no modelo depois da agregação de cada rodada (post_aggregation_round)"],
+    ["Dice positivo", "Dice só nas imagens com lesão; imagens sem lesão entram em 'FP em imagens vazias'"],
+    ["Balanced accuracy", "média do recall por classe; não premia prever sempre a classe majoritária"],
+    ["Budget", "quanto cada cliente treina por rodada: steps (passos fixos) ou epochs (passadas pelos dados)"],
+    ["Status", "running = treinando agora; stale = parou sem resultados; pending = braço planejado; complete = terminou"],
+  ];
+  return el("dl", { class: "glossary" }, items.flatMap(([term, text]) => [el("dt", {}, term), el("dd", {}, text)]));
+}
+
+function toggleGlossary() {
+  const panel = $("#glossary");
+  if (!panel.children.length) panel.append(el("h2", {}, "Como ler o monitor"), glossary());
+  panel.classList.toggle("hidden");
 }
 
 function plot(node, traces, layout = {}) {
@@ -166,8 +247,8 @@ async function loadCatalog() {
 
 function matches(entry, text) {
   if (!text) return true;
-  const hay = [entry.name, entry.path, entry.arm_id, entry.study_id, entry.kind, entry.status,
-    ...(entry.datasets || [])].join(" ").toLowerCase();
+  const hay = [entry.name, entry.display_name, entry.path, entry.arm_id, entry.study_id, entry.kind,
+    (SETUPS[entry.kind] || {}).code, entry.task_mode, entry.status, ...(entry.datasets || [])].join(" ").toLowerCase();
   return text.split(/\s+/).every((t) => hay.includes(t));
 }
 
@@ -182,13 +263,15 @@ function runItem(entry) {
     },
   });
   const diag = entry.diagnostics && entry.diagnostics.status;
-  return el("div", { class: `run-item${state.selected === entry.path ? " selected" : ""}`, title: entry.path || "planned, not started" },
+  return el("div", { class: `run-item${state.selected === entry.path ? " selected" : ""}`, title: entry.path || "planejado, não iniciado" },
     checkbox,
-    el("button", { class: "name", disabled: pending, onclick: () => openRun(entry.path) },
-      shortName(entry)),
-    entry.kind && entry.kind !== "federated" ? el("span", { class: "muted", style: "font-size:11px" }, entry.kind) : null,
-    entry.status !== "complete" ? pill(entry.status) : null,
-    diag ? pill(diag) : null);
+    el("div", { class: "run-main" },
+      el("button", { class: "name", disabled: pending, onclick: () => openRun(entry.path) },
+        shortName(entry)),
+      el("div", { class: "run-tags" },
+        setupChip(entry.kind), modeChip(entry.task_mode),
+        entry.status !== "complete" ? pill(entry.status) : null,
+        diag ? pill(diag) : null)));
 }
 
 function group(key, title, children, extra) {
@@ -230,7 +313,18 @@ function renderTree() {
   const loose = { runs: "Runs avulsos", baseline: "Baselines (B0)", validation: "Validação / smokes" };
   for (const [key, title] of Object.entries(loose)) {
     const entries = runs.filter((e) => e.group === key).sort((a, b) => b.last_activity - a.last_activity);
-    if (entries.length) tree.push(group(`loose:${key}`, `${title} (${entries.length})`, entries.map(runItem)));
+    if (!entries.length) continue;
+    // Baselines are one model per dataset and task mode: group them by what they train.
+    const modes = ["SEG", "CLS", "MTL"];
+    const children = key === "baseline"
+      ? modes.map((mode) => {
+        const items = entries.filter((e) => e.task_mode === mode)
+          .sort((a, b) => shortName(a).localeCompare(shortName(b)));
+        const label = { SEG: "só segmentação", CLS: "só classificação", MTL: "multitarefa" }[mode];
+        return items.length ? group(`baseline:${mode}`, el("span", {}, modeChip(mode), ` ${label} (${items.length})`), items.map(runItem)) : null;
+      }).concat([entries.filter((e) => !modes.includes(e.task_mode)).map(runItem)])
+      : entries.map(runItem);
+    tree.push(group(`loose:${key}`, `${title} (${entries.length})`, children));
   }
   if (text && !state.openGroups.has("__filter")) {
     tree.forEach((d) => { d.open = true; d.querySelectorAll("details").forEach((x) => { x.open = true; }); });
@@ -325,20 +419,26 @@ async function loadSection(name, render) {
 
 function renderHeader(entry) {
   const meta = [
-    ["tipo", entry.kind], ["status", entry.status], ["datasets", (entry.datasets || []).join(", ")],
-    ["budget", entry.budget_mode || "—"], [entry.kind === "baseline" ? "épocas" : "rodadas", entry.rounds],
+    ["budget", entry.budget_mode || (entry.kind === "baseline" ? "épocas (não federado)" : "—")],
+    [entry.kind === "baseline" ? "épocas" : "rodadas", entry.rounds],
     ["folds", (entry.folds || []).join(", ") || "—"],
-    ["topologia", Object.entries(entry.topology || {}).map(([d, t]) => `${d}:${t}`).join(", ") || "—"],
   ];
   if (entry.study_id) meta.unshift(["estudo", `${entry.study_id} / seed ${entry.seed} / ${entry.arm_id}`]);
   const updated = new Date(entry.last_activity * 1000).toLocaleString();
+  const setup = SETUPS[entry.kind];
+  const mode = (state.config.task_modes || MODE_FALLBACK)[entry.task_mode];
   state.sections.header.replaceChildren(el("section", { class: "card" },
-    el("div", { class: "run-header" }, el("h2", {}, entry.name), pill(entry.status),
+    el("div", { class: "run-header" }, el("h2", {}, shortName(entry)),
+      setupChip(entry.kind), modeChip(entry.task_mode), pill(entry.status),
       entry.diagnostics && entry.diagnostics.status ? pill(entry.diagnostics.status) : null),
+    el("p", { class: "summary-line" },
+      setup ? `${setup.text}. ` : "", mode ? `Tarefas: ${mode}.` : ""),
+    compositionTable(entry),
     el("div", { class: "meta" }, meta.map(([k, v]) => el("span", {}, `${k}: `, el("b", {}, v ?? "—"))),
       el("span", {}, "última atividade: ", el("b", {}, updated))),
-    el("div", { class: "meta" }, el("span", {}, `caminho: ${entry.path}`),
-      entry.master ? el("span", {}, `master: ${entry.master}`) : null),
+    el("details", { class: "meta-details" }, el("summary", { class: "muted" }, "Pasta e partição"),
+      el("div", { class: "meta" }, el("span", {}, `pasta: ${entry.path}`),
+        entry.master ? el("span", {}, `master: ${entry.master}`) : null)),
     entry.reports && entry.reports.length
       ? el("div", { class: "meta" }, "relatórios estáticos: ", entry.reports.map((r) =>
         el("a", { href: `/files/${r}`, target: "_blank", rel: "noopener" }, r.slice(entry.path.length + 1))))
@@ -432,17 +532,30 @@ function renderFinal(final) {
     state.sections.final.replaceChildren(card("Métricas finais (teste)", unavailable(final)));
     return;
   }
-  const summary = table([
-    { label: "dataset", key: "dataset" }, { label: "tarefa", key: "task" },
-    { label: "métrica", key: "metric" }, { label: "média", key: "mean", num: true },
-    { label: "dp", key: "std", num: true }, { label: "n (cliente × fold)", key: "n", num: true },
-  ], final.summary);
-  const clientColumns = [{ label: "fold", key: "fold" }, { label: "cliente", key: "client_id" },
-    { label: "dataset", key: "dataset" }, { label: "tarefa", key: "task" },
-    ...final.metrics.map((m) => ({ label: m, key: m, num: true }))];
-  const clients = el("details", {}, el("summary", { class: "muted" }, `Por cliente (${final.clients.length} linhas)`),
-    table(clientColumns, final.clients, { maxHeight: 360 }));
-  state.sections.final.replaceChildren(card("Métricas finais (teste)", summary, clients,
+  // One table per task, metrics as columns and datasets as rows: seg and cls never share a row.
+  const blocks = ["seg", "cls"].map((task) => {
+    const rows = final.summary.filter((r) => r.task === task);
+    if (!rows.length) return null;
+    const metrics = [...new Set(rows.map((r) => r.metric))];
+    const byDataset = [...new Set(rows.map((r) => r.dataset))].sort().map((dataset) => {
+      const row = { dataset };
+      for (const r of rows.filter((x) => x.dataset === dataset)) {
+        row[r.metric] = `${fmt(r.mean)}${r.std !== null ? ` ± ${fmt(r.std, 3)}` : ""}`;
+        row.n = r.n;
+      }
+      return row;
+    });
+    const clientRows = final.clients.filter((r) => r.task === task);
+    const clientMetrics = final.metrics.filter((m) => clientRows.some((r) => r[m] !== null && r[m] !== undefined));
+    return el("div", { class: "task-block" },
+      el("h3", { class: "task-title" }, taskChip(task), " ", task === "seg" ? "Segmentação" : "Classificação"),
+      table([{ label: "dataset", key: "dataset" }, ...metrics.map((m) => ({ label: metricLabel(m), key: m, num: true })),
+        { label: "n (cliente × fold)", key: "n", num: true }], byDataset),
+      el("details", {}, el("summary", { class: "muted" }, `Por cliente (${clientRows.length} linhas)`),
+        table([{ label: "fold", key: "fold" }, { label: "cliente", key: "client_id" }, { label: "dataset", key: "dataset" },
+          ...clientMetrics.map((m) => ({ label: metricLabel(m), key: m, num: true }))], clientRows, { maxHeight: 360 })));
+  }).filter(Boolean);
+  state.sections.final.replaceChildren(card("Métricas finais (teste)", ...blocks,
     el("p", { class: "note" }, "Média ± dp entre cliente × fold, que não são réplicas independentes (descritivo).")));
 }
 
@@ -468,6 +581,28 @@ function defaultMetric(keys) {
   return keys[0];
 }
 
+// "val/seg/dice_positive" -> "SEG · Dice positivo (validação)"
+function curveKeyLabel(key) {
+  const [split, task, ...rest] = key.split("/");
+  const taskText = { seg: "SEG", cls: "CLS", combined: "SEG+CLS" }[task] || task;
+  return `${taskText} · ${metricLabel(rest.join("/"))} (${split === "val" ? "validação" : "treino"})`;
+}
+
+// Curves are split by task: a "Segmentação" block and a "Classificação" block, each offering only
+// its own metrics. "combined" holds the joint loss of a multitask baseline.
+const TASK_SECTIONS = [
+  { task: "seg", title: "Segmentação", default: ["dice_positive", "dice", "loss"] },
+  { task: "cls", title: "Classificação", default: ["balanced_accuracy", "loss"] },
+  { task: "combined", title: "Seg + cls juntos (cliente/modelo multitarefa)", default: ["loss", "primary_metric"] },
+  { task: "server", title: "Servidor: loss média de validação de todos os clientes (log)", default: ["loss"] },
+];
+
+function clientColor(dataset, clientId) {
+  // Colour follows the client, not its position in a filtered list.
+  const ids = [...new Set(state.curves.series.filter((s) => s.dataset === dataset).map((s) => s.client_id))].sort();
+  return seriesColor(Math.max(0, ids.indexOf(clientId)));
+}
+
 function renderCurves() {
   const payload = state.curves;
   const container = state.sections.curves;
@@ -475,49 +610,70 @@ function renderCurves() {
     container.replaceChildren(card("Curvas de treino", unavailable(payload)));
     return;
   }
-  const keys = new Set();
-  const folds = new Set();
-  for (const s of payload.series) {
-    folds.add(String(s.fold));
-    for (const split of ["val", "train"]) for (const k of Object.keys(s[split])) keys.add(`${split}/${k}`);
+  const folds = [...new Set(payload.series.map((s) => String(s.fold)))].sort();
+  const shared = state.controls.curves || (state.controls.curves = {});
+  if (shared.fold !== "all" && !folds.includes(String(shared.fold))) shared.fold = folds.length > 1 ? "all" : folds[0];
+  const unitLabel = payload.unit === "epoch" ? "época" : "rodada";
+  const blocks = [];
+  for (const section of TASK_SECTIONS) {
+    // metric -> splits that have it, for this task only
+    const metrics = new Map();
+    for (const s of payload.series) {
+      for (const split of ["val", "train"]) {
+        for (const key of Object.keys(s[split])) {
+          const [task, ...rest] = key.split("/");
+          if (task !== section.task) continue;
+          const metric = rest.join("/");
+          if (!metrics.has(metric)) metrics.set(metric, new Set());
+          metrics.get(metric).add(split);
+        }
+      }
+    }
+    if (!metrics.size) continue;
+    const c = state.controls[`curves_${section.task}`] || (state.controls[`curves_${section.task}`] = {});
+    const names = [...metrics.keys()].sort((a, b) => metricLabel(a).localeCompare(metricLabel(b)));
+    if (!metrics.has(c.metric)) c.metric = section.default.find((m) => metrics.has(m)) || names[0];
+    const splits = [...metrics.get(c.metric)];
+    if (!splits.includes(c.split)) c.split = splits.includes("val") ? "val" : splits[0];
+    const charts = el("div", { class: "charts" });
+    const splitControl = el("span", { class: "segmented" }, ["val", "train"].map((split) => el("button", {
+      class: c.split === split ? "active" : undefined, disabled: !splits.includes(split),
+      onclick: () => { c.split = split; renderCurves(); },
+    }, split === "val" ? "validação" : "treino")));
+    blocks.push(el("div", { class: "task-block" },
+      el("h3", { class: "task-title" }, taskChip(section.task), " ", section.title),
+      el("div", { class: "controls" },
+        select(names.map((m) => [m, metricLabel(m)]), c.metric, (v) => { c.metric = v; renderCurves(); }, "métrica"),
+        splitControl),
+      charts));
+    const datasets = [...new Set(payload.series.map((s) => s.dataset))].sort();
+    for (const dataset of datasets) {
+      const traces = payload.series
+        .filter((s) => s.dataset === dataset && (shared.fold === "all" || String(s.fold) === String(shared.fold)))
+        .map((s) => {
+          const xy = s[c.split][`${section.task}/${c.metric}`];
+          if (!xy) return null;
+          return { x: xy.x, y: xy.y, mode: "lines", type: "scatter",
+            name: shared.fold === "all" && folds.length > 1 ? `${s.client_id} f${s.fold}` : s.client_id,
+            line: { color: clientColor(dataset, s.client_id), width: 1.6 } };
+        }).filter(Boolean);
+      if (!traces.length) continue;
+      const node = el("div", { class: "chart" });
+      charts.append(node);
+      plot(node, traces, {
+        title: { text: `${dataset === "all" ? "todos os datasets" : dataset} — ${metricLabel(c.metric)} (${c.split === "val" ? "validação" : "treino"})`, font: { size: 13 } },
+        xaxis: { title: unitLabel }, yaxis: { title: metricLabel(c.metric) } });
+    }
+    if (!charts.children.length) charts.replaceWith(el("p", { class: "note" }, "Nenhuma série com essa métrica."));
   }
-  const allKeys = [...keys].sort();
-  const c = state.controls.curves || {};
-  if (!allKeys.includes(c.metric)) c.metric = defaultMetric(allKeys);
-  if (c.fold !== "all" && !folds.has(String(c.fold))) c.fold = folds.size > 1 ? "all" : [...folds][0];
-  state.controls.curves = c;
-  const [split, ...rest] = c.metric.split("/");
-  const metricKey = rest.join("/");
-  const datasets = [...new Set(payload.series.map((s) => s.dataset))].sort();
-  const charts = el("div", { class: "charts" });
-  const controls = el("div", { class: "controls" },
-    select(allKeys, c.metric, (v) => { c.metric = v; renderCurves(); }, "métrica"),
-    folds.size > 1 ? select([["all", "todos"], ...[...folds].sort().map((f) => [f, f])], c.fold,
-      (v) => { c.fold = v; renderCurves(); }, "fold") : null,
-    el("span", { class: "muted" }, `fonte: ${payload.source}; eixo: ${payload.unit}`));
   const notes = [];
   if (payload.source === "execution.log") notes.push("Histórico antigo sem curvas por cliente: valores por dataset/tarefa da linha de log do servidor.");
-  if (split === "val" && payload.unit === "round") notes.push("Validação = post_aggregation_round (modelo após a agregação); post_local_round é ignorado (A8).");
-  if (split === "train" && payload.unit === "round") notes.push("Treino = média dos passos locais da rodada.");
-  container.replaceChildren(card("Curvas de treino", controls, charts,
-    ...notes.map((n) => el("p", { class: "note" }, n))));
-  for (const dataset of datasets) {
-    const node = el("div", { class: "chart" });
-    charts.append(node);
-    const traces = [];
-    payload.series.filter((s) => s.dataset === dataset && (c.fold === "all" || String(s.fold) === String(c.fold)))
-      .forEach((s, index) => {
-        const xy = s[split][metricKey];
-        if (!xy) return;
-        traces.push({ x: xy.x, y: xy.y, mode: "lines", type: "scatter",
-          name: c.fold === "all" && folds.size > 1 ? `${s.client_id} f${s.fold}` : s.client_id,
-          line: { color: seriesColor(index), width: 1.6 } });
-      });
-    if (!traces.length) { node.remove(); continue; }
-    plot(node, traces, { title: { text: `${dataset} — ${c.metric}`, font: { size: 13 } },
-      xaxis: { title: payload.unit }, yaxis: { title: metricKey.split("/").pop() } });
-  }
-  if (!charts.children.length) charts.replaceWith(el("p", { class: "note" }, "Nenhuma série com essa métrica."));
+  if (payload.unit === "round") notes.push("Validação = modelo depois da agregação de cada rodada (post_aggregation_round). Treino = média dos passos locais da rodada. Cada linha é um cliente.");
+  container.replaceChildren(card("Curvas de treino",
+    el("div", { class: "controls" },
+      folds.length > 1 ? select([["all", "todos"], ...folds.map((f) => [f, f])], shared.fold, (v) => { shared.fold = v; renderCurves(); }, "fold") : null,
+      el("span", { class: "muted" }, `eixo x: ${unitLabel}; fonte: ${payload.source}`)),
+    ...blocks, ...notes.map((n) => el("p", { class: "note" }, n))));
 }
 
 // ---- aggregation ----------------------------------------------------------------------------
@@ -708,7 +864,7 @@ function renderCompare() {
     el("p", { class: "note" }, `Referência (★): ${runs[0].entry.path}. ${payload.note}`),
     ...payload.warnings.map((w) => el("div", { class: `banner ${w.severity}` }, w.message)),
     table([{ label: "", value: (r) => labels[runs.indexOf(r)] }, { label: "caminho", value: (r) => r.entry.path },
-      { label: "tipo", value: (r) => r.entry.kind }, { label: "status", value: (r) => pill(r.entry.status) },
+      { label: "tipo", value: (r) => el("span", { class: "chips" }, setupChip(r.entry.kind), modeChip(r.entry.task_mode)) }, { label: "status", value: (r) => pill(r.entry.status) },
       { label: "budget", value: (r) => r.entry.budget_mode || "—" },
       { label: "diag.", value: (r) => r.entry.diagnostics && r.entry.diagnostics.status ? pill(r.entry.diagnostics.status) : "—" }], runs));
 
@@ -725,7 +881,7 @@ function renderCompare() {
     return row;
   });
   const lowerIsBetter = (metric) => metric === "empty_fp_image_rate";
-  const columns = [{ label: "dataset", key: "dataset" }, { label: "tarefa", key: "task" }, { label: "métrica", key: "metric" }];
+  const columns = [{ label: "dataset", key: "dataset" }, { label: "tarefa", value: (r) => taskChip(r.task) }, { label: "métrica", value: (r) => metricLabel(r.metric) }];
   runs.forEach((run, i) => {
     columns.push({ label: labels[i], key: `v${i}`, num: true });
     if (i > 0) columns.push({ label: "Δ vs ★", key: `d${i}`, num: true, cls: (r) => {
@@ -743,7 +899,7 @@ function renderCompare() {
   if (!curveKeys.includes(c.metric)) c.metric = defaultMetric(curveKeys);
   const charts = el("div", { class: "charts" });
   const curves = card("Curvas médias por dataset (média entre clientes × folds)",
-    el("div", { class: "controls" }, curveKeys.length ? select(curveKeys, c.metric, (v) => { c.metric = v; renderCompare(); }, "métrica") : null),
+    el("div", { class: "controls" }, curveKeys.length ? select(curveKeys.map((k) => [k, curveKeyLabel(k)]), c.metric, (v) => { c.metric = v; renderCompare(); }, "métrica") : null),
     charts);
   main.replaceChildren(header, finals, curves);
   for (const dataset of datasets) {
@@ -754,7 +910,7 @@ function renderCompare() {
     if (!traces.length) continue;
     const node = el("div", { class: "chart" });
     charts.append(node);
-    plot(node, traces, { title: { text: `${dataset} — ${c.metric}`, font: { size: 13 } }, xaxis: { title: "rodada / época" } });
+    plot(node, traces, { title: { text: `${dataset} — ${curveKeyLabel(c.metric)}`, font: { size: 13 } }, xaxis: { title: "rodada / época" } });
   }
   if (!charts.children.length) charts.replaceWith(el("p", { class: "note" }, "Sem curvas para essa métrica."));
 }
@@ -779,6 +935,7 @@ function initTheme() {
 
 async function boot() {
   initTheme();
+  $("#help-button").addEventListener("click", toggleGlossary);
   $("#filter").addEventListener("input", renderTree);
   $("#compare-button").addEventListener("click", openCompare);
   try {

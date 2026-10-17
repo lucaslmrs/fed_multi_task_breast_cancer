@@ -6,6 +6,7 @@ without results, and study arms that are planned but not started, without changi
 """
 
 import json
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -50,6 +51,108 @@ class RunEntry:
     diagnostics: dict = field(default_factory=dict)
     reports: list = field(default_factory=list)
     last_activity: float = 0.0
+    display_name: str = ""    # short human name; ``name`` keeps the folder name
+    task_mode: str = ""       # MTL / ST / MTL+ST / SEG / CLS (see TASK_MODES)
+    composition: list = field(default_factory=list)
+
+
+# What a run trains, in words the page shows next to the short code.
+TASK_MODES = {
+    "MTL": "multitarefa: seg e cls no mesmo cliente/modelo",
+    "ST": "tarefa única por cliente: seg e cls em clientes separados",
+    "MTL+ST": "misto: alguns datasets multitarefa, outros com clientes separados por tarefa",
+    "SEG": "só segmentação",
+    "CLS": "só classificação",
+}
+_BASELINE_MODES = {"segmentation": "SEG", "classification": "CLS", "multitask": "MTL"}
+_SHORT_DATASET = {"Curated_BUSI": "BUSI", "ISIC_2018": "ISIC", "TCGA_LGG": "TCGA",
+                  "SIIM_ACR": "SIIM"}
+_STAMP = re.compile(r"(?:^|_)(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:_|$)")
+_CLIENT_DIR = re.compile(r"^client_(?P<dataset>.+)_(?P<role>mt|seg|cls)_\d+$")
+
+
+def _short(dataset):
+    return _SHORT_DATASET.get(dataset, dataset)
+
+
+def _stamp(name):
+    match = _STAMP.search(name)
+    if not match:
+        return ""
+    _, month, day, hour, minute, _ = match.groups()
+    return f"{day}/{month} {hour}:{minute}"
+
+
+def composition(run_dir, config, kind, datasets, topology):
+    """Per dataset: the tasks trained, the client topology and how many clients of each role.
+
+    Read from the client folders of the first fold when they exist (what really ran), otherwise
+    from ``federated.n_clients``. A baseline is one pooled model per dataset.
+    """
+    if kind == "baseline":
+        mode = (config.get("experiment") or {}).get("baseline_mode", "")
+        tasks = {"SEG": ["seg"], "CLS": ["cls"], "MTL": ["seg", "cls"]}.get(
+            _BASELINE_MODES.get(mode, ""), [])
+        return [{"dataset": d, "tasks": tasks, "topology": "pooled", "clients": {"pool": 1}}
+                for d in datasets]
+    counts = {}
+    fold = next((p for p in sorted(Path(run_dir).glob("fold_*"))
+                 if p.is_dir() and ".incomplete" not in p.name), None)
+    if fold is not None:
+        for client in fold.glob("client_*"):
+            match = _CLIENT_DIR.match(client.name)
+            if match:
+                roles = counts.setdefault(match.group("dataset"), {})
+                roles[match.group("role")] = roles.get(match.group("role"), 0) + 1
+    configured = (config.get("federated") or {}).get("n_clients") or {}
+    rows = []
+    for dataset in datasets:
+        multi = topology.get(dataset) == "multi_task"
+        roles = counts.get(dataset)
+        if not roles:
+            spec = configured.get(dataset)
+            if isinstance(spec, dict):
+                if multi:
+                    roles = {"mt": int(max(spec.values() or [0]))}
+                else:
+                    roles = {k: int(v) for k, v in spec.items() if int(v or 0) > 0}
+            elif spec:
+                roles = {"mt" if multi else "seg": int(spec)}
+            else:
+                roles = {}
+        tasks = ["seg", "cls"] if "mt" in roles else [t for t in ("seg", "cls") if t in roles]
+        rows.append({"dataset": dataset, "tasks": tasks,
+                     "topology": "multi_task" if "mt" in roles else "single_task",
+                     "clients": roles})
+    return rows
+
+
+def task_mode(kind, config, rows):
+    if kind == "baseline":
+        return _BASELINE_MODES.get((config.get("experiment") or {}).get("baseline_mode", ""), "")
+    tasks = {t for row in rows for t in row["tasks"]}
+    if tasks == {"seg"}:
+        return "SEG"
+    if tasks == {"cls"}:
+        return "CLS"
+    topologies = {row["topology"] for row in rows if row["tasks"]}
+    if topologies == {"multi_task"}:
+        return "MTL"
+    if topologies == {"single_task"}:
+        return "ST"
+    return "MTL+ST" if topologies else ""
+
+
+def display_name(run_dir, kind, datasets, labels):
+    if labels.get("arm_id"):
+        return labels["arm_id"]
+    name = Path(run_dir).name
+    when = _stamp(name)
+    if kind == "baseline":
+        return " · ".join(p for p in (", ".join(_short(d) for d in datasets) or name, when) if p)
+    setup = {"federated": "Federado", "standalone": "Local"}.get(kind, kind or "run")
+    parts = [setup, ", ".join(_short(d) for d in datasets), when]
+    return " · ".join(p for p in parts if p)
 
 
 def is_run_dir(path):
@@ -146,13 +249,17 @@ def describe_run(run_dir, root, group, labels=None, stale_minutes=STALE_MINUTES,
                    if p.is_dir() and ".incomplete" not in p.name)
     rounds = federated.get("rounds") if kind != "baseline" else (config.get("training") or {}
                                                                  ).get("epochs")
+    topology = {} if kind == "baseline" else _topology(config, datasets)
+    rows = composition(run_dir, config, kind, datasets, topology)
     return RunEntry(
+        display_name=display_name(run_dir, kind, datasets, labels),
+        task_mode=task_mode(kind, config, rows), composition=rows,
         path=relative(run_dir, root), name=run_dir.name, group=group, kind=kind, status=status,
         study_id=labels.get("study_id", ""), seed=str(labels.get("seed", "")),
         arm_id=labels.get("arm_id", ""), datasets=datasets,
         budget_mode="" if kind == "baseline" else str(
             (federated.get("local_training") or {}).get("mode", "")),
-        topology={} if kind == "baseline" else _topology(config, datasets),
+        topology=topology,
         master=str(master) if master else "", rounds=int(rounds or 0), folds=folds,
         diagnostics=_diagnostics_badge(run_dir),
         reports=[relative(run_dir / r, root) for r in _REPORTS if (run_dir / r).is_file()],
@@ -241,6 +348,7 @@ def scan(root, stale_minutes=STALE_MINUTES, now=None):
             labels = {**labels, "study_id": study_id}
             if run_dir is None:
                 entries.append(RunEntry(path="", name=labels["arm_id"], group="study",
+                                        display_name=labels["arm_id"],
                                         status="pending", study_id=study_id,
                                         seed=labels["seed"], arm_id=labels["arm_id"]))
             else:

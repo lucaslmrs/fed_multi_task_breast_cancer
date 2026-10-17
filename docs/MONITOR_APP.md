@@ -10,6 +10,23 @@ biblioteca padrão mais uma página estática (`src/monitor/static/`). Os gráfi
 CDN com versão fixa. Sem internet, as tabelas continuam funcionando e a página avisa que os
 gráficos não carregaram.
 
+## Como identificar um treino
+
+Cada run tem dois selos (passe o mouse para a explicação; o botão **? Legenda** lista todos):
+
+| Selo | Significa |
+|---|---|
+| `FED` / `LOCAL` / `BASE` | federado (tronco compartilhado, FedPer) / local-only (sem federação) / baseline não federado (B0) |
+| `MTL` | multitarefa: o mesmo cliente/modelo treina seg e cls |
+| `ST` | tarefa única por cliente: seg e cls em clientes separados |
+| `MTL+ST` | misto: alguns datasets multitarefa, outros com clientes separados |
+| `SEG` / `CLS` | só segmentação / só classificação |
+
+O selo de tarefa vem das pastas de cliente do primeiro fold (o que de fato rodou) ou, antes do
+primeiro fold, de `federated.n_clients` + `client_topology`. O cabeçalho do run tem uma tabela por
+dataset com as tarefas, como são treinadas e quantos clientes há. Curvas e métricas finais aparecem
+em blocos separados de **Segmentação** e **Classificação**.
+
 ## O que mostra
 
 - **Lista (barra lateral).** Estudos → seed → braço, runs avulsos, baselines (B0) e
