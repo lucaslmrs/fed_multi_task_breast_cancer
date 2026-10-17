@@ -8,13 +8,15 @@ base_config: src/config.yaml
 # aqui em vez de herdado de src/config.yaml. Tudo que um braço testa também é fixado no controle:
 # task_weights 4:1, λ local derivado deles, seed pessoal `client`, ponderação `fixed`.
 #
-# >>> ANTES DE RODAR: substituir o bloco `loss` pela loss de seg vencedora da Fase A (E3.2). <<<
-# O valor abaixo é o controle (DiceBCE 0.5/0.5, por amostra); se ele vencer, nada muda.
+# Loss de seg = vencedora da Fase A (2026-10-17, plano.md E3.2): DiceBCE 0.5/0.5 com Batch Dice.
+# Única variante a passar o gate do SIIM (Dice positivo de validação 0.262 no checkpoint, 0.247 na
+# última época), sem piorar BUSI/ISIC e melhorando TCGA.
 config_overrides:
   loss:
     function: DiceBCE
     dice_weight: 0.5
     bce_weight: 0.5
+    dice_batch: true
   evaluation:
     segmentation_primary_metric: dice_positive
     segmentation_protocol: positive_and_empty_v1

@@ -1793,6 +1793,29 @@ manifest da Fase B; (d) registro no `plano.md` depois de cada fase.
   - **Próximo passo do usuário:** treinar a Fase A (handoff em E3.2, ~9 h) e trazer os
     `history.csv`. Depois: aplicar a regra de escolha, preencher a `loss` do manifest e rodar a
     Fase B (handoff em E3.3, ~32–50 h).
+- 2026-10-17 — **Fase A concluída: vence o Batch Dice.**
+  - As 3 variantes rodaram em paralelo na GPU (~3 h no total; 12 runs, 0 erros) em
+    `runs/e3_loss/phase_a/`. Seleção pela validação; o teste não foi lido.
+
+  Dice positivo de validação (checkpoint escolhido / última época; pico entre parênteses):
+
+  | Dataset | Controle (B0) | `batch_dice` | `dice_heavy` | `focal_dice` |
+  |---|---|---|---|---|
+  | BUSI | 0.637 / 0.627 (0.660) | 0.635 / 0.618 (0.635) | 0.644 / 0.631 (0.649) | 0.647 / 0.634 (0.647) |
+  | ISIC | 0.894 / 0.892 (0.895) | 0.893 / 0.892 (0.893) | 0.895 / 0.892 (0.895) | 0.894 / 0.893 (0.896) |
+  | **SIIM** | 0.003 / 0.007 (0.237, ép. 14) | **0.262 / 0.247** (0.310, ép. 150) | 0.000 / 0.000 (0.272, ép. 18) | 0.032 / 0.043 (0.286, ép. 20) |
+  | TCGA | 0.747 / 0.736 (0.777) | **0.788** / 0.758 (0.797) | 0.737 / 0.688 (0.764) | 0.754 / 0.745 (0.784) |
+
+  - **Gate do SIIM:** só o `batch_dice` passa. As outras duas aprendem cedo (pico nas épocas
+    18–20) e desaprendem, como o controle. Isso confirma que o colapso vinha do Dice por amostra
+    em ~78% de imagens vazias, não da resolução.
+  - **Não-piora:** BUSI −0.002 (ruído ±0.05) e ISIC −0.001 (±0.01). TCGA **+0.041**.
+  - **Custo registrado:** a taxa de FP em imagem vazia sobe no SIIM (0.000 → 0.112) e no TCGA
+    (0.018 → 0.079). O 0.000 do controle vinha de não prever nada.
+  - **Ressalvas:** 1 seed, baseline centralizado. O efeito federado é medido na Fase B. A seg do
+    SIIM deixa de ser candidata à E4 por "não aprendível a 128 px", mas a resolução continua sendo
+    um braço válido da E4.
+  - **Manifest da Fase B:** `loss.dice_batch: true`.
 
 ---
 
