@@ -24,16 +24,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.colors import LinearSegmentedColormap
 
-from src.utils.plot_style import (ACCENT_RED, BLUES_6, CATEGORICAL_8, EMBED_DPI, MARKERS, PLOT_RC,
+from src.utils.plot_style import (ACCENT, CATEGORICAL_8, EMBED_DPI, MARKERS, PLOT_RC, colormap,
                                   style_axis)
 
 DATASETS = ["Curated_BUSI", "ISIC_2018", "SIIM_ACR", "TCGA_LGG"]
 SHORT = {"Curated_BUSI": "BUSI", "ISIC_2018": "ISIC", "SIIM_ACR": "SIIM", "TCGA_LGG": "TCGA"}
 MODES = {"segmentation": "baseline seg", "classification": "baseline cls",
          "multitask": "baseline multitask"}
-SEQUENTIAL = LinearSegmentedColormap.from_list("blues", list(BLUES_6))
+SEQUENTIAL = colormap("blue")
 
 
 def _png(fig):
@@ -179,7 +178,7 @@ def fig_confusions(predictions, dataset, setups):
             for j in range(k):
                 ax.text(j, i, f"{normalized[i, j]:.2f}\n({matrix[i, j]})", ha="center",
                         va="center", fontsize=7 if k > 3 else 8,
-                        color="white" if normalized[i, j] > 0.55 else "#584A47")
+                        color="white" if normalized[i, j] > 0.55 else "#232F3E")
         recall = np.diag(normalized)
         ax.set_title(f"{setup}\nbalanced acc = {recall[rows[:, 0] > 0].mean():.3f}", fontsize=9)
         tilt = k > 3 or max(len(name) for name in names) > 8
@@ -217,7 +216,7 @@ def fig_pixel_confusions(results, setups):
             for i in range(2):
                 for j in range(2):
                     ax.text(j, i, f"{matrix[i, j]:.3f}", ha="center", va="center", fontsize=8,
-                            color="white" if matrix[i, j] > 0.55 else "#584A47")
+                            color="white" if matrix[i, j] > 0.55 else "#232F3E")
             ax.set_xticks([0, 1], ["fundo", "lesão"])
             ax.set_yticks([0, 1], ["fundo", "lesão"])
             if row == 0:
@@ -241,9 +240,9 @@ def fig_curves(baselines):
                 continue
             history = pd.read_csv(run / "history.csv")
             ax.plot(history.epoch, history.train_loss, color=CATEGORICAL_8[0], label="treino")
-            ax.plot(history.epoch, history.val_loss, color=ACCENT_RED, label="validação")
+            ax.plot(history.epoch, history.val_loss, color=ACCENT, label="validação")
             best = history[history.best].epoch.max()
-            ax.axvline(best, color="#6F6357", linestyle="--", linewidth=0.9)
+            ax.axvline(best, color="#545B64", linestyle="--", linewidth=0.9)
             capped = len(history) >= 200 and len(history) - best < 51
             ax.set_title(f"{MODES[mode]} — {SHORT[dataset]}\nmelhor época {best}"
                          f"{' · teto de épocas' if capped else ''}", fontsize=9)
@@ -317,14 +316,14 @@ def main():
     page = f"""<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Baselines vs federado</title>
-<style>body{{font-family:system-ui,sans-serif;color:#584A47;max-width:1200px;margin:24px auto;
-padding:0 16px;background:#fff}}h1,h2{{color:#08519C}}h2{{font-size:1.15em;margin-top:34px}}
-h3{{font-size:.95em;margin:18px 0 6px}}img{{max-width:100%;border:1px solid #EDE2B5}}
+<style>body{{font-family:system-ui,sans-serif;color:#232F3E;max-width:1200px;margin:24px auto;
+padding:0 16px;background:#fff}}h1,h2{{color:#146EB4}}h2{{font-size:1.15em;margin-top:34px}}
+h3{{font-size:.95em;margin:18px 0 6px}}img{{max-width:100%;border:1px solid #D5D9D9}}
 table{{border-collapse:collapse;font-size:.85em;margin-bottom:8px}}th,td{{padding:4px 10px;
-border-bottom:1px solid #EDE2B5;text-align:right}}th:first-child{{text-align:left}}
-td.best{{font-weight:700;color:#08519C}}tr.noise td,tr.noise th{{color:#6F6357;font-style:italic}}
-td.na{{color:#CABD91}}code{{font-size:.8em}}.note{{background:#FCFAE1;border-left:4px solid
-#9F2B2C;padding:8px 12px}}</style></head><body>
+border-bottom:1px solid #D5D9D9;text-align:right}}th:first-child{{text-align:left}}
+td.best{{font-weight:700;color:#146EB4}}tr.noise td,tr.noise th{{color:#545B64;font-style:italic}}
+td.na{{color:#879596}}code{{font-size:.8em}}.note{{background:#FFF4E5;border-left:4px solid
+#FF9900;padding:8px 12px}}</style></head><body>
 <h1>Baselines não federados vs federado</h1>
 <div class="note"><p><b>Como ler.</b> Todos os modelos são MTnnUNet avaliados nas mesmas fatias de
 teste da partição congelada (holdout 70/30), com as mesmas métricas. Baselines: treino centralizado

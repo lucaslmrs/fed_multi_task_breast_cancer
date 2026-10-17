@@ -20,15 +20,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 
-from src.utils.plot_style import ACCENT_RED, EMBED_DPI, with_plot_style  # noqa: E402
+from src.utils.plot_style import ACCENT, CATEGORICAL_8, EMBED_DPI, PRIMARY, with_plot_style  # noqa: E402
 
 GOOD_DICE = 0.5
 PER_QUADRANT = 2
 CANDIDATES_FILE = "{setup}_example_candidates.csv"
 EXAMPLES_DIR = Path("report") / "examples"
 
-# Overlay colours: dark blue = hit, red = false positive, light earth = missed lesion.
-TP_COLOR, FP_COLOR, FN_COLOR = "#08519C", ACCENT_RED, "#EDE2B5"
+# Overlay colours: blue = hit, orange = false positive, magenta = missed lesion.
+TP_COLOR, FP_COLOR, FN_COLOR = PRIMARY, ACCENT, CATEGORICAL_8[2]
 
 QUADRANT_LABELS = {
     "cls_ok__seg_ok": "Classificação correta · segmentação boa",

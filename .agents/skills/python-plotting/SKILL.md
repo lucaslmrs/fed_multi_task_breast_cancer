@@ -39,15 +39,17 @@ configurado no projeto.
 ## Paletas e estilo
 
 Leia sempre [references/palettes-and-style.md](references/palettes-and-style.md) antes de criar ou
-restilizar uma figura. Ele contém as paletas fornecidas pelo usuário, seus usos semânticos, mapeamentos
-consistentes entre bibliotecas e restrições de contraste.
+restilizar uma figura. A paleta padrão é a Amazon-inspired de `src/utils/plot_style.py`; seus
+valores, papéis e o validador de daltonismo/contraste pertencem à skill `amazon-colors`.
 
 Regras essenciais:
 
 - cor deve codificar informação; não a use apenas como ornamento;
+- importe tokens nomeados de `plot_style.py`; não escreva hex literal em código de plot;
 - preserve o mesmo mapeamento categoria-cor entre painéis e arquivos relacionados;
-- não dependa apenas de vermelho versus azul: combine cor com marcador, traço, rótulo ou posição;
-- use o vermelho `#9F2B2C` para destaque, alerta ou contraste planejado, não como ciclo categórico padrão;
+- não dependa apenas de cor: combine cor com marcador, traço, rótulo ou posição;
+- use `ACCENT` (laranja de marca) para destaque ou série focal, e `#FF9900` apenas como
+  preenchimento; os vermelhos de status são reservados para estado, não para séries;
 - reserve tons muito claros para fundo, faixa de incerteza ou preenchimento; não os use para texto fino
   sobre fundo branco;
 - para escalas contínuas, use paleta sequencial; para desvios em torno de um centro real, construa uma

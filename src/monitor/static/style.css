@@ -1,63 +1,98 @@
+/* Amazon-inspired tokens (see the amazon-colors skill; mirrors src/utils/plot_style.py).
+   Validate with: python .agents/skills/amazon-colors/scripts/validate_palette.py --css */
 :root {
-  --bg: #fbfaf5;
-  --panel: #ffffff;
-  --panel-2: #f4f1e6;
-  --text: #2f2826;
-  --muted: #6f6357;
-  --border: #e3dcc4;
-  --accent: #08519c;
-  --accent-2: #3182bd;
-  --critical: #9f2b2c;
-  --warning: #b7791f;
-  --ok: #2f7d4f;
-  --info: #3182bd;
-  --running: #08519c;
-  --stale: #b7791f;
-  --pending: #8c8279;
-  --grid: rgba(111, 99, 87, 0.18);
-  --spark: #9ecae1;
+  --bg: #F7F8F8;
+  --panel: #FFFFFF;
+  --panel-2: #F0F2F2;
+  --text: #232F3E;
+  --muted: #545B64;
+  --border: #D5D9D9;
+  --accent: #146EB4;
+  --accent-2: #007185;
+  --link: #007185;
+  --brand: #FF9900;
+  --on-brand: #232F3E;
+  --critical: #B12704;
+  --warning: #8A5300;
+  --ok: #067D62;
+  --info: #007185;
+  --running: #146EB4;
+  --stale: #8A5300;
+  --pending: #687078;
+  --grid: rgba(35, 47, 62, 0.12);
+  --spark: #7ABDFE;
+  --series-1: #146EB4;
+  --series-2: #B75F0B;
+  --series-3: #AE1A69;
+  --series-4: #99740E;
+  --series-5: #0698A4;
+  --series-6: #B71A18;
+  --series-7: #6F41C1;
+  --series-8: #087736;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #171514;
-    --panel: #201d1b;
-    --panel-2: #2a2623;
-    --text: #ece6dc;
-    --muted: #b3a89a;
-    --border: #3a3430;
-    --accent: #6baed6;
-    --accent-2: #9ecae1;
-    --critical: #e06c6d;
-    --warning: #e0a84a;
-    --ok: #6cc08f;
-    --info: #9ecae1;
-    --running: #6baed6;
-    --stale: #e0a84a;
-    --pending: #8c8279;
-    --grid: rgba(236, 230, 220, 0.12);
-    --spark: #4f6f86;
+    --bg: #0F1419;
+    --panel: #161D26;
+    --panel-2: #232F3E;
+    --text: #F2F4F6;
+    --muted: #AAB7B8;
+    --border: #37475A;
+    --accent: #6CB4F0;
+    --accent-2: #4DB8C9;
+    --link: #4DB8C9;
+    --brand: #FF9900;
+    --on-brand: #232F3E;
+    --critical: #FF7A6B;
+    --warning: #FFB84D;
+    --ok: #4CC08F;
+    --info: #4DB8C9;
+    --running: #6CB4F0;
+    --stale: #FFB84D;
+    --pending: #879596;
+    --grid: rgba(242, 244, 246, 0.10);
+    --spark: #0160A4;
+    --series-1: #007ED4;
+    --series-2: #C9690C;
+    --series-3: #CA3A80;
+    --series-4: #A87F09;
+    --series-5: #0698A4;
+    --series-6: #D33C33;
+    --series-7: #855BDC;
+    --series-8: #119245;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #171514;
-  --panel: #201d1b;
-  --panel-2: #2a2623;
-  --text: #ece6dc;
-  --muted: #b3a89a;
-  --border: #3a3430;
-  --accent: #6baed6;
-  --accent-2: #9ecae1;
-  --critical: #e06c6d;
-  --warning: #e0a84a;
-  --ok: #6cc08f;
-  --info: #9ecae1;
-  --running: #6baed6;
-  --stale: #e0a84a;
-  --pending: #8c8279;
-  --grid: rgba(236, 230, 220, 0.12);
-  --spark: #4f6f86;
+  --bg: #0F1419;
+  --panel: #161D26;
+  --panel-2: #232F3E;
+  --text: #F2F4F6;
+  --muted: #AAB7B8;
+  --border: #37475A;
+  --accent: #6CB4F0;
+  --accent-2: #4DB8C9;
+  --link: #4DB8C9;
+  --brand: #FF9900;
+  --on-brand: #232F3E;
+  --critical: #FF7A6B;
+  --warning: #FFB84D;
+  --ok: #4CC08F;
+  --info: #4DB8C9;
+  --running: #6CB4F0;
+  --stale: #FFB84D;
+  --pending: #879596;
+  --grid: rgba(242, 244, 246, 0.10);
+  --spark: #0160A4;
+  --series-1: #007ED4;
+  --series-2: #C9690C;
+  --series-3: #CA3A80;
+  --series-4: #A87F09;
+  --series-5: #0698A4;
+  --series-6: #D33C33;
+  --series-7: #855BDC;
+  --series-8: #119245;
   color-scheme: dark;
 }
 
@@ -79,8 +114,8 @@ button, select, input {
 button { cursor: pointer; }
 button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: default; }
-button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-a { color: var(--accent); }
+button.primary { background: var(--brand); color: var(--on-brand); border-color: var(--brand); }
+a { color: var(--link); }
 .muted { color: var(--muted); }
 .hidden { display: none !important; }
 .spacer { flex: 1; }

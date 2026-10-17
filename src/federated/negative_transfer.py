@@ -223,14 +223,15 @@ def _plot_rounds(rounds):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from matplotlib.ticker import MaxNLocator
-    from src.utils.plot_style import PLOT_RC, categorical_color, fold_style, style_axis
+    from src.utils.plot_style import (ACCENT, MUTED_INK, PLOT_RC, PRIMARY, REFERENCE_LINE,
+                                      categorical_color, fold_style, style_axis)
 
     dataset_columns = sorted(c for c in rounds.columns if c.startswith("intra_"))
     with matplotlib.rc_context(PLOT_RC):
         fig, axes = plt.subplots(1, 2, figsize=(12, 4), constrained_layout=True, sharey=True)
         for fold, frame in rounds.groupby("fold"):
             style = fold_style(fold)
-            for metric, colour in zip(METRICS, ("#08519C", "#6F6357", "#9F2B2C")):
+            for metric, colour in zip(METRICS, (PRIMARY, MUTED_INK, ACCENT)):
                 axes[0].plot(frame["round"], frame[metric], color=colour,
                              linestyle=style["linestyle"], linewidth=1.4,
                              label=f"{METRIC_LABELS[metric]} · fold {fold}")
@@ -239,7 +240,7 @@ def _plot_rounds(rounds):
                              linestyle=style["linestyle"], linewidth=1.4,
                              label=f"{column.removeprefix('intra_')} · fold {fold}")
             if REFERENCE in frame:
-                axes[0].plot(frame["round"], frame[REFERENCE], color="#CABD91",
+                axes[0].plot(frame["round"], frame[REFERENCE], color=REFERENCE_LINE,
                              linestyle=":", linewidth=1.4,
                              label=f"{METRIC_LABELS[REFERENCE]} · fold {fold}")
         axes[0].set_title("Cancelamento por rodada")
@@ -259,12 +260,11 @@ def _plot_heatmap(labels, matrix):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
-    from src.utils.plot_style import PLOT_RC
+    from matplotlib.colors import TwoSlopeNorm
+    from src.utils.plot_style import PLOT_RC, colormap
 
-    cmap = LinearSegmentedColormap.from_list(
-        "diverging_blue_red", ["#9F2B2C", "#CABD91", "#FCFAE1", "#6BAED6", "#08519C"]
-    )
+    # Conflict (negative cosine) on the orange pole, alignment on the blue one.
+    cmap = colormap("diverging_r")
     size = max(5.0, 0.55 * len(labels) + 2.5)
     with matplotlib.rc_context(PLOT_RC):
         fig, axis = plt.subplots(figsize=(size + 1.2, size), constrained_layout=True)
@@ -277,12 +277,12 @@ def _plot_heatmap(labels, matrix):
                 for j in range(len(labels)):
                     if np.isfinite(matrix[i, j]):
                         axis.text(j, i, f"{round(matrix[i, j], 2) + 0.0:.2f}", ha="center", va="center",
-                                  fontsize=7, color="white" if abs(matrix[i, j]) > 0.6 else "#584A47")
+                                  fontsize=7, color="white" if abs(matrix[i, j]) > 0.6 else "#232F3E")
         datasets = [label.split("/")[0] for label in labels]
         for index in range(1, len(labels)):
             if datasets[index] != datasets[index - 1]:
-                axis.axhline(index - 0.5, color="#584A47", linewidth=1.2)
-                axis.axvline(index - 0.5, color="#584A47", linewidth=1.2)
+                axis.axhline(index - 0.5, color="#232F3E", linewidth=1.2)
+                axis.axvline(index - 0.5, color="#232F3E", linewidth=1.2)
         axis.set_title("Cosseno médio entre deltas do trunk (vermelho = conflito)")
         fig.colorbar(image, ax=axis, shrink=0.8, label="cosseno")
     return fig
@@ -364,13 +364,13 @@ def build_html(run_path, rounds=None, summary=None):
 
     style = (
         "body{font-family:system-ui,Arial,sans-serif;margin:2rem auto;max-width:1100px;"
-        "color:#584A47;background:#fff;padding:0 16px}h1{border-bottom:3px solid #08519C}"
-        "h2{color:#08519C;margin-top:2rem}table{border-collapse:collapse;font-size:.85rem}"
-        "th,td{border:1px solid #CABD91;padding:4px 8px}th{background:#EFF3FF}"
-        "td.num{text-align:right;font-variant-numeric:tabular-nums}a{color:#08519C}"
-        "img{max-width:100%;height:auto;border:1px solid #CABD91;border-radius:7px}"
-        ".notice{padding:.8rem 1rem;border-left:5px solid #9F2B2C;background:#FCFAE1}"
-        ".meta{color:#6F6357;font-size:.9rem}"
+        "color:#232F3E;background:#fff;padding:0 16px}h1{border-bottom:3px solid #146EB4}"
+        "h2{color:#146EB4;margin-top:2rem}table{border-collapse:collapse;font-size:.85rem}"
+        "th,td{border:1px solid #D5D9D9;padding:4px 8px}th{background:#F0F2F2}"
+        "td.num{text-align:right;font-variant-numeric:tabular-nums}a{color:#146EB4}"
+        "img{max-width:100%;height:auto;border:1px solid #D5D9D9;border-radius:7px}"
+        ".notice{padding:.8rem 1rem;border-left:5px solid #FF9900;background:#FFF4E5}"
+        ".meta{color:#545B64;font-size:.9rem}"
     )
     document = (
         "<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'>"

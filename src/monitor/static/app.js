@@ -1,8 +1,13 @@
 "use strict";
 // Training monitor front-end (plano E2). Read-only: everything comes from /api/*.
 
-const COLORS = ["#08519C", "#9F2B2C", "#6F6357", "#3182BD", "#584A47", "#6BAED6", "#CABD91",
-  "#9ECAE1", "#2F7D4F", "#B7791F"];
+// Categorical series come from style.css (--series-1..8, one validated set per theme; see the
+// amazon-colors skill). LIGHT_SERIES mirrors the light set for exported PNGs.
+const LIGHT_SERIES = ["#146EB4", "#B75F0B", "#AE1A69", "#99740E", "#0698A4", "#B71A18", "#6F41C1",
+  "#087736"];
+// Conflict (negative) on the orange pole, alignment on the blue one, as in the Python reports.
+const DIVERGING_SCALE = [[0, "#B85F05"], [0.25, "#FDA856"], [0.5, "#EFF2F5"], [0.75, "#599DDF"],
+  [1, "#005896"]];
 const PRIMARY = { seg: "dice_positive", cls: "balanced_accuracy" };
 const SEVERITY_ORDER = { critical: 0, high: 1, info: 2 };
 
@@ -82,7 +87,12 @@ function plot(node, traces, layout = {}) {
 }
 
 // Light-theme tokens (style.css :root) used for exported images.
-const LIGHT = { text: "#2f2826", muted: "#6f6357", grid: "rgba(111, 99, 87, 0.18)", bg: "#ffffff" };
+const LIGHT = { text: "#232F3E", muted: "#545B64", grid: "rgba(35, 47, 62, 0.12)", bg: "#FFFFFF" };
+
+function seriesColor(index) {
+  const slot = index % LIGHT_SERIES.length;
+  return css(`--series-${slot + 1}`) || LIGHT_SERIES[slot];
+}
 
 function lightAxis(axis) {
   return { ...(axis || {}), gridcolor: LIGHT.grid, color: LIGHT.muted,
@@ -90,9 +100,11 @@ function lightAxis(axis) {
 }
 
 async function downloadLight(gd) {
-  const darkMuted = css("--muted");
-  const data = gd.data.map((trace) => (trace.line && trace.line.color === darkMuted
-    ? { ...trace, line: { ...trace.line, color: LIGHT.muted } } : trace));
+  // Map the on-screen theme's colours onto their light-theme counterparts.
+  const toLight = new Map([[css("--muted"), LIGHT.muted],
+    ...LIGHT_SERIES.map((color, i) => [css(`--series-${i + 1}`), color])]);
+  const data = gd.data.map((trace) => (trace.line && toLight.has(trace.line.color)
+    ? { ...trace, line: { ...trace.line, color: toLight.get(trace.line.color) } } : trace));
   const layout = JSON.parse(JSON.stringify(gd.layout));
   Object.assign(layout, {
     paper_bgcolor: LIGHT.bg, plot_bgcolor: LIGHT.bg,
@@ -499,7 +511,7 @@ function renderCurves() {
         if (!xy) return;
         traces.push({ x: xy.x, y: xy.y, mode: "lines", type: "scatter",
           name: c.fold === "all" && folds.size > 1 ? `${s.client_id} f${s.fold}` : s.client_id,
-          line: { color: COLORS[index % COLORS.length], width: 1.6 } });
+          line: { color: seriesColor(index), width: 1.6 } });
       });
     if (!traces.length) { node.remove(); continue; }
     plot(node, traces, { title: { text: `${dataset} — ${c.metric}`, font: { size: 13 } },
@@ -532,13 +544,13 @@ function renderAggregation(payload) {
   const clients = Object.keys(fold.weights).sort();
   plot(weights, clients.map((client, i) => ({
     x: fold.rounds, y: fold.weights[client], name: client, stackgroup: "w", mode: "lines",
-    line: { width: 0.5, color: COLORS[i % COLORS.length] },
+    line: { width: 0.5, color: seriesColor(i) },
   })), { title: { text: "Peso final por cliente", font: { size: 13 } }, xaxis: { title: "rodada" }, yaxis: { title: "peso" } });
   if (fold.negative_transfer) {
     const keys = Object.keys(fold.negative_transfer).filter((k) => !k.startsWith("intra_"));
     plot(transfer, keys.map((k, i) => ({
       x: fold.rounds.slice(0, fold.negative_transfer[k].length), y: fold.negative_transfer[k], name: k, mode: "lines",
-      line: { color: k === "orthogonal_reference" ? css("--muted") : COLORS[i % COLORS.length], dash: k === "orthogonal_reference" ? "dash" : "solid" },
+      line: { color: k === "orthogonal_reference" ? css("--muted") : seriesColor(i), dash: k === "orthogonal_reference" ? "dash" : "solid" },
     })), { title: { text: "Cancelamento 1 − ‖Σwᵢ Δᵢ‖ / Σwᵢ‖Δᵢ‖", font: { size: 13 } }, xaxis: { title: "rodada" } });
   } else {
     transfer.replaceChildren(el("p", { class: "note", style: "padding:10px" }, "Sem negative_transfer neste histórico."));
@@ -549,7 +561,7 @@ function renderAggregation(payload) {
 
 function heatmap(node, matrix, title) {
   plot(node, [{ type: "heatmap", z: matrix.values, x: matrix.targets || matrix.classes,
-    y: matrix.sources || matrix.blocks, colorscale: "RdBu", zmid: 0, reversescale: false,
+    y: matrix.sources || matrix.blocks, colorscale: DIVERGING_SCALE, zmid: 0,
     hovertemplate: "%{y} → %{x}: %{z:.3g}<extra></extra>" }],
   { title: { text: title, font: { size: 13 } }, hovermode: "closest", margin: { l: 110, r: 12, t: 34, b: 80 } });
 }
@@ -567,7 +579,7 @@ function renderConflict(payload) {
     const node = el("div", { class: "chart" });
     charts.append(node);
     plot(node, Object.entries(payload.m1).map(([cls, xy], i) => ({ x: xy.x, y: xy.y, name: cls, mode: "lines+markers",
-      line: { color: COLORS[i % COLORS.length] } })),
+      line: { color: seriesColor(i) } })),
     { title: { text: "M1: cosseno médio por classe de par", font: { size: 13 } }, xaxis: { title: "rodada" } });
   }
   if (payload.m1_blocks) {
@@ -597,8 +609,8 @@ function renderResources(payload) {
     charts.append(node);
     const x = gpu.elapsed_seconds.map((s) => s / 60);
     plot(node, [
-      { x, y: gpu.utilization_gpu_percent, name: "utilização %", mode: "lines", line: { color: COLORS[0], width: 1 } },
-      { x, y: gpu.memory_used_mb.map((m, i) => 100 * m / (gpu.memory_total_mb[i] || 1)), name: "memória %", mode: "lines", line: { color: COLORS[1], width: 1 } },
+      { x, y: gpu.utilization_gpu_percent, name: "utilização %", mode: "lines", line: { color: seriesColor(0), width: 1 } },
+      { x, y: gpu.memory_used_mb.map((m, i) => 100 * m / (gpu.memory_total_mb[i] || 1)), name: "memória %", mode: "lines", line: { color: seriesColor(1), width: 1 } },
     ], { title: { text: `GPU ${index}`, font: { size: 13 } }, xaxis: { title: "minutos" }, yaxis: { title: "%", range: [0, 100] } });
   }
   if (payload.phases) {
@@ -737,7 +749,7 @@ function renderCompare() {
   for (const dataset of datasets) {
     const traces = runs.map((run, i) => {
       const xy = (run.curves[dataset] || {})[c.metric];
-      return xy ? { x: xy.x, y: xy.y, name: labels[i], mode: "lines", line: { color: COLORS[i % COLORS.length], width: 1.8 } } : null;
+      return xy ? { x: xy.x, y: xy.y, name: labels[i], mode: "lines", line: { color: seriesColor(i), width: 1.8 } } : null;
     }).filter(Boolean);
     if (!traces.length) continue;
     const node = el("div", { class: "chart" });
