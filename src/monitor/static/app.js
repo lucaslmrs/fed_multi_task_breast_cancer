@@ -66,14 +66,51 @@ function plot(node, traces, layout = {}) {
     paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)",
     font: { color: css("--text"), size: 12 },
     margin: { l: 52, r: 12, t: 34, b: 30 },
-    legend: { orientation: "h", x: 0, y: -0.18, yanchor: "top", font: { size: 11 } },
-    height: 340,
+    legend: { orientation: "h", x: 0, y: -0.28, yanchor: "top", font: { size: 11 } },
+    height: 360,
     xaxis: { gridcolor: css("--grid"), zeroline: false, ...(layout.xaxis || {}) },
     yaxis: { gridcolor: css("--grid"), zeroline: false, ...(layout.yaxis || {}) },
     hovermode: "x unified",
   };
-  window.Plotly.react(node, traces, { ...base, ...layout, xaxis: base.xaxis, yaxis: base.yaxis },
-    { responsive: true, displaylogo: false });
+  window.Plotly.react(node, traces, { ...base, ...layout, xaxis: base.xaxis, yaxis: base.yaxis }, {
+    responsive: true, displaylogo: false,
+    // The PNG always comes out in the light theme, whatever theme the page is using.
+    modeBarButtonsToRemove: ["toImage"],
+    modeBarButtonsToAdd: [{ name: "Baixar PNG (tema claro)", icon: window.Plotly.Icons.camera,
+      click: downloadLight }],
+  });
+}
+
+// Light-theme tokens (style.css :root) used for exported images.
+const LIGHT = { text: "#2f2826", muted: "#6f6357", grid: "rgba(111, 99, 87, 0.18)", bg: "#ffffff" };
+
+function lightAxis(axis) {
+  return { ...(axis || {}), gridcolor: LIGHT.grid, color: LIGHT.muted,
+    title: axis && axis.title ? { ...axis.title, font: { ...(axis.title.font || {}), color: LIGHT.text } } : undefined };
+}
+
+async function downloadLight(gd) {
+  const darkMuted = css("--muted");
+  const data = gd.data.map((trace) => (trace.line && trace.line.color === darkMuted
+    ? { ...trace, line: { ...trace.line, color: LIGHT.muted } } : trace));
+  const layout = JSON.parse(JSON.stringify(gd.layout));
+  Object.assign(layout, {
+    paper_bgcolor: LIGHT.bg, plot_bgcolor: LIGHT.bg,
+    font: { ...(layout.font || {}), color: LIGHT.text },
+    xaxis: lightAxis(layout.xaxis), yaxis: lightAxis(layout.yaxis),
+    // The on-screen size, never a not-yet-laid-out one (Plotly can report a few px right after a render).
+    width: Math.max(gd.clientWidth || 0, gd._fullLayout.width || 0, 480),
+    height: Math.max(gd.clientHeight || 0, gd._fullLayout.height || 0, 300),
+  });
+  if (layout.title) layout.title = { ...layout.title, font: { ...(layout.title.font || {}), color: LIGHT.text } };
+  const url = await window.Plotly.toImage({ data, layout }, {
+    format: "png", width: layout.width, height: layout.height, scale: 2,
+  });
+  const title = (layout.title && layout.title.text) || "grafico";
+  const link = el("a", { href: url, download: `${title.replace(/[^\p{L}\p{N}.-]+/gu, "_").replace(/^_+|_+$/g, "") || "grafico"}.png` });
+  document.body.append(link);
+  link.click();
+  link.remove();
 }
 
 function table(columns, rows, opts = {}) {
