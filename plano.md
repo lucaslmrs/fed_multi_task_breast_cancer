@@ -1357,6 +1357,21 @@ pelo usuário em 2026-10-16).
     fixo, porque a série de 1 Hz é ilegível.
   - As mensagens dos leitores (`reason`) ficaram em inglês; a página e os avisos de comparação
     estão em português.
+- 2026-10-16 — ajustes pedidos pelo usuário após o primeiro uso (suíte 216 OK; 19 testes do
+  monitor):
+  - O botão de câmera baixa o gráfico sempre no tema claro, em 2× o tamanho na tela.
+  - Card de destaques por dataset: Dice positivo e balanced accuracy de teste, com sparkline da
+    validação. Em run sem resultados, mostra o último valor de validação.
+  - Identificação do treino: selos `FED`/`LOCAL`/`BASE` e `MTL`/`ST`/`MTL+ST`/`SEG`/`CLS`, nome
+    legível, tabela de composição por dataset (tarefas, topologia, clientes por papel) e blocos
+    separados de Segmentação e Classificação para métricas e curvas. Também uma legenda
+    ("? Legenda"). O selo vem das pastas de cliente do primeiro fold, ou de
+    `federated.n_clients` antes do primeiro fold.
+  - Paleta do projeto como padrão de figuras, relatórios e monitor: skill `color-palette` (preto,
+    vinho, bordô, rosé e creme), validada para daltonismo e contraste nos dois temas. Ela substituiu
+    a primeira versão inspirada na Amazon.
+  - Esclarecido: os baselines têm 1 fold (holdout 70/30). O "n" nos cards e tabelas é o número de
+    fatias de teste dos clientes, não de folds.
 
 ---
 
