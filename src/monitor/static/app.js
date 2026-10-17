@@ -157,6 +157,8 @@ function plot(node, traces, layout = {}) {
     xaxis: { gridcolor: css("--grid"), zeroline: false, ...(layout.xaxis || {}) },
     yaxis: { gridcolor: css("--grid"), zeroline: false, ...(layout.yaxis || {}) },
     hovermode: "x unified",
+    // The unified box defaults to the (transparent) paper colour, i.e. white, under themed text.
+    hoverlabel: { bgcolor: css("--panel"), bordercolor: css("--border"), font: { color: css("--text") } },
   };
   window.Plotly.react(node, traces, { ...base, ...layout, xaxis: base.xaxis, yaxis: base.yaxis }, {
     responsive: true, displaylogo: false,
@@ -615,6 +617,7 @@ function renderCurves() {
   if (shared.fold !== "all" && !folds.includes(String(shared.fold))) shared.fold = folds.length > 1 ? "all" : folds[0];
   const unitLabel = payload.unit === "epoch" ? "época" : "rodada";
   const blocks = [];
+  const pending = [];
   for (const section of TASK_SECTIONS) {
     // metric -> splits that have it, for this task only
     const metrics = new Map();
@@ -660,9 +663,10 @@ function renderCurves() {
       if (!traces.length) continue;
       const node = el("div", { class: "chart" });
       charts.append(node);
-      plot(node, traces, {
+      // Plotted only once attached: a detached node has no width and Plotly falls back to 700px.
+      pending.push(() => plot(node, traces, {
         title: { text: `${dataset === "all" ? "todos os datasets" : dataset} — ${metricLabel(c.metric)} (${c.split === "val" ? "validação" : "treino"})`, font: { size: 13 } },
-        xaxis: { title: unitLabel }, yaxis: { title: metricLabel(c.metric) } });
+        xaxis: { title: unitLabel }, yaxis: { title: metricLabel(c.metric) } }));
     }
     if (!charts.children.length) charts.replaceWith(el("p", { class: "note" }, "Nenhuma série com essa métrica."));
   }
@@ -674,6 +678,7 @@ function renderCurves() {
       folds.length > 1 ? select([["all", "todos"], ...folds.map((f) => [f, f])], shared.fold, (v) => { shared.fold = v; renderCurves(); }, "fold") : null,
       el("span", { class: "muted" }, `eixo x: ${unitLabel}; fonte: ${payload.source}`)),
     ...blocks, ...notes.map((n) => el("p", { class: "note" }, n))));
+  pending.forEach((draw) => draw());
 }
 
 // ---- aggregation ----------------------------------------------------------------------------
