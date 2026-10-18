@@ -187,7 +187,8 @@ Multi-task loss: `total = α * seg_loss + (1-α) * cls_loss`
 
 In the federated path `training.alpha` is not used. A `single_task` client optimizes the configured segmentation loss **or** the
 classification criterion, never a weighted sum. A `multi_task` client optimizes
-`L = Σ_t λ_t · L_t` with `λ_t = aggregation.task_weights[t] / Σ task_weights`, evaluated only over
+`L = Σ_t λ_t · L_t` with `λ_t = aggregation.task_weights[t] / Σ task_weights` (or the normalized
+`loss.task_lambdas`, when set, which leaves aggregation untouched), evaluated only over
 the samples each task actually supervises (per-sample `has_mask` / `has_label` flags). A task with
 no supervised sample in a batch is **omitted, never contributed as zero** — an all-zero mask is a
 legitimate target for BUSI's `normal` class, so a zero term and an absent term differ.
@@ -310,6 +311,7 @@ the budget, not the federation.
 | `datasets` / `n_clients.<dataset>` | Active datasets and clients per dataset/task |
 | `datasets.<name>.client_topology` | `single_task` (default) or `multi_task` (one client, several tasks, same images) |
 | `share_stem` | Federate the input stem; must be false for mixed 1ch/3ch runs |
+| `personalized_init_seed` | `dataset` (working default since E3): every client of a dataset starts from the same stem/heads; `client` draws one per client and is the fallback when the key is absent, so historical configs keep resolving unchanged. Local-only reads the same key, so the pair stays matched |
 | `local_training.mode` | `steps` (fixed `steps_per_round`) or `epochs` (`local_epochs` passes) |
 | `aggregation.mode` | `hierarchical` (main) or `flat` (FedAvg-style ablation) |
 | `aggregation.client_weighting` | `uniform` or `num_examples`, inside the hierarchical mode |
@@ -317,7 +319,10 @@ the budget, not the federation.
 | `datasets.<name>.class_weighting` | `none`, `balanced_fold` (main), or `balanced_local` |
 | `rounds` / `local_epochs` | Federated rounds × local epochs per round |
 | `dirichlet_alpha` | Train partition skew (high = IID, low = non-IID) |
-| `aggregation.task_weights.{seg,cls}` | Per-task weight inside each dataset aggregate |
+| `aggregation.task_weights.{seg,cls}` | Per-task weight inside each dataset aggregate; also the local λ unless `loss.task_lambdas` is set |
+| `loss.task_lambdas.{seg,cls}` | Optional. Local-objective λ only (multi-task clients, baseline), decoupled from aggregation; must name every owned task |
+| `loss.task_weighting` | Optional. `fixed` (default) or `uncertainty`: Kendall weighting `Σ λ_t e^{-s_t} L_t + s_t/2` on clients with ≥2 tasks; `s_t` personalized, reported as `train_task_log_var_<task>`; validation loss stays on fixed λ |
+| `loss.dice_batch` | Optional, DiceBCE only. Batch Dice (intersection/union pooled over the batch) instead of per-sample |
 | `oversampling.{seg,cls}` | Per-task override of `data.oversampling` |
 | `device` | `auto` / `cpu` / `cuda` (resolved per worker) |
 | `runtime.federated.client_resources.num_gpus` | `0.5` = 2 clients/GPU; `1.0` = sequential |

@@ -57,6 +57,62 @@ def resolve_task_lambdas(tasks, task_lambdas=None) -> dict:
     return {name: float(task_lambdas[name]) for name in tasks}
 
 
+TASK_WEIGHTING_MODES = ("fixed", "uncertainty")
+LOG_VARS_ATTR = "task_log_vars"
+
+
+def task_weighting_mode(config) -> str:
+    """``loss.task_weighting``: ``fixed`` (default, lambdas only) or ``uncertainty`` (Kendall)."""
+    mode = str(config.get("loss", {}).get("task_weighting", "fixed")).lower()
+    if mode not in TASK_WEIGHTING_MODES:
+        raise ValueError(f"loss.task_weighting must be one of {TASK_WEIGHTING_MODES}, got {mode!r}")
+    return mode
+
+
+def attach_task_uncertainty(model, tasks):
+    """Give ``model`` one learnable ``s_t = log sigma_t^2`` per task, initialised at 0.
+
+    The parameters live under their own state_dict prefix, outside the shared trunk prefixes, so
+    they are personalized: persisted with the client and never aggregated. Call before building
+    the optimizer. A single-task client has nothing to balance and is left untouched.
+    """
+    tasks = list(tasks)
+    if len(tasks) < 2:
+        return model
+    device = next(model.parameters()).device
+    setattr(model, LOG_VARS_ATTR, torch.nn.ParameterDict(
+        {name: torch.nn.Parameter(torch.zeros((), device=device)) for name in tasks}))
+    return model
+
+
+def attach_saved_task_uncertainty(model, state_dict):
+    """Recreate the log-variance slots a saved state carries, so it loads into a fresh model.
+
+    Evaluation never uses them; it only needs the state_dict keys to match. Reading the task names
+    from the state itself keeps this exact for any task set and a no-op for fixed-weighting runs.
+    """
+    prefix = f"{LOG_VARS_ATTR}."
+    tasks = [key[len(prefix):] for key in state_dict if key.startswith(prefix)]
+    if tasks and not hasattr(model, LOG_VARS_ATTR):
+        device = next(model.parameters()).device
+        setattr(model, LOG_VARS_ATTR, torch.nn.ParameterDict(
+            {name: torch.nn.Parameter(torch.zeros((), device=device)) for name in tasks}))
+    return model
+
+
+def uncertainty_weighted_loss(raw_terms, lambdas, log_vars):
+    """Kendall et al. 2018 (Eq. 10, classification form): ``sum_t lambda_t e^{-s_t} L_t + s_t/2``.
+
+    Only the tasks present in ``raw_terms`` contribute: a task without a supervised sample in the
+    batch is omitted, its ``s_t/2`` regulariser included, never added as zero.
+    """
+    terms = []
+    for task, term in raw_terms.items():
+        s = log_vars[task].float()
+        terms.append(lambdas[task] * torch.exp(-s) * term.float() + 0.5 * s)
+    return torch.sum(torch.stack(terms))
+
+
 _SUPERVISION_FLAG = {"seg": "has_mask", "cls": "has_label"}
 
 

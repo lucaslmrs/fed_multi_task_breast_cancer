@@ -7,6 +7,7 @@ from ``client_id`` -- so the partition stays the single source of truth for owne
 import hashlib
 import csv
 import logging
+import math
 import random
 import time
 from pathlib import Path
@@ -39,11 +40,12 @@ from src.federated.model_split import (
 from src.utils.metrics import metric_sample_count
 from src.utils.experiment_init import (
     init_criterion_classification,
-    init_criterion_segmentation,
+    init_criterion_segmentation_from_config,
     init_multitask_model,
     init_optimizer,
 )
 from src.utils.miscellany import seed_everything
+from src.utils.supervision import LOG_VARS_ATTR, attach_task_uncertainty, task_weighting_mode
 from src.utils.training_runtime import (
     configure_worker_threads,
     dataloader_kwargs,
@@ -160,10 +162,13 @@ class FederatedClient(NumPyClient):
             deep_supervision=config["model"]["deep_supervision"],
             save_folder=None,
         ).to(self.device)
+        # Kendall log-variances must exist before the optimizer so it updates them too.
+        if task_weighting_mode(config) == "uncertainty":
+            attach_task_uncertainty(self.model, self.tasks)
         self.optimizer = init_optimizer(
             self.model, config["optimizer"]["opt"], config["optimizer"]["lr"]
         )
-        self.seg_criterion = init_criterion_segmentation(config["loss"]["function"], config["loss"].get("dice_weight", 0.5), config["loss"].get("bce_weight", 0.5))
+        self.seg_criterion = init_criterion_segmentation_from_config(config["loss"])
 
         weighting_mode = self.data_cfg.get("class_weighting", "none")
         self.class_weights = resolve_class_weights(
@@ -200,9 +205,9 @@ class FederatedClient(NumPyClient):
         # Task weights live in TWO places on purpose: as lambda_t inside the local objective, where
         # the gradients are separable and the weighting is real, and as a mass factor on the server
         # (see FedPerStrategy._base_weight). A multi-task client's trunk update is one entangled
-        # object, so it cannot be decomposed per task at aggregation time.
-        aggregation = aggregation_config(config)
-        self.task_lambdas = _task_lambdas(aggregation["task_weights"], self.tasks)
+        # object, so it cannot be decomposed per task at aggregation time. ``loss.task_lambdas``
+        # decouples the first role from the second; without it both follow ``task_weights``.
+        self.task_lambdas = client_task_lambdas(config, self.tasks)
         common = dict(
             partition_file=partition_file,
             fold=fold,
@@ -547,6 +552,13 @@ class FederatedClient(NumPyClient):
         for name in ("grad_norm_mean", "grad_norm_max"):
             if np.isfinite(train_result.get(name, float("nan"))):
                 metrics[f"train_{name}"] = float(train_result[name])
+        log_vars = getattr(self.model, LOG_VARS_ATTR, None)
+        if log_vars is not None:
+            # The learned s_t = log sigma_t^2 is the only window into what Kendall weighting chose.
+            for name, value in log_vars.items():
+                metrics[f"train_task_log_var_{name}"] = float(value.detach())
+            logging.info("[%s] round=%s task_log_var=%s", self.client_id, server_round,
+                         {name: round(float(v.detach()), 4) for name, v in log_vars.items()})
         metrics.update(self._scalar_metrics("train", {
             "loss": train_result["loss"],
             "task_losses": train_result["task_losses"],
@@ -599,6 +611,27 @@ class FederatedClient(NumPyClient):
                 f"{self.client_id} lookahead",
             ))
         return float(val["loss"]), val["n"], metrics
+
+
+def client_task_lambdas(config, tasks):
+    """Local-objective weights: ``loss.task_lambdas`` when set, else ``aggregation.task_weights``.
+
+    The explicit key must name every owned task: falling back to 1.0 for a missing one would
+    silently change the weighting the arm claims to test.
+    """
+    explicit = config.get("loss", {}).get("task_lambdas")
+    if explicit is None:
+        return _task_lambdas(aggregation_config(config)["task_weights"], tasks)
+    if not isinstance(explicit, dict):
+        raise ValueError("loss.task_lambdas must map task names to weights")
+    missing = [name for name in tasks if name not in explicit]
+    if missing:
+        raise ValueError(f"loss.task_lambdas is missing weights for {missing}")
+    for name in tasks:
+        value = explicit[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)                 or value < 0:
+            raise ValueError(f"loss.task_lambdas[{name!r}] must be finite and non-negative")
+    return _task_lambdas(explicit, tasks)
 
 
 def _task_lambdas(task_weights, tasks):

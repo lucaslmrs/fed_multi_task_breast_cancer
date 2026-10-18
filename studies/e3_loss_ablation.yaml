@@ -1,0 +1,155 @@
+schema_version: 1
+study_id: e3_loss_ablation
+base_config: src/config.yaml
+
+# E3 Fase B — ablação da loss federada multitarefa multi-dataset (plano.md, E3.3).
+# Protocolo idêntico ao `multi_dataset_siim_dice_bce` (4 datasets; BUSI/TCGA/SIIM multi_task; ISIC
+# single_task; hierárquica uniforme; dataset_weights 1:1; steps 10; 200 rodadas; CV=1; BF16), fixado
+# aqui em vez de herdado de src/config.yaml. Tudo que um braço testa também é fixado no controle:
+# task_weights 4:1, λ local derivado deles, seed pessoal `client`, ponderação `fixed`.
+#
+# Loss de seg = vencedora da Fase A (2026-10-17, plano.md E3.2): DiceBCE 0.5/0.5 com Batch Dice.
+# Única variante a passar o gate do SIIM (Dice positivo de validação 0.262 no checkpoint, 0.247 na
+# última época), sem piorar BUSI/ISIC e melhorando TCGA.
+config_overrides:
+  loss:
+    function: DiceBCE
+    dice_weight: 0.5
+    bce_weight: 0.5
+    dice_batch: true
+  evaluation:
+    segmentation_primary_metric: dice_positive
+    segmentation_protocol: positive_and_empty_v1
+  training:
+    CV: 1
+    holdout_test_size: 0.3
+    precision: bf16
+    cuda_benchmark: true
+  datasets:
+    Curated_BUSI:
+      seg_exclude_classes: []
+      client_topology: multi_task
+      classification_criterion: CE
+      class_weighting: balanced_fold
+      oversampling: {seg: false, cls: false}
+    ISIC_2018:
+      client_topology: single_task
+      classification_criterion: CE
+      class_weighting: balanced_fold
+    SIIM_ACR:
+      seg_exclude_classes: []
+      fold_strategy: stratified
+      client_topology: multi_task
+      classification_criterion: CE
+      class_weighting: balanced_fold
+      oversampling: {seg: false, cls: false}
+    TCGA_LGG:
+      seg_exclude_classes: []
+      fold_strategy: stratified_group
+      group_col: lesion_id
+      group_strata: 3
+      client_topology: multi_task
+      classification_criterion: CE
+      class_weighting: balanced_fold
+      oversampling: {seg: false, cls: false}
+  federated:
+    datasets: [Curated_BUSI, ISIC_2018, SIIM_ACR, TCGA_LGG]
+    rounds: 200
+    personalized_init_seed: client
+    n_clients:
+      Curated_BUSI: {seg: 2, cls: 2}
+      ISIC_2018: {seg: 4, cls: 4}
+      SIIM_ACR: {seg: 4, cls: 4}
+      TCGA_LGG: {seg: 2, cls: 2}
+    local_training: {mode: steps, steps_per_round: 10}
+    aggregation:
+      mode: hierarchical
+      client_weighting: uniform
+      task_weights: {seg: 4.0, cls: 1.0}
+      dataset_weights: {Curated_BUSI: 1.0, ISIC_2018: 1.0, SIIM_ACR: 1.0, TCGA_LGG: 1.0}
+  # M1 + M2 em todos os runs (decisão E3.1, item 8). Operacional: fora do hash de estudo.
+  runtime:
+    diagnostics:
+      gradient_conflict:
+        enabled: true
+        every_n_rounds: 10
+        probe_batches: 10
+        sketch_dim: 65536
+        lookahead: {enabled: true, val_batches: 4, train_batches: 4}
+
+seed_profiles:
+  operational: [1993]
+  final: [1993, 1994, 1995]
+default_seed_profile: final
+
+output_root: runs/studies/{study_id}
+partition_template: data/federated_studies/{study_id}/seed_{seed}/federated_mapping.csv
+
+# Só o controle tem par local-only: a escolha da loss compara federado com federado (E3.1, item 5).
+arms:
+  - arm_id: primary
+    method_id: primary
+    setup: federated
+    overrides: {}
+
+  - arm_id: local_only
+    method_id: local_only
+    setup: standalone
+    overrides: {}
+
+  # λ local 1:1 nos clientes multi_task; a agregação continua em 4:1.
+  - arm_id: lambda_1to1
+    method_id: lambda_1to1
+    setup: federated
+    overrides:
+      loss:
+        task_lambdas: {seg: 0.5, cls: 0.5}
+
+  # Agregação por tarefa 1:1 (fatia dos clientes cls do ISIC no trunk: 20% -> 50%); λ local fixo em 4:1.
+  - arm_id: agg_task_1to1
+    method_id: agg_task_1to1
+    setup: federated
+    overrides:
+      loss:
+        task_lambdas: {seg: 0.8, cls: 0.2}
+      federated:
+        aggregation:
+          task_weights: {seg: 1.0, cls: 1.0}
+
+  # Ponderação por incerteza (Kendall 2018), s_t pessoal; só clientes multi_task.
+  - arm_id: kendall
+    method_id: kendall
+    setup: federated
+    overrides:
+      loss:
+        task_weighting: uncertainty
+
+  # Replicação com 3 seeds do colapso da seg do SIIM visto na E0.
+  - arm_id: init_seed_dataset
+    method_id: init_seed_dataset
+    setup: federated
+    overrides:
+      federated:
+        personalized_init_seed: dataset
+
+comparisons:
+  - comparison_id: primary_vs_local
+    left: {method_id: primary, setup: federated}
+    right: {method_id: local_only, setup: standalone}
+    interpretation: transferência federada do controle da E3
+  - comparison_id: effect_lambda_1to1
+    left: {method_id: lambda_1to1, setup: federated}
+    right: {method_id: primary, setup: federated}
+    interpretation: λ local 1:1 menos 4:1, agregação fixa
+  - comparison_id: effect_agg_task_1to1
+    left: {method_id: agg_task_1to1, setup: federated}
+    right: {method_id: primary, setup: federated}
+    interpretation: peso de agregação por tarefa 1:1 menos 4:1, λ local fixo
+  - comparison_id: effect_kendall
+    left: {method_id: kendall, setup: federated}
+    right: {method_id: primary, setup: federated}
+    interpretation: ponderação por incerteza menos λ fixo
+  - comparison_id: effect_init_seed_dataset
+    left: {method_id: init_seed_dataset, setup: federated}
+    right: {method_id: primary, setup: federated}
+    interpretation: seed pessoal por dataset menos por cliente

@@ -44,6 +44,7 @@ from src.federated.negative_transfer import report_run
 from src.federated.server import FedPerStrategy
 from src.utils.experiment_init import device_setup, init_multitask_model
 from src.utils.miscellany import init_log, seed_everything
+from src.utils.supervision import attach_saved_task_uncertainty
 from src.utils.training_runtime import (
     RuntimeEvents,
     dataloader_kwargs,
@@ -150,6 +151,10 @@ def _test_client(
             f"Client {client_id} state is from round {state.get('round')}, "
             f"expected final round {expected_round}"
         )
+    # Kendall log-variances live in the saved state; recreate their slots before a strict load.
+    attach_saved_task_uncertainty(
+        model, state["personalized"] if setup == "federated" else state["model"]
+    )
     if setup == "federated":
         if shared_arrays is None:
             raise ValueError("Federated final evaluation requires the final global shared trunk")

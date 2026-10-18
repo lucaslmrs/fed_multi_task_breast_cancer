@@ -5,15 +5,19 @@ from monai.losses import DiceLoss
 
 
 class DiceBCELoss(torch.nn.Module):
-    def __init__(self, dice_weight=0.5, bce_weight=0.5):
+    def __init__(self, dice_weight=0.5, bce_weight=0.5, batch=False):
         super().__init__()
         weights = (dice_weight, bce_weight)
         if any(isinstance(w, bool) or not isinstance(w, (int, float)) or
                not math.isfinite(w) or w < 0 for w in weights) or sum(weights) <= 0:
             raise ValueError("DiceBCE weights must be finite, non-negative and have positive sum")
+        if not isinstance(batch, bool):
+            raise ValueError("DiceBCE batch must be a boolean")
         self.dice_weight, self.bce_weight = weights
+        # batch=True pools intersection and union over the whole batch (nnU-Net's batch Dice), so
+        # an empty target no longer earns a perfect per-image Dice by predicting nothing.
         self.dice = DiceLoss(include_background=True, sigmoid=True, smooth_dr=1,
-                             smooth_nr=1, squared_pred=True)
+                             smooth_nr=1, squared_pred=True, batch=batch)
         self.bce = torch.nn.BCEWithLogitsLoss()
 
     def forward(self, logits, target):

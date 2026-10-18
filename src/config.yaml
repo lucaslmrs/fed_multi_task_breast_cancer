@@ -179,6 +179,7 @@ datasets:
 federated:  # FedPer: shared encoder is federated, heads stay personalized per client
   datasets: [Curated_BUSI, ISIC_2018, TCGA_LGG, SIIM_ACR]
   share_stem: False           # heterogeneous 1ch/3ch stems stay personalized
+  personalized_init_seed: dataset  # same initial stem/heads per dataset (E3); absent key = client
   n_clients:
     Curated_BUSI: {seg: 2, cls: 2}
     ISIC_2018: {seg: 4, cls: 4}
