@@ -68,9 +68,11 @@ PERSONALIZED_INIT_SEEDS = ("client", "dataset")
 def personalized_init_seed(config: dict) -> str:
     """Scope of the seed that initializes a client's personalized stem/heads.
 
-    ``client`` (default, every historical run) draws an independent initialization per client, so
-    clients of the same dataset feed the shared trunk with unrelated random encodings from round 1.
-    ``dataset`` gives every client of a dataset the same initial stem/heads.
+    ``client`` draws an independent initialization per client, so clients of the same dataset feed
+    the shared trunk with unrelated random encodings from round 1. It remains the fallback for a
+    config without the key, so every historical run resolves exactly as it was produced.
+    ``dataset`` gives every client of a dataset the same initial stem/heads; ``src/config.yaml``
+    sets it explicitly since E3, where it was the only arm that closed part of the local-only gap.
     """
     return str(config["federated"].get("personalized_init_seed", "client")).lower()
 

@@ -311,6 +311,7 @@ the budget, not the federation.
 | `datasets` / `n_clients.<dataset>` | Active datasets and clients per dataset/task |
 | `datasets.<name>.client_topology` | `single_task` (default) or `multi_task` (one client, several tasks, same images) |
 | `share_stem` | Federate the input stem; must be false for mixed 1ch/3ch runs |
+| `personalized_init_seed` | `dataset` (working default since E3): every client of a dataset starts from the same stem/heads; `client` draws one per client and is the fallback when the key is absent, so historical configs keep resolving unchanged. Local-only reads the same key, so the pair stays matched |
 | `local_training.mode` | `steps` (fixed `steps_per_round`) or `epochs` (`local_epochs` passes) |
 | `aggregation.mode` | `hierarchical` (main) or `flat` (FedAvg-style ablation) |
 | `aggregation.client_weighting` | `uniform` or `num_examples`, inside the hierarchical mode |
