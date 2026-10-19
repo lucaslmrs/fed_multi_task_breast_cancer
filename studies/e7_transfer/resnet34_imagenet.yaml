@@ -1,0 +1,250 @@
+# E7 run `resnet34_imagenet` (plano.md, E7).
+# Derived from runs/studies/e3_loss_ablation/resolved/seed_1993/init_seed_dataset.yaml (E3 Phase B winner).
+# Changes: model.architecture MTResNet34UNet (ImageNet ResNet-34 encoder, FrozenBN),
+# federated.shared_modules (the E6 wide set; every pretrained module must be shared),
+# federated.rounds 200 -> 400, experiment block. Same E3 seed_1993 master.
+# Needs the ImageNet weights cached once (training never downloads them):
+#   python -c "from torchvision.models import resnet34, ResNet34_Weights; resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)"
+# Run: python -m src.training_federated --config studies/e7_transfer/resnet34_imagenet.yaml
+model:
+  architecture: MTResNet34UNet
+  sequences: 1
+  width: 24
+  deep_supervision: true
+optimizer:
+  opt: Adam
+  lr: 0.0001
+  scheduler: plateau
+  patience: 20
+  min_lr: 1e-6
+  decrease_factor: 0.5
+  t_max: 40
+loss:
+  function: DiceBCE
+  dice_weight: 0.5
+  bce_weight: 0.5
+  inversely_weighted: true
+  classification_criterion: Focal
+  focal_gamma: 2.0
+  dice_batch: true
+training:
+  debug: false
+  seed: 1993
+  precision: bf16
+  epochs: 200
+  max_patience: 50
+  CV: 1
+  holdout_test_size: 0.3
+  cuda_benchmark: true
+  alpha: 0.85
+  threshold_postprocessing: 0
+  overlap_seg_based_on_class: false
+  overlap_class_based_on_seg: false
+data:
+  semantic_segmentation: false
+  root: data
+  dataset: Curated_BUSI
+  variant: processed_128
+  image_size: 128
+  batch_size: 32
+  train_size: 0.8
+  classes:
+  - benign
+  - malignant
+  - normal
+  seg_exclude_classes: []
+  classes_weighted: null
+  use_duplicated_to_train: false
+  remove_outliers: false
+  oversampling: false
+  class_weighting: balanced_fold
+  augmentation:
+    CLAHE: false
+    SOBEL: false
+    brightness_brighter: false
+    brightness_darker: false
+    contrast_high: false
+    contrast_low: false
+  transforms:
+    horizontal_flip: 0.5
+    vertical_flip: 0.5
+    rotation: 1.0
+runtime:
+  inference_batch_size: 32
+  dataloader:
+    num_workers: 4
+    federated_num_workers: 0
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2
+  federated:
+    ray_num_cpus: 8
+    client_resources:
+      num_cpus: 2
+      num_gpus: 0.5
+  telemetry:
+    enabled: true
+    gpu_interval_seconds: 1.0
+  diagnostics:
+    gradient_conflict:
+      enabled: true
+      every_n_rounds: 10
+      probe_batches: 10
+      sketch_dim: 65536
+      lookahead:
+        enabled: true
+        val_batches: 4
+        train_batches: 4
+datasets:
+  Curated_BUSI:
+    variant: processed_128
+    channels: 1
+    classes:
+    - benign
+    - malignant
+    - normal
+    seg_exclude_classes: []
+    fold_strategy: stratified
+    client_topology: multi_task
+    class_weighting: balanced_fold
+    classification_criterion: CE
+    oversampling:
+      seg: false
+      cls: false
+  ISIC_2018:
+    variant: processed_128
+    channels: 3
+    classes:
+    - AKIEC
+    - BCC
+    - BKL
+    - DF
+    - MEL
+    - NV
+    - VASC
+    seg_exclude_classes: []
+    fold_strategy: per_task
+    client_topology: single_task
+    cls_source_split: train
+    class_weighting: balanced_fold
+    classification_criterion: CE
+    focal_gamma: 2.0
+    oversampling:
+      seg: false
+      cls: false
+  TCGA_LGG:
+    variant: processed_128
+    channels: 3
+    classes:
+    - no_tumor
+    - tumor
+    seg_exclude_classes: []
+    fold_strategy: stratified_group
+    group_col: lesion_id
+    group_strata: 3
+    client_topology: multi_task
+    class_weighting: balanced_fold
+    classification_criterion: CE
+    oversampling:
+      seg: false
+      cls: false
+  SIIM_ACR:
+    variant: processed_128
+    channels: 1
+    classes:
+    - no_pneumothorax
+    - pneumothorax
+    seg_exclude_classes: []
+    fold_strategy: stratified
+    client_topology: multi_task
+    class_weighting: balanced_fold
+    classification_criterion: CE
+    oversampling:
+      seg: false
+      cls: false
+federated:
+  datasets:
+  - Curated_BUSI
+  - ISIC_2018
+  - SIIM_ACR
+  - TCGA_LGG
+  share_stem: false
+  shared_modules:
+  - encoder2
+  - encoder3
+  - encoder4
+  - encoder5
+  - bottleneck
+  - decoder5
+  - decoder4
+  - decoder3
+  - decoder2
+  - decoder1
+  - upsample5
+  - upsample4
+  - upsample3
+  - upsample2
+  - upsample1
+  - process_encoder_5
+  - process_decoder_5
+  n_clients:
+    Curated_BUSI:
+      seg: 2
+      cls: 2
+    ISIC_2018:
+      seg: 4
+      cls: 4
+    TCGA_LGG:
+      seg: 2
+      cls: 2
+    SIIM_ACR:
+      seg: 4
+      cls: 4
+  partition_file: /home/lucas/fed_multi_task_breast_cancer/data/federated_studies/e3_loss_ablation/seed_1993/federated_mapping.csv
+  n_clients_seg: 2
+  n_clients_cls: 2
+  rounds: 400
+  local_epochs: 2
+  local_training:
+    mode: steps
+    steps_per_round: 10
+    local_epochs: 2
+  training_telemetry:
+    enabled: true
+    granularity: epoch_and_round
+    formats:
+    - csv
+    - html
+    - png
+  dirichlet_alpha: 100.0
+  val_size: 0.2
+  patience: 10
+  task_weights:
+    seg: 4.0
+    cls: 1.0
+  aggregation:
+    mode: hierarchical
+    client_weighting: uniform
+    task_weights:
+      seg: 4.0
+      cls: 1.0
+    dataset_weights:
+      Curated_BUSI: 1.0
+      ISIC_2018: 1.0
+      TCGA_LGG: 1.0
+      SIIM_ACR: 1.0
+  oversampling:
+    seg: false
+    cls: true
+  standalone: false
+  device: cuda
+  personalized_init_seed: dataset
+evaluation:
+  segmentation_primary_metric: dice_positive
+  segmentation_protocol: positive_and_empty_v1
+experiment:
+  study_id: e7_transfer_learning
+  arm_id: resnet34_imagenet
+  method_id: resnet34_imagenet
+  seed: 1993
+  setup: federated

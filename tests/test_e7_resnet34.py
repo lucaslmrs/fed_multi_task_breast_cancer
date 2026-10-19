@@ -555,6 +555,54 @@ class SmokeFrozenCheckTests(_FakeHubCase):
                 self._verify(self._run_dir(directory, architecture="MTnnUNet"))
 
 
+RUN_CONFIG = ROOT / "studies" / "e7_transfer" / "resnet34_imagenet.yaml"
+BASE_CONFIG = (ROOT / "runs" / "studies" / "e3_loss_ablation" / "resolved" / "seed_1993"
+               / "init_seed_dataset.yaml")
+
+
+def _flatten(value, prefix=""):
+    if isinstance(value, dict):
+        flat = {}
+        for key, inner in value.items():
+            flat.update(_flatten(inner, f"{prefix}{key}."))
+        return flat
+    return {prefix[:-1]: value}
+
+
+class RunConfigTests(unittest.TestCase):
+    def setUp(self):
+        self.config = yaml.safe_load(RUN_CONFIG.read_text(encoding="utf-8"))
+
+    def test_run_config_is_a_valid_wide_resnet_run(self):
+        from src.federated.config import shared_modules
+        from src.training_federated import _build_model
+
+        validate_federated_config(self.config)
+        self.assertEqual(self.config["model"]["architecture"], "MTResNet34UNet")
+        self.assertEqual(shared_modules(self.config), WIDE)
+        self.assertEqual(self.config["federated"]["rounds"], 400)
+        self.assertEqual(self.config["experiment"], {
+            "study_id": "e7_transfer_learning", "arm_id": "resnet34_imagenet",
+            "method_id": "resnet34_imagenet", "seed": 1993, "setup": "federated"})
+        self.assertTrue(str(self.config["federated"]["partition_file"]).endswith(
+            "federated_studies/e3_loss_ablation/seed_1993/federated_mapping.csv"))
+        shapes = set()
+        for dataset in active_datasets(self.config):
+            model = _build_model(self.config, dataset, "cpu")
+            assert_pretrained_shared(model, WIDE)
+            shapes.add(tuple(tuple(a.shape) for a in get_shared_state(model, WIDE)))
+        self.assertEqual(len(shapes), 1)
+
+    @unittest.skipUnless(BASE_CONFIG.exists(), "E3 resolved config not available")
+    def test_differs_from_the_e3_winner_only_where_declared(self):
+        base = _flatten(yaml.safe_load(BASE_CONFIG.read_text(encoding="utf-8")))
+        run = _flatten(self.config)
+        changed = {key for key in set(base) | set(run) if base.get(key) != run.get(key)}
+        self.assertEqual(changed, {
+            "model.architecture", "federated.shared_modules", "federated.rounds",
+            "experiment.study_id", "experiment.arm_id", "experiment.method_id"})
+
+
 @unittest.skipUnless(torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
                      "BF16 needs a CUDA GPU (the orchestrator runs this once, GPU free)")
 class BF16CudaTests(unittest.TestCase):
