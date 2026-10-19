@@ -463,6 +463,53 @@ class SmokeCoverageTests(unittest.TestCase):
             self.assertTrue((cd.round_dir(fold_dir, 1) / "ISIC_2018_cls_0_m1.npz").exists())
 
 
+RUN_CONFIG = ROOT / "studies" / "e6_sharing" / "wide_sharing.yaml"
+E3_WINNER = ROOT / "runs" / "studies" / "e3_loss_ablation" / "resolved" / "seed_1993" / \
+    "init_seed_dataset.yaml"
+E6_EXPERIMENT = {"study_id": "e6_wider_sharing", "arm_id": "wide_sharing",
+                 "method_id": "wide_sharing", "seed": 1993, "setup": "federated"}
+
+
+def _flatten(value, prefix=""):
+    if isinstance(value, dict):
+        flat = {}
+        for key, child in value.items():
+            flat.update(_flatten(child, f"{prefix}{key}."))
+        return flat
+    return {prefix[:-1]: value}
+
+
+class RunConfigTests(unittest.TestCase):
+    """The committed E6 run config (plano.md, E6.5)."""
+
+    def setUp(self):
+        self.config = yaml.safe_load(RUN_CONFIG.read_text(encoding="utf-8"))
+
+    def test_run_config_selects_the_wide_set(self):
+        federated = self.config["federated"]
+        self.assertEqual(shared_modules(self.config), WIDE)
+        self.assertIs(federated["share_stem"], False)
+        self.assertEqual(federated["rounds"], 400)
+        self.assertEqual(self.config["experiment"], E6_EXPERIMENT)
+        self.assertEqual(self.config["model"]["architecture"], "MTnnUNet")
+        self.assertTrue(federated["partition_file"].endswith(
+            "data/federated_studies/e3_loss_ablation/seed_1993/federated_mapping.csv"))
+        validate_federated_config(self.config)
+
+    @unittest.skipUnless(E3_WINNER.exists(), "needs the resolved E3 Phase B config under runs/")
+    def test_run_config_differs_from_the_e3_winner_only_in_the_intervention(self):
+        base = _flatten(yaml.safe_load(E3_WINNER.read_text(encoding="utf-8")))
+        run = _flatten(self.config)
+        differing = {key for key in set(base) | set(run)
+                     if base.get(key, "<absent>") != run.get(key, "<absent>")}
+        self.assertEqual(differing, {"federated.rounds", "federated.shared_modules",
+                                     "experiment.study_id", "experiment.arm_id",
+                                     "experiment.method_id"})
+        self.assertEqual(base["federated.rounds"], 200)
+        self.assertEqual(base["experiment.seed"], E6_EXPERIMENT["seed"])
+        self.assertEqual(base["experiment.setup"], E6_EXPERIMENT["setup"])
+
+
 class StudyHashGuardTests(unittest.TestCase):
     def test_shared_modules_is_not_in_the_working_config(self):
         # Defining it in src/config.yaml would change config_sha256 for every manifest built on it.
