@@ -63,8 +63,8 @@ E3/E4, para não invalidar os resultados já produzidos.
 | # | Decisão | Local | Fonte | Status | Observação |
 |---|---|---|---|---|---|
 | D21 | BUSI redimensionado com `INTER_NEAREST` | `src/dataset/Curated_BUSI_preprocessing.py` | `aldhabyani2020` (dataset); documentação do OpenCV | adaptação (congelada) | A doc do `cv2.resize` (4.7.0) recomenda `INTER_AREA` para reduzir. O nearest é herdado da curadoria e fica **congelado**: mudar invalidaria a partição e todos os resultados. Não "corrigir". |
-| D22 | ISIC, TCGA-LGG e SIIM-ACR com `INTER_AREA` | `src/dataset/{ISIC_2018,TCGA_LGG,SIIM_ACR}_preprocessing.py` | Documentação do OpenCV `cv2.resize`: "To shrink an image, it will generally look best with INTER_AREA" | verificado | — |
-| D23 | Máscaras com nearest e re-binarizadas | idem | — | decisão própria | Preserva os rótulos binários; interpolar produziria valores fracionários. |
+| D22 | ISIC, TCGA-LGG e SIIM-ACR com `INTER_AREA` | `src/dataset/{ISIC_2018,TCGA_LGG,SIIM_ACR}_preprocessing.py` | Documentação do OpenCV `cv2.resize`: "To shrink an image, it will generally look best with INTER_AREA" | verificado | **E4 (2026-10-18):** as variantes `processed_256` do TCGA-LGG e do SIIM-ACR usam o mesmo filtro. No TCGA-LGG (bruto 256×256) o resize é a identidade: imagem e máscara idênticas ao TIFF (300 fatias conferidas). Ver `docs/PREPROCESSING_NEEDS.md`. |
+| D23 | Máscaras com nearest e re-binarizadas | idem | — | decisão própria | Preserva os rótulos binários; interpolar produziria valores fracionários. **E4 (2026-10-18):** a 128 e a 256 px nenhuma lesão do TCGA-LGG ou do SIIM-ACR some (1.373 e 2.667 positivas nas duas resoluções). |
 | D24 | Classe derivada da máscara (TCGA-LGG: `tumor`; SIIM-ACR: `pneumothorax`) | `src/dataset/{TCGA_LGG,SIIM_ACR}_preprocessing.py` | `buda2019`; competição SIIM-ACR (Kaggle 2019) | decisão própria | A classe é função determinística do alvo de segmentação. Registrado em `data/*/PAPER_NOTES.md`. Ao interpretar o ganho de classificação nesses datasets, lembrar que ele não é independente da segmentação. |
 
 ---

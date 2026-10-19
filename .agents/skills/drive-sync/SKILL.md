@@ -7,8 +7,11 @@ description: Espelhar o repositório no Google Drive com rclone (remote `gdrive:
 
 Destino: `gdrive:fed_mtl/current` — espelho do repo filtrado por `.rclone-filter` (na raiz,
 versionado; a mesma cópia é enviada ao Drive). O filtro exclui `.venv`, `.git`, `__pycache__`,
-`data.zip`, `data/*/{raw,archives,processed_128,curated}` e checkpoints `runs/**/*.pt`.
-Os datasets pré-processados ficam como `.tar` em `gdrive:fed_mtl/packs/`, fora do sync.
+`data.zip`, `data/*/{raw,archives,curated}`, **toda** variante pré-processada `data/*/processed_*`
+(a `processed_128` e as `processed_256` da E4) e checkpoints `runs/**/*.pt`.
+Os datasets pré-processados ficam como `.tar` em `gdrive:fed_mtl/packs/`, fora do sync. Uma
+variante nova não chega ao Drive pelo sync: ou ganha o seu próprio pack, ou é regerada na máquina
+de destino pela CLI (`--variant processed_<N> --image-size N`), que é determinística.
 
 Rode tudo a partir da raiz do repo **dentro do WSL** (é lá que o rclone está configurado).
 
