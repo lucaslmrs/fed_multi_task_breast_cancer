@@ -127,6 +127,11 @@ def init_classification_model(
     return model
 
 
+MULTITASK_ARCHITECTURES = ("Multi_BTSUNet", "MTUNetPlusPlus", "MTnnUNet", "MTResNet34UNet")
+# Architectures with an ImageNet-pretrained encoder. They need an explicit ``pretrained`` choice.
+PRETRAINED_ARCHITECTURES = ("MTResNet34UNet",)
+
+
 def init_multitask_model(
         architecture: str,
         sequences: int = 1,
@@ -134,7 +139,8 @@ def init_multitask_model(
         n_classes: int = 2,
         width: int = 48,
         save_folder: Path = None,
-        deep_supervision: bool = False
+        deep_supervision: bool = False,
+        pretrained: bool = None
 ) -> torch.nn.Module:
     """
     This function implement the architecture chosen.
@@ -146,9 +152,19 @@ def init_multitask_model(
     :param width: number of channels to use in the first convolutional module
     :param deep_supervision: whether deep supervision is active
     :param save_folder: path to store the model
+    :param pretrained: only for ``PRETRAINED_ARCHITECTURES``, where it is mandatory: ``True`` loads
+        the ImageNet encoder from the local cache, ``False`` builds random weights that the caller
+        overwrites (a federated client receives the encoder through the global parameters). Left
+        ``None`` there it raises, which keeps the baseline and centralized paths, not ported to a
+        pretrained encoder, from silently training one from scratch. ``True`` elsewhere raises.
     :return: PyTorch module
     """
 
+    if pretrained and architecture not in PRETRAINED_ARCHITECTURES:
+        raise ValueError(
+            f"pretrained=True is only available for {list(PRETRAINED_ARCHITECTURES)}, "
+            f"not '{architecture}'"
+        )
     logging.info(f"Creating {architecture} model")
     logging.info(f"The model will be fed with {sequences} sequences")
     if architecture == 'Multi_BTSUNet':
@@ -157,10 +173,24 @@ def init_multitask_model(
         model = MTUNetPlusPlus(in_channels=sequences, out_channels=regions, n_classes=n_classes, deep_supervision=deep_supervision)
     elif architecture == "MTnnUNet":
         model = MTnnUNet(sequences=sequences, regions=regions, n_classes=n_classes)
+    elif architecture == "MTResNet34UNet":
+        if pretrained is None:
+            raise ValueError(
+                "MTResNet34UNet needs an explicit pretrained=True/False; only the federated "
+                "orchestrator loads the ImageNet encoder (the baseline and centralized paths are "
+                "not ported to it)"
+            )
+        from src.models.multitask.MTResNet34UNet import MTResNet34UNet
+        model = MTResNet34UNet(sequences=sequences, regions=regions, n_classes=n_classes)
+        if pretrained:
+            raise NotImplementedError("Loading the ImageNet encoder is not implemented yet")
     else:
-        model = torch.nn.Module()
-        assert ("The model selected does not exist. Please, chose some of the following architectures: "
-                "Multi-task nnU-Net (MTnnUNet) or Multi-task UNet++ (MTUNetPlusPlus)")
+        # Used to return an empty ``torch.nn.Module()`` (the bare assert never fired), which
+        # failed much later, far from the typo.
+        raise ValueError(
+            f"Unknown multi-task architecture '{architecture}'; choose one of "
+            f"{list(MULTITASK_ARCHITECTURES)}"
+        )
 
     # Saving the model scheme in a .txt file
     if save_folder is not None:
