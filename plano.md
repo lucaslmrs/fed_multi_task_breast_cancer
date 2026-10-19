@@ -2136,6 +2136,13 @@ registrada e as ressalvas explícitas: orçamento (não existe controle de 400 r
   - As duas rodadas do probe têm M1/M2 (a 1ª e a última sempre têm). Com 1.0, os 6 clientes a 256
     custam só ~1,3× o tempo de 0.5 (71 s contra 55 s na rodada 2): com 0.5, os dois clientes
     simultâneos disputam a mesma GPU.
+  - O pico com 0.5 se explica pelos próprios processos do probe: 2 × 5.906 MiB reservados, mais os
+    contextos CUDA dos 2 workers e do driver, mais os ~2,4 GB de repouso. Com 1.0 a mesma conta dá
+    os 9.072 MiB medidos. Mesmo descontando um contexto alheio (~0,5 GB), 0.5 passaria do limite.
+  - **Ressalva de tempo:** um smoke de CPU da E6 (sessão Ray de 22:55:59 a 22:58:25) rodou junto
+    com as rodadas 1 e 2 do probe de 0.5. Ele não usa a GPU, mas disputa a CPU, então os tempos com
+    0.5 podem estar pessimistas e o ~1,3× entre 1.0 e 0.5 pode estar subestimado. O probe com 1.0
+    (23:02:56 em diante) rodou sem sobreposição.
   - Execução: `runs/validation/e4_gpu_probe/` (`config_probe.yaml`, `config_probe_num_gpus_1.yaml`,
     `run/`, `run_num_gpus_1/`). RAM máxima do driver: 2,9 GB.
 - **Estimativa de tempo (400 rodadas, `num_gpus` 1.0).** Não medida diretamente: o probe só tem
