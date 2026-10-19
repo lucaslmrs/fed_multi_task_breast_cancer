@@ -165,6 +165,8 @@ class FederatedClient(NumPyClient):
             width=config["model"]["width"],
             deep_supervision=config["model"]["deep_supervision"],
             save_folder=None,
+            # Never the checkpoint: a pretrained encoder arrives as the initial global parameters.
+            pretrained=False,
         ).to(self.device)
         # Kendall log-variances must exist before the optimizer so it updates them too.
         if task_weighting_mode(config) == "uncertainty":

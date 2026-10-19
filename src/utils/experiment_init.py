@@ -180,10 +180,10 @@ def init_multitask_model(
                 "orchestrator loads the ImageNet encoder (the baseline and centralized paths are "
                 "not ported to it)"
             )
-        from src.models.multitask.MTResNet34UNet import MTResNet34UNet
+        from src.models.multitask.MTResNet34UNet import MTResNet34UNet, load_imagenet_encoder
         model = MTResNet34UNet(sequences=sequences, regions=regions, n_classes=n_classes)
         if pretrained:
-            raise NotImplementedError("Loading the ImageNet encoder is not implemented yet")
+            load_imagenet_encoder(model)
     else:
         # Used to return an empty ``torch.nn.Module()`` (the bare assert never fired), which
         # failed much later, far from the typo.

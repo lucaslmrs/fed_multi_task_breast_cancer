@@ -33,6 +33,7 @@ from src.federated.config import (
     validate_federated_config,
 )
 from src.federated.model_split import (
+    assert_pretrained_shared,
     get_shared_state,
     resolved_shared_modules,
     set_personalized_state,
@@ -45,7 +46,11 @@ from src.experiments.run_report import build_run_report
 from src.experiments.training_diagnostics import run_training_diagnostics
 from src.federated.negative_transfer import report_run
 from src.federated.server import FedPerStrategy
-from src.utils.experiment_init import device_setup, init_multitask_model
+from src.utils.experiment_init import (
+    PRETRAINED_ARCHITECTURES,
+    device_setup,
+    init_multitask_model,
+)
 from src.utils.miscellany import init_log, seed_everything
 from src.utils.supervision import attach_saved_task_uncertainty
 from src.utils.training_runtime import (
@@ -80,7 +85,12 @@ def _resolve_orchestrator_device(requested):
     return requested
 
 
-def _build_model(config, dataset, device):
+def _build_model(config, dataset, device, pretrained=False):
+    """``pretrained=True`` only for the reference model of the initial global parameters.
+
+    Every other model -- clients, candidates, final evaluation -- is built with random weights and
+    receives the pretrained ones (if any) through the shared state.
+    """
     data_cfg = dataset_config(config, dataset)
     n_aug = sum(bool(value) for value in data_cfg.get("augmentation", {}).values())
     return init_multitask_model(
@@ -91,11 +101,17 @@ def _build_model(config, dataset, device):
         width=config["model"]["width"],
         deep_supervision=config["model"]["deep_supervision"],
         save_folder=None,
+        pretrained=pretrained,
     ).to(device)
 
 
 def _initial_shared_parameters(config, datasets, device, fold):
-    """Build one model per dataset and fail before Flower if shared contracts diverge."""
+    """Build one model per dataset and fail before Flower if shared contracts diverge.
+
+    For a pretrained architecture the reference model loads the ImageNet encoder here, and this is
+    the only place it is loaded: the clients of both arms receive it as the initial global
+    parameters, which is why every pretrained module must be shared.
+    """
     # Reset independently for every fold and arm. Orchestrator-side evaluation/model construction
     # after an earlier fold must not perturb the paired initial trunk of the next fold.
     seed_everything(
@@ -105,7 +121,9 @@ def _initial_shared_parameters(config, datasets, device, fold):
         cuda_benchmark=config["training"].get("cuda_benchmark", False),
     )
     sharing = shared_modules(config)
-    reference_model = _build_model(config, datasets[0], device)
+    pretrained = config["model"]["architecture"] in PRETRAINED_ARCHITECTURES
+    reference_model = _build_model(config, datasets[0], device, pretrained=pretrained)
+    assert_pretrained_shared(reference_model, sharing)
     reference_keys = validate_sharing(reference_model, sharing)
     reference_arrays = get_shared_state(reference_model, sharing)
     reference_shapes = [array.shape for array in reference_arrays]

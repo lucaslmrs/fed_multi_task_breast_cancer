@@ -40,9 +40,17 @@ raw input, as MTnnUNet's stem does, and feeds only ``decoder1``'s skip connectio
 
 ``forward`` returns ``([cls_logits], [out4, out3, out2, out1])`` as raw logits: the segmentation
 criterion applies the sigmoid itself.
+
+The ImageNet weights are read only from torchvision's local cache
+(``torch.hub.get_dir()/checkpoints/resnet34-b627a593.pth``) by ``load_imagenet_encoder``, which the
+federated orchestrator calls once per fold for the reference model of the initial global
+parameters. Nothing here downloads: a missing file raises with the one-time download command.
 """
 
+import hashlib
+import logging
 from collections import OrderedDict
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -53,6 +61,23 @@ from src.models.multitask.MTnnUNet import ConvInNormLeReLU, LevelBlock, conv1x1
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
+
+# torchvision's ResNet34_Weights.IMAGENET1K_V1 file; the name carries its sha256 prefix.
+IMAGENET_CHECKPOINT = "resnet34-b627a593.pth"
+IMAGENET_SHA256_PREFIX = "b627a593"
+DOWNLOAD_COMMAND = (
+    'python -c "from torchvision.models import resnet34, ResNet34_Weights; '
+    'resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)"'
+)
+# Checkpoint key prefix -> model key prefix. ``fc.*`` is dropped (the model has no fc).
+IMAGENET_PREFIX_MAP = (
+    ("conv1.", "encoder2.conv1."),
+    ("bn1.", "encoder2.bn1."),
+    ("layer1.", "encoder3.layer1."),
+    ("layer2.", "encoder4."),
+    ("layer3.", "encoder5."),
+    ("layer4.", "bottleneck."),
+)
 
 
 class MTResNet34UNet(nn.Module):
@@ -191,3 +216,93 @@ class MTResNet34UNet(nn.Module):
 
         return [predicted_class], [self.output4(d4), self.output3(d3), self.output2(d2),
                                    self.output1(d1)]
+
+
+# ---- ImageNet weights ------------------------------------------------------------------------
+def imagenet_checkpoint_path() -> Path:
+    """Where torchvision caches the ResNet-34 ImageNet weights (honours ``TORCH_HOME``)."""
+    return Path(torch.hub.get_dir()) / "checkpoints" / IMAGENET_CHECKPOINT
+
+
+def map_imagenet_state(state) -> OrderedDict:
+    """Rename a torchvision ResNet-34 state_dict to MTResNet34UNet keys.
+
+    Drops ``fc.*`` and every ``num_batches_tracked`` (FrozenBatchNorm2d has none) and refuses any
+    other key the prefix map does not cover, so a different checkpoint cannot half-load.
+    """
+    mapped, unmapped = OrderedDict(), []
+    for key, tensor in state.items():
+        if key.startswith("fc.") or key.endswith("num_batches_tracked"):
+            continue
+        for source, target in IMAGENET_PREFIX_MAP:
+            if key.startswith(source):
+                mapped[target + key[len(source):]] = tensor
+                break
+        else:
+            unmapped.append(key)
+    if unmapped:
+        raise ValueError(
+            f"ImageNet checkpoint has {len(unmapped)} keys outside the ResNet-34 prefix map, "
+            f"e.g. {unmapped[:3]}"
+        )
+    return mapped
+
+
+def _sha256(path, chunk_size=1 << 20):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_imagenet_state():
+    """Verify and read the cached checkpoint; return ``(mapped_state, path, sha256)``.
+
+    Offline by design: Ray workers and air-gapped runs must never download, so a missing file is a
+    ``FileNotFoundError`` carrying the one-time download command (torchvision checks the hash when
+    it downloads). The local file is checked again here against the sha256 prefix in its name and
+    read with ``weights_only=True``.
+    """
+    path = imagenet_checkpoint_path()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"ImageNet ResNet-34 weights not found: {path}. Training never downloads them; "
+            f"fetch them once (about 83 MB; torchvision verifies the hash) with:\n"
+            f"  {DOWNLOAD_COMMAND}"
+        )
+    digest = _sha256(path)
+    if not digest.startswith(IMAGENET_SHA256_PREFIX):
+        raise ValueError(
+            f"{path} has sha256 {digest[:16]}..., expected the prefix {IMAGENET_SHA256_PREFIX}; "
+            f"delete it and download it again with:\n  {DOWNLOAD_COMMAND}"
+        )
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    return map_imagenet_state(state), path, digest
+
+
+def load_imagenet_encoder(model):
+    """Load the ImageNet weights into ``model.pretrained_modules``; leave everything else as is."""
+    mapped, path, digest = load_imagenet_state()
+    model_state = model.state_dict()
+    pretrained = tuple(model.pretrained_modules)
+    expected = {key for key in model_state if key.split(".", 1)[0] in pretrained}
+    if set(mapped) != expected:
+        raise ValueError(
+            f"ImageNet keys do not cover {pretrained} exactly: missing "
+            f"{sorted(expected - set(mapped))[:3]}, extra {sorted(set(mapped) - expected)[:3]}"
+        )
+    result = model.load_state_dict(mapped, strict=False)
+    if result.unexpected_keys:
+        raise RuntimeError(f"Unexpected ImageNet keys: {result.unexpected_keys[:3]}")
+    if set(result.missing_keys) != set(model_state) - expected:
+        raise RuntimeError(
+            "ImageNet load left pretrained keys unset: "
+            f"{sorted(expected & set(result.missing_keys))[:3]}"
+        )
+    logging.info(
+        "[pretrained] ImageNet ResNet-34 loaded into %s: %d tensors, %d values (%s, sha256 %s)",
+        ",".join(pretrained), len(mapped), sum(tensor.numel() for tensor in mapped.values()),
+        path, digest[:8],
+    )
+    return model

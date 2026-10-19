@@ -17,6 +17,10 @@ The personalized remainder always includes whatever the spec leaves out: on MTnn
 stem (``encoder1``, unless shared), the output heads and the classifier, plus Kendall's
 ``task_log_vars`` when attached. ``validate_sharing`` refuses an empty shared set, non-float
 shared tensors and, for an explicit list, names that are not top-level modules owning a tensor.
+``assert_pretrained_shared`` refuses a spec that leaves a pretrained module (E7) personalized.
+
+Shared BUFFERS travel with the shared block too: MTResNet34UNet's FrozenBatchNorm2d statistics are
+float32 buffers inside shared modules, identical on every client, so FedAvg returns them unchanged.
 
 The helpers convert the shared block to/from a list of numpy arrays (the exchange format Flower
 expects) keeping a stable key ordering, and read/write the personalized block as a state_dict for
@@ -120,6 +124,29 @@ def validate_sharing(model: torch.nn.Module, sharing=True) -> list:
             f"{non_float[:3]} ({len(non_float)} non-float)"
         )
     return keys
+
+
+def assert_pretrained_shared(model: torch.nn.Module, sharing=True) -> None:
+    """Refuse a spec that leaves any of ``model.pretrained_modules`` personalized.
+
+    Pretrained weights reach the clients only through the server's initial global parameters: a
+    client builds its model with random weights and is never handed the checkpoint. A pretrained
+    module left personalized would therefore start from random weights on every client. Models
+    without ``pretrained_modules`` pass trivially.
+    """
+    pretrained = tuple(getattr(model, "pretrained_modules", ()) or ())
+    if not pretrained:
+        return
+    spec = _spec(sharing)
+    personal = [key for key in model.state_dict()
+                if str(key).split(".", 1)[0] in pretrained and not is_shared(key, spec)]
+    if personal:
+        blocks = list(dict.fromkeys(str(key).split(".", 1)[0] for key in personal))
+        raise ValueError(
+            f"{type(model).__name__} keeps pretrained modules {blocks} personalized under "
+            f"sharing={spec!r}; clients receive pretrained weights only through the global "
+            "initial parameters, so list every one of them in federated.shared_modules"
+        )
 
 
 def get_shared_state(model: torch.nn.Module, sharing=True) -> list:
