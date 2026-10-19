@@ -32,7 +32,7 @@ Criado em 2026-10-04.
 | E2 | App local de monitoramento e comparação | ✅ | `feat/monitor-app` | 2026-10-16 |
 | E5 | Validação das fontes (consolidação) | ✅ | `docs/sources` | 2026-10-16 |
 | E3 | Ablação: loss fed multitask multi-dataset | ✅ | `exp/loss-ablation` | 2026-10-18 |
-| E4 | Ablação: pré-processamento de imagens | ⬜ | `exp/preprocessing-ablation` | — |
+| E4 | Ablação: pré-processamento de imagens | ⏳ | `exp/preprocessing-ablation` | 2026-10-18 |
 | E6 | Compartilhamento ampliado (decoder federado) | ⬜ | `exp/wider-sharing` | — |
 | E7 | Transfer learning (ResNet-34 ImageNet) | ⬜ | `exp/transfer-learning` | — |
 
@@ -1969,7 +1969,10 @@ manifest da Fase B; (d) registro no `plano.md` depois de cada fase.
 
 ## E4 — Ablação: pré-processamento de imagens
 
-**Objetivo.** Medir o efeito de escolhas de pré-processamento no desempenho.
+**Objetivo.** Medir o efeito de escolhas de pré-processamento no desempenho. Na forma decidida em
+2026-10-18: entender o que cada dataset precisa e usar **uma resolução por dataset** (TCGA-LGG e
+SIIM-ACR a 256 px; BUSI e ISIC a 128 px). Os stems pessoais e o MTnnUNet totalmente convolucional
+permitem misturar resoluções no mesmo run.
 
 **Situação atual.**
 - **Interpolação:** BUSI usa `INTER_NEAREST` (congelado); ISIC, TCGA-LGG e SIIM-ACR usam `INTER_AREA`.
@@ -1984,6 +1987,8 @@ manifest da Fase B; (d) registro no `plano.md` depois de cada fase.
   exige uma variante de maior resolução, ou um recorte, como braço da E4, com uma nova variante e
   sem tocar em `processed_128`.
 - **Replicação com ≥ 3 seeds**, pelo mesmo motivo de ruído entre runs registrado na E3.
+  *Substituída em 2026-10-18 por decisão do usuário:* 1 seed (1993), 1 run (E4.1). Multi-seed fica
+  pendente (E4.8).
 
 **Restrição central.** Ablações que alteram a imagem gravada exigem uma **nova variante** de dataset,
 sem sobrescrever `processed_128` nem regerar a partição congelada. Por isso a preferência vai para
@@ -1995,15 +2000,232 @@ Antes de criar uma variante gravada, é preciso verificar se a partição pode s
 2. Implementação configurável, com testes.
 3. Manifest, handoff de treino, análise e fontes registradas.
 
-**Treino necessário?** Sim, o estudo completo, executado pelo usuário.
+**Treino necessário?** Sim: 1 run federado solto, seed 1993, 400 rodadas, executado pelo usuário
+(handoff em E4.6).
 
-**Critério de pronto.** Pipeline de pré-processamento escolhido, com evidência descritiva e fonte
-registrada.
+**Critério de pronto.** Run de 400 rodadas lido contra a E3, com a decisão sobre a resolução
+registrada e as ressalvas explícitas: orçamento (não existe controle de 400 rodadas) e raster do GT
+(o Dice a 256 px é medido contra outra máscara; E4.7).
 
-**Detalhamento.** _(a preencher)_
+**Detalhamento.**
+
+#### E4.0 — Fatos (levantados em 2026-10-18)
+
+- **Lesão por dataset a 128 px** (`python -m scripts.preprocessing_needs`; tabela completa em
+  `docs/PREPROCESSING_NEEDS.md`):
+
+  | Dataset | Bruto | Vazias | Lesão mediana | % do quadro | Lado mín. p5 | < 50 px |
+  |---|---|---|---|---|---|---|
+  | BUSI | 512×512 | 14,2% | 1.086 px | 6,6% | 11 | 1 |
+  | ISIC (seg) | variável (ex. 767×576, 3072×2304) | 0% | 2.697 px | 16,5% | 17 | 1 |
+  | TCGA-LGG | 256×256 | 65,1% | 381 px | 2,3% | 8 | 78 |
+  | SIIM-ACR | 1024×1024 | 77,9% | 134 px | 0,82% | 5 | 474 |
+
+- **O MTnnUNet só exige H e W divisíveis por 32.** Um forward a 256 px dá as 4 saídas de seg em
+  256×256 e o logit de cls; a 240 px falha. O trunk compartilhado é convolucional, então os pesos
+  não dependem do tamanho da entrada, e os stems são pessoais.
+- **O master copia cada `mapping.csv`.** Nada em `src` lê `data.image_size` no treino; o loader lê
+  `img_path`/`mask_path` do master. Mudar a variante de um dataset exige, portanto, um master
+  próprio. O `_group_strata` do TCGA usa só `tumor_pixels > 0`, e a ordem dos mappings não depende
+  da resolução: o mesmo gerador, sobre os mappings a 256, deve reproduzir a partição da E3 (E4.3).
+- **TCGA-LGG a 256 é o próprio dado.** O bruto já é 256×256: em 300 fatias sorteadas, imagem e
+  máscara de `processed_256` são idênticas ao TIFF.
+- **Normalização de intensidade fica de fora.** Toda conv do MTnnUNet é sem bias e seguida de
+  `InstanceNorm2d` sem afim, então uma mudança afim por imagem na entrada é quase anulada.
+- **Hardware:** RTX 5070 Ti com 16.303 MiB, ~2,4–2,8 GB ocupados em repouso. O vencedor da E3
+  levou 6.068 s para 200 rodadas (rodada sem M1/M2: mediana 25 s; com M1/M2: ~68 s), com pico de
+  8.310 MiB na telemetria.
+
+#### E4.1 — Decisões (grill com o usuário em 2026-10-18)
+
+1. **Muda só a resolução.** TCGA-LGG e SIIM-ACR a 256 px; BUSI e ISIC a 128 px, com a
+   `processed_128` intocada. Normalização, recorte e augmentation ficam fora.
+2. **Um run solto:** `python -m src.training_federated --config …`, seed 1993, 400 rodadas,
+   `steps_per_round: 10`, sem `study_runner`, sem gêmeo local-only e sem controle de 400 rodadas.
+   A comparação com a E3 fica com o usuário.
+3. **Config base:** o do vencedor da E3 (`init_seed_dataset`, seed 1993). O compartilhamento
+   continua só no trunk; `shared_modules` é da E6.
+4. **Master novo autorizado**, desde que seja o master da E3 seed 1993 lido a 256 px, com
+   verificação de equivalência.
+5. **"≥ 3 seeds" substituída** por decisão do usuário: 1 seed, 1 run.
+6. **512 px descartado:** não cabe com batch 32 em 16 GB.
+
+#### E4.2 — Código
+
+- **C1** `preprocessing_utils.preprocessing_data_config(dataset, argv=None, config_file=…)`.
+  - Sem flags: devolve o bloco `data` do `config.yaml` sem mudança (fluxo histórico, com
+    `assert_target_dataset`).
+  - `--variant processed_<N> --image-size N`, sempre juntos: escolhe o dataset do próprio script,
+    tira as classes de `datasets.<DS>.classes`, exige que o nome soletre o tamanho e chama
+    `assert_new_variant`, que aborta se a pasta tem `mapping.csv` ou qualquer arquivo. Sem flag
+    `--dataset`.
+  - Só `TCGA_LGG_preprocessing.py` e `SIIM_ACR_preprocessing.py` ganham `main(argv=None)`; os
+    scripts do BUSI e do ISIC ficam intocados.
+- **C2** `scripts/partition_equivalence.py`. Exige: mesmas colunas, linhas e ordem; mesmos
+  `dataset, fold, client_id, task, split, id`; linhas de BUSI e ISIC idênticas como texto do CSV; em
+  TCGA e SIIM, `class`, `id`, `lesion_id` e `official_split` iguais, caminhos iguais depois de trocar
+  o prefixo `paths.processed_dir(…processed_128)` pelo de `processed_256`, `dim1 == dim2 == 256`,
+  `tumor_pixels > 0` igual linha a linha e arquivos presentes; e o sha256 da referência igual ao do
+  seu metadata. Qualquer problema sai com status 1. `--write-metadata STUDY_ID SEED --config …`
+  grava `<candidato>_metadata.yaml` no esquema do `_ensure_partition`, mais o caminho do relatório,
+  e nunca sobrescreve.
+- **C3** `scripts/preprocessing_needs.py`: só leitura, caminhos por `paths.mapping_file`; fração
+  vazia, área da lesão (mediana, p5, % do quadro), p5 do lado menor e lesões < `--small-px`.
+- **C4** `studies/e4_preprocessing/resolution_256.yaml`, gerado com `safe_load`/`safe_dump` a partir
+  do config resolvido da E3. Difere só em: `datasets.{TCGA_LGG,SIIM_ACR}.variant: processed_256`,
+  `federated.partition_file` (master da E4), `federated.rounds: 400`, bloco `experiment`
+  (`e4_preprocessing` / `resolution_256`) e `runtime.federated.client_resources.num_gpus: 1.0`
+  (probe, E4.5; fora do hash).
+- Nenhuma chave nova no `src/config.yaml`.
+
+#### E4.3 — Dados e equivalência
+
+- **Variantes** (logs em `runs/validation/e4_preprocessing/{tcga,siim}.log`; nenhum `became empty`):
+
+  | Variante | Linhas | Positivas | Disco | sha256 do `mapping.csv` |
+  |---|---|---|---|---|
+  | `data/TCGA_LGG/processed_256` | 3.929 | 1.373 | 337 MB | `5a8a93b1…a98024` |
+  | `data/SIIM_ACR/processed_256` | 12.044 | 2.667 | 461 MB | `66b647dd…a050e` |
+
+  - O SIIM-ACR repete o tratamento de duplicatas da 128 (3 imagens removidas; o par com máscaras
+    diferentes sai inteiro). As `processed_128` continuam com os mesmos sha256 (`cdce37bb…` e
+    `68d9a714…`).
+- **Controle de determinismo:** o master da E3 regerado a 128 em
+  `runs/validation/e4_partition_control/` tem sha256 `389116b5…bd3b`, igual ao original.
+- **Master da E4:** `data/federated_studies/e4_preprocessing/seed_1993/federated_mapping.csv`,
+  46.555 linhas, sha256 `a3d7d98423b56c4e074f8b460224edc3c1708e64e63fe39a6442868eb74a82d2`. Gerado
+  por `python -m src.dataset.federated_partition --config studies/e4_preprocessing/resolution_256.yaml`.
+- **Equivalência** (`federated_mapping_equivalence.yaml`, status `ok`): BUSI 900 e ISIC 13.709
+  linhas idênticas; TCGA 7.858 e SIIM 24.088 linhas com 0 trocas de classe, id, `lesion_id` ou
+  `official_split`, 0 caminhos fora do prefixo esperado, 0 arquivos ausentes e 0 viradas de
+  `tumor_pixels > 0`. Positivas: TCGA 1.373 / SIIM 2.667, iguais à referência. O metadata
+  (`federated_mapping_metadata.yaml`) traz a assinatura `48ffae03…` e o sha256 do CSV.
+- **Loader:** um batch de treino de `TCGA_LGG_mt_0` sai (2, 3, 256, 256) e um de `SIIM_ACR_mt_0`,
+  (2, 1, 256, 256); BUSI e ISIC continuam a 128.
+
+#### E4.4 — Testes
+
+- `tests/test_preprocessing_cli.py` (12): flags juntas, nome que soletra o tamanho, classes do
+  registro, abort com `mapping.csv` e com pasta não vazia, pasta vazia aceita, fluxo sem flags
+  intacto, e um TCGA sintético de ponta a ponta a 256 sem tocar no `config.yaml`.
+- `tests/test_partition_equivalence.py` (16): cópia reescalada equivalente; troca de classe, lesão
+  sumida, linha do BUSI alterada, ordem/split/cliente trocados, caminho em outra variante, tamanho
+  errado, esquema e contagem, dataset desconhecido e arquivos ausentes são problemas; metadata no
+  esquema do `study_runner`, gravado uma vez e nunca com problema ou com config errado.
+- `tests/test_preprocessing_needs.py` (5) e `tests/test_e4_run_config.py` (3: diff exato contra o
+  vencedor da E3 e master igual ao seu metadata; pulam sem `runs/` ou `data/`).
+
+#### E4.5 — Validação
+
+- Suíte completa e `sync_agent_assets --check` (números no **Registro**).
+- **Smoke de CPU** (`scripts.smoke_federated --config studies/e4_preprocessing/resolution_256.yaml
+  --conflict-diagnostics`): `SMOKE_OK`, 5 clientes (um por dataset/tarefa), M1/M2 nas 2 rodadas.
+  Movido para `runs/validation/e4_smoke/`.
+- **Probe de memória na GPU** (2 rodadas, só SIIM + TCGA, os 6 clientes a 256 px; GPU sem outros
+  processos). Pico = máximo de `memory_used_mb` em `gpu_telemetry.csv`, que inclui os ~2,4 GB de
+  repouso:
+
+  | `num_gpus` | Pico (telemetria) | Pico (`nvidia-smi`, 1 s) | Pico reservado por cliente | Rodada 1 | Rodada 2 | OOM |
+  |---|---|---|---|---|---|---|
+  | 0.5 | **15.588 MiB** | 15.248 MiB | 5.906 MiB | 111 s | 55 s | não |
+  | 1.0 | 9.072 MiB | 8.765 MiB | 5.866 MiB | 107 s | 71 s | não |
+
+  - Regra: sem OOM e pico ≤ 14.500 MiB → 0.5. Com 0.5 o pico passou (15.588, na rodada 1, com
+    M1/M2; ~14,1–14,4 GB sustentados no resto), então o run usa **1.0**, e o re-probe com 1.0
+    passou com folga.
+  - As duas rodadas do probe têm M1/M2 (a 1ª e a última sempre têm). Com 1.0, os 6 clientes a 256
+    custam só ~1,3× o tempo de 0.5 (71 s contra 55 s na rodada 2): com 0.5, os dois clientes
+    simultâneos disputam a mesma GPU.
+  - Execução: `runs/validation/e4_gpu_probe/` (`config_probe.yaml`, `config_probe_num_gpus_1.yaml`,
+    `run/`, `run_num_gpus_1/`). RAM máxima do driver: 2,9 GB.
+- **Estimativa de tempo (400 rodadas, `num_gpus` 1.0).** Não medida diretamente: o probe só tem
+  rodadas com M1/M2 e só 6 clientes. Supondo que a passagem de 0.5 para 1.0 custe à E3 o mesmo
+  ~1,3× medido no probe, as rodadas da E3 ficariam em ~32 s (sem M1/M2) e ~88 s (com). Trocando a
+  parcela dos 6 clientes SIIM/TCGA (~45% a 128 px) pela medida a 256: rodada com M1/M2 ≈
+  0,55 × 88 + 71 ≈ 120 s; sem M1/M2 ≈ 44–58 s. Com 41 rodadas amostradas e 359 sem amostragem:
+  **~6–7 h** (faixa 5,5–8 h), mais ~10 min de teste final e relatórios. A estimativa do plano
+  (9–11 h) supunha que 1.0 dobraria o tempo; no probe, foi ~1,3×.
+
+#### E4.6 — Handoff de treino
+
+1. **O que alterar:** nada no `src/config.yaml`. O config é
+   `studies/e4_preprocessing/resolution_256.yaml` (versionado).
+2. **Pré-voo:**
+   - `sha256sum /home/lucas/fed_multi_task_breast_cancer/data/federated_studies/e4_preprocessing/seed_1993/federated_mapping.csv`
+     = `a3d7d98423b56c4e074f8b460224edc3c1708e64e63fe39a6442868eb74a82d2`;
+   - `nvidia-smi --query-compute-apps=pid --format=csv,noheader` não imprime nada;
+   - nenhum outro run de treino ativo. **Este run nunca roda em paralelo com outro** (E6, E7 ou
+     qualquer smoke na GPU): com 1.0 ele usa a GPU inteira em sequência.
+3. **Comando:**
+
+   ```bash
+   cd /home/lucas/fed_e4_preproc && .venv/bin/python -m src.training_federated --config studies/e4_preprocessing/resolution_256.yaml
+   ```
+
+4. **Retomada:** `run(cfg, run_path=…, resume=True)` reaproveita só folds completos. Com CV=1, uma
+   interrupção recomeça da rodada 1.
+5. **Tempo:** ~6–7 h (faixa 5,5–8 h). Conferir no `execution.log`, depois de ~20 rodadas, ~45–60 s
+   por rodada sem M1/M2 e ~2 min nas amostradas (1, 11, 21, …, 400).
+6. **Disco:** ~3,5–4 GB do run (E3: 2,9 GB a 200 rodadas, com `conflict/` dobrando para ~0,7 GB). Os
+   dados a 256 (0,8 GB) já estão gravados.
+7. **Artefatos:** `runs/<ts>_FEDERATED_MTnnUNet_Curated_BUSI-ISIC_2018-SIIM_ACR-TCGA_LGG/`
+   (`federated_test_results.csv`, `federated_cls_predictions.csv`, `fold_0/`, `gpu_telemetry.csv`,
+   `conflict_*.csv`, `negative_transfer_*.csv`, `diagnostics/`, `run_report.html`).
+8. **Sucesso:**
+   - 24 linhas em `federated_test_results.csv` (BUSI 2×2, ISIC 8, TCGA 2×2, SIIM 4×2);
+   - nenhum OOM e o pico de memória registrado em `gpu_telemetry.csv`;
+   - 41 diretórios `fold_0/conflict/round_*`, cada um com 16 `*_m1.npz` e 16 `*_m2.csv`
+     (`for d in …/fold_0/conflict/round_*; do echo $d $(ls $d/*_m1.npz|wc -l) $(ls $d/*_m2.csv|wc -l); done`);
+   - nenhum D1 no diagnóstico.
+
+#### E4.7 — Defeitos registrados, não corrigidos
+
+- **Máscara do BUSI com valor 254.** `benign_id_181_mask.png` tem 1 pixel 254 (além de 1.323 pixels
+  255). `BUSI_dataset.py::_load_mask` só mapeia 255 → 1, então esse pixel chega à loss como 254; e
+  `tumor_pixels` só conta 255. É a única máscara não binária do BUSI.
+- **`transforms.rotation` é ignorado.** `client.py::_default_transforms` aplica sempre
+  `RandomRotation(degrees=360)`, qualquer que seja o valor da chave.
+- **`assert_variant_resolution` não guarda aspecto nem interpolação**, só o tamanho. Variantes novas
+  pela CLI ficam protegidas por `assert_new_variant`.
+- **ISIC achatado:** `PRESERVE_ASPECT = False`; Task 1 (aspectos variados) e Task 3 (4:3) são
+  esticadas para o quadrado.
+- **O Dice a 256 é medido sobre outro raster de GT.** No TCGA e no SIIM, o Dice de teste da E4 usa a
+  máscara a 256 px, e o da E3 a de 128 px: alvos diferentes da mesma lesão, sobretudo nas pequenas.
+  Comparar os dois mistura modelo e alvo. É ressalva de leitura, não defeito de código.
+
+#### E4.8 — Pendências
+
+- Multi-seed (a E4 tem 1 seed).
+- ISIC a 256 px.
+- Recorte de pulmão no SIIM-ACR.
+- Augmentation anatômica por dataset (a rotação de 360° é implausível em tórax e em RM axial).
+- Normalização de intensidade (fora da E4).
+- Não existe controle de 400 rodadas a 128 px: o run confunde orçamento e resolução.
+- Avaliar o Dice no mesmo raster da E3 (por exemplo, reduzir a predição a 128 px) para isolar o
+  efeito do modelo.
 
 **Registro.**
 - 2026-10-04 — etapa planejada (macro).
+- 2026-10-18 — **detalhamento (E4.0–E4.8) escrito a partir do grill e implementado; a E4 aguarda o
+  run (⏳).** Branch `exp/preprocessing-ablation`, worktree `/home/lucas/fed_e4_preproc`.
+  - Commits: C1 `2d7618f` (CLI de variante), C2 `62e59a1` (`partition_equivalence`), C3 `16eec5f`
+    (`preprocessing_needs`), C4 `bb5b216` (config do run) e `f07cbd9` (teste do config), C5
+    `c6e2f54` (docs: `docs/PREPROCESSING_NEEDS.md`, `.rclone-filter` com `data/*/processed_*/**`,
+    `AGENTS.md`, skills `dataset-preprocessing`, `drive-sync` e a linha `[ABORT]` nova da
+    `error-investigator`, notas da E4 em D22/D23), C6 este registro.
+  - Dados: `processed_256` do TCGA-LGG e do SIIM-ACR gerados pela CLI, sem nenhuma lesão sumida.
+    Controle de determinismo OK (`389116b5…bd3b`). Master da E4 gerado e equivalente ao da E3:
+    46.555 linhas, positivas TCGA 1.373 / SIIM 2.667, sha256 `a3d7d984…82d2` (E4.3).
+  - Validação: suíte com 278 testes OK (3 pulados: CUDA indisponível com
+    `CUDA_VISIBLE_DEVICES=`); `sync_agent_assets --check` OK; smoke de CPU `SMOKE_OK`
+    (`runs/validation/e4_smoke/`); probe de GPU: 0.5 passou de 14.500 MiB (15.588), 1.0 ficou em
+    9.072 MiB, então `num_gpus: 1.0` (E4.5).
+  - **Achado fora da E4:** `src/monitor/static/index.html` não está versionado (o `*.html` do
+    `.gitignore` o ignora), então `tests.test_monitor.ServerTests.test_api_and_page` falha com 404
+    num clone ou worktree novo. Nesta worktree, o arquivo foi ligado ao da checkout principal por um
+    link simbólico (ignorado pelo git). A correção (versionar o arquivo com uma exceção no
+    `.gitignore`) fica pendente.
+  - **Próximo passo do usuário:** rodar o handoff da E4.6 (~6–7 h), um run por vez na GPU.
 
 ---
 
