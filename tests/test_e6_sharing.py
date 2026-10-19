@@ -4,22 +4,35 @@ Absent (or null), the legacy ``share_stem`` prefix rule must reproduce today's s
 byte on every architecture. Present, an explicit list of top-level modules is matched exactly and
 validated twice before Flower starts: as config (``shared_modules``) and against the built model
 (``validate_sharing``). The key stays out of ``src/config.yaml``: every study hashes its config.
+
+The M1 gradient probes (E6-C2) must survive shared blocks a client's objective never reaches and
+shared buffers, and keep every probe's block set identical so ``m1_pairs`` can pair them.
 """
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
+import numpy as np
+import pandas as pd
 import torch
 import yaml
 from flwr.common import parameters_to_ndarrays
 
+from scripts.smoke_federated import _verify_m1_coverage
+from src.federated import conflict_diagnostics as cd
 from src.federated.config import active_datasets, shared_modules, validate_federated_config
+from src.federated.local_trainer import local_objective
 from src.federated.model_split import (get_personalized_state, get_shared_state, is_shared,
                                        resolved_shared_modules, set_personalized_state,
                                        set_shared_state, shared_keys, validate_sharing)
 from src.models.multitask.MTnnUNet import MTnnUNet
 from src.training_federated import _initial_shared_parameters, _log_sharing
-from src.utils.experiment_init import init_multitask_model
-from src.utils.supervision import LOG_VARS_ATTR, attach_task_uncertainty
+from src.utils.experiment_init import (init_criterion_classification, init_criterion_segmentation,
+                                       init_multitask_model)
+from src.utils.supervision import LOG_VARS_ATTR, attach_task_uncertainty, resolve_task_lambdas
+from src.utils.training_runtime import PrecisionPolicy
 
 ROOT = Path(__file__).resolve().parents[1]
 WIDE = ("encoder2", "encoder3", "encoder4", "encoder5", "bottleneck",
@@ -258,6 +271,196 @@ class InitialSharedTests(unittest.TestCase):
         config["model"]["architecture"] = "MTUNetPlusPlus"
         with self.assertRaisesRegex(ValueError, "no shared tensor"):
             _initial_shared_parameters(config, active_datasets(config), "cpu", 0)
+
+
+CLS_ONLY_UNREACHED = {"decoder1", "decoder2", "decoder3", "decoder4",
+                      "upsample1", "upsample2", "upsample3", "upsample4"}
+SEG_ONLY_UNREACHED = {"process_encoder_5", "process_decoder_5"}
+MIXED = {"ISIC_2018_cls_0": ("ISIC_2018", ("cls",)), "ISIC_2018_seg_0": ("ISIC_2018", ("seg",)),
+         "Curated_BUSI_mt_0": ("Curated_BUSI", ("seg", "cls"))}
+
+
+def _probe_config(rounds=1):
+    return {
+        "federated": {"rounds": rounds, "standalone": False},
+        "runtime": {"diagnostics": {"gradient_conflict": {
+            "enabled": True, "every_n_rounds": 1, "probe_batches": 4, "sketch_dim": 4096,
+            "lookahead": {"enabled": False, "val_batches": 2, "train_batches": 2},
+        }}},
+    }
+
+
+def _batches(seed, n=4, size=64):
+    generator = torch.Generator().manual_seed(seed)
+    return [{"image": torch.rand(2, 1, size, size, generator=generator),
+             "mask": (torch.rand(2, 1, size, size, generator=generator) > 0.7).float(),
+             "label": torch.randint(0, 3, (2,), generator=generator),
+             "has_mask": torch.ones(2, dtype=torch.bool),
+             "has_label": torch.ones(2, dtype=torch.bool)} for _ in range(n)]
+
+
+def _probe_client(directory, client_id, tasks, sharing, seed=0, model=None):
+    """The attributes ``collect_fit_probes`` reads from a ``FederatedClient``."""
+    torch.manual_seed(seed)
+    model = model if model is not None else MTnnUNet(sequences=1, regions=1, n_classes=3)
+    state_dir = Path(directory) / "fold_0" / f"client_{client_id}"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    tasks = tuple(tasks)
+    lambdas = {"seg": 0.8, "cls": 0.2}
+    return SimpleNamespace(
+        client_id=client_id, model=model, sharing=sharing, share_stem=False, tasks=tasks,
+        task="+".join(tasks), task_lambdas={task: lambdas[task] for task in tasks},
+        precision=PrecisionPolicy("fp32", "cpu"), device="cpu", num_classes=3,
+        inversely_weighted=True, seg_criterion=init_criterion_segmentation("DiceBCE"),
+        cls_criterion=init_criterion_classification(n_classes=3, device="cpu"),
+        config=_probe_config(), state_dir=state_dir, train_loader=_batches(seed),
+        val_loader=_batches(seed + 100, n=2),
+    )
+
+
+def _pre_fix_halves(client, batches):
+    """``trunk_gradient_halves`` as it was before E6-C2, verbatim apart from the spec name."""
+    model = client.model
+    keys = shared_keys(model, client.sharing)
+    params = dict(model.named_parameters())
+    lambdas = resolve_task_lambdas(client.tasks, client.task_lambdas)
+    half = len(batches) // 2
+    sums = [{key: torch.zeros_like(params[key], dtype=torch.float32) for key in keys}
+            for _ in range(2)]
+    model.train()
+    for position, data in enumerate(batches):
+        model.zero_grad(set_to_none=True)
+        inputs = client.precision.move(data["image"])
+        loss, *_ = local_objective(
+            model, data, inputs, client.tasks, lambdas, client.device, client.num_classes,
+            client.seg_criterion, client.cls_criterion, client.inversely_weighted,
+            client.precision,
+        )
+        client.precision.ensure_finite(loss, "gradient-conflict probe")
+        loss.backward()
+        target = sums[0 if position < half else 1]
+        for key in keys:
+            target[key] += params[key].grad.detach().float()
+    model.zero_grad(set_to_none=True)
+    counts = (half, len(batches) - half)
+    return keys, [{key: value / count for key, value in group.items()}
+                  for group, count in zip(sums, counts)]
+
+
+def _block_exact(directory, client_id, server_round=1):
+    path = cd.round_dir(Path(directory) / "fold_0", server_round) / f"{client_id}_m1.npz"
+    with np.load(path) as stored:
+        return {str(block): stored[f"{block}::exact"] for block in stored["blocks"]}
+
+
+def _mixed_round(directory):
+    """One sampled round probed by a cls-only, a seg-only and a multi-task client (wide set)."""
+    for seed, (client_id, (dataset, tasks)) in enumerate(MIXED.items()):
+        client = _probe_client(directory, client_id, tasks, WIDE, seed=seed)
+        (client.state_dir / "metadata.yaml").write_text(yaml.safe_dump(
+            {"client_id": client_id, "dataset": dataset, "task": client.task,
+             "tasks": list(tasks)}), encoding="utf-8")
+        cd.collect_fit_probes(client, 1)
+    return Path(directory) / "fold_0"
+
+
+class M1ProbeTests(unittest.TestCase):
+    def test_trunk_only_is_bitwise_equal_to_the_pre_fix_loop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for tasks in (("seg", "cls"), ("seg",), ("cls",)):
+                with self.subTest(tasks=tasks):
+                    client = _probe_client(directory, "c", tasks, False)
+                    torch.manual_seed(7)
+                    old_keys, old = _pre_fix_halves(client, client.train_loader)
+                    torch.manual_seed(7)
+                    new_keys, new = cd.trunk_gradient_halves(client, client.train_loader)
+                    self.assertEqual(new_keys, old_keys)
+                    self.assertEqual(len(new_keys), 10)
+                    for old_half, new_half in zip(old, new):
+                        for key in old_keys:
+                            self.assertTrue(torch.equal(old_half[key], new_half[key]), key)
+
+    def test_single_task_clients_probe_unreached_blocks_as_zeros(self):
+        # Before E6-C2 both raised AttributeError on ``None.detach()`` inside observational().
+        with tempfile.TemporaryDirectory() as directory:
+            for client_id, tasks, unreached in (("ISIC_2018_cls_0", ("cls",), CLS_ONLY_UNREACHED),
+                                                ("ISIC_2018_seg_0", ("seg",), SEG_ONLY_UNREACHED)):
+                with self.subTest(tasks=tasks):
+                    cd.collect_fit_probes(_probe_client(directory, client_id, tasks, WIDE), 1)
+                    exact = _block_exact(directory, client_id)
+                    self.assertEqual(list(exact), list(WIDE))
+                    self.assertEqual({block for block, values in exact.items()
+                                      if values[3] == 0}, unreached)
+                    for block in unreached:
+                        self.assertTrue((exact[block] == 0).all(), block)
+
+    def test_shared_buffer_is_excluded_without_key_error(self):
+        model = MTnnUNet(sequences=1, regions=1, n_classes=3)
+        model.encoder2.register_buffer("running_stat", torch.ones(4))
+        with tempfile.TemporaryDirectory() as directory:
+            client = _probe_client(directory, "Curated_BUSI_mt_0", ("seg", "cls"), WIDE,
+                                   model=model)
+            self.assertIn("encoder2.running_stat", shared_keys(model, WIDE))
+            keys, _ = cd.trunk_gradient_halves(client, client.train_loader)
+            self.assertNotIn("encoder2.running_stat", keys)
+            self.assertEqual(len(keys), 32)
+            cd.collect_fit_probes(client, 1)
+            self.assertEqual(list(_block_exact(directory, "Curated_BUSI_mt_0")), list(WIDE))
+
+    def test_mixed_clients_pair_and_summarize(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fold_dir = _mixed_round(directory)
+            m1 = pd.DataFrame(cd.m1_pairs(cd.round_dir(fold_dir, 1),
+                                          cd._client_metadata(fold_dir), 0, 1))
+            self.assertEqual(len(m1), 3 * (len(WIDE) + 1))
+            pair = m1[(m1.client_a == "ISIC_2018_cls_0")
+                      & (m1.client_b == "ISIC_2018_seg_0")].set_index("block")
+            self.assertEqual(set(pair.pair_class), {"intra_diff_tasks"})
+            for block in CLS_ONLY_UNREACHED | SEG_ONLY_UNREACHED:
+                self.assertTrue(np.isnan(pair.loc[block, "cos"]), block)
+            self.assertTrue(np.isfinite(pair.loc["encoder2", "cos"]))
+            totals = m1[m1.block == cd.TOTAL_BLOCK]
+            self.assertEqual(len(totals), 3)
+            self.assertTrue(np.isfinite(totals.cos).all())
+            summary = cd.summarize(m1, pd.DataFrame())
+            per_block = summary[summary.scope == "block"].set_index("group")["mean"]
+            self.assertEqual(set(per_block.index), set(WIDE) | {cd.TOTAL_BLOCK})
+            # NaN pairs are skipped: each block is reached by both clients of at least one pair.
+            self.assertTrue(np.isfinite(per_block).all())
+            self.assertIsNotNone(cd.report_run(directory))
+
+
+class SmokeCoverageTests(unittest.TestCase):
+    def _run(self, directory):
+        fold_dir = _mixed_round(directory)
+        (Path(directory) / "config.yaml").write_text(yaml.safe_dump(_probe_config(rounds=1)),
+                                                     encoding="utf-8")
+        model = MTnnUNet(sequences=1, regions=1, n_classes=3)
+        torch.save({"round": 1, "keys": shared_keys(model, WIDE)}, fold_dir / "global_shared.pt")
+        return fold_dir
+
+    def test_complete_probes_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._run(directory)
+            with mock.patch("builtins.print") as printed:
+                _verify_m1_coverage(directory)
+            self.assertIn("M1_COVERAGE_OK", printed.call_args[0][0])
+
+    def test_a_missing_probe_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fold_dir = self._run(directory)
+            (cd.round_dir(fold_dir, 1) / "ISIC_2018_seg_0_m1.npz").unlink()
+            with self.assertRaisesRegex(RuntimeError, "ISIC_2018_seg_0"):
+                _verify_m1_coverage(directory)
+
+    def test_a_probe_over_other_blocks_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fold_dir = self._run(directory)
+            client = _probe_client(directory, "ISIC_2018_cls_0", ("cls",), False)
+            cd.collect_fit_probes(client, 1)  # trunk-only probe overwrites the wide one
+            with self.assertRaisesRegex(RuntimeError, "blocks"):
+                _verify_m1_coverage(directory)
+            self.assertTrue((cd.round_dir(fold_dir, 1) / "ISIC_2018_cls_0_m1.npz").exists())
 
 
 class StudyHashGuardTests(unittest.TestCase):
