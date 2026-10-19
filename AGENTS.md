@@ -239,8 +239,10 @@ client keeps a **personalized head** that is never aggregated.
 ### Pipeline
 
 The default federated configuration is multi-dataset: Curated BUSI (1-channel ultrasound) and
-ISIC 2018 (3-channel dermoscopy). `encoder1` is a personalized modality stem; the shared trunk is
-`encoder2..5 + bottleneck`. Set `share_stem: True` only for compatible single-dataset experiments.
+ISIC 2018 (3-channel dermoscopy). `encoder1` is a personalized modality stem; by default the shared
+trunk is `encoder2..5 + bottleneck`. Set `share_stem: True` only for compatible single-dataset
+experiments. An explicit `federated.shared_modules` list replaces that default (E6 federates the
+decoder too); wherever this section says "trunk", read "the shared set".
 
 1. `src/dataset/federated_partition.py` — builds a separate multi-dataset master. BUSI uses the
    historical image-level stratified folds, or a stratified 70/30 holdout when `CV=1`. ISIC
@@ -255,9 +257,28 @@ ISIC 2018 (3-channel dermoscopy). `encoder1` is a personalized modality stem; th
    carved per client for early stopping.
 2. `src/dataset/federated_dataloader.py` — filters the master CSV into the lazy, channel-aware
    `BUSI` compatibility dataset, applies per-task oversampling, and resolves fold/local class weights.
-3. `src/federated/model_split.py` — splits MTnnUNet into the shared trunk (`encoder2..5` +
-   `bottleneck`) vs personalized stem/decoders/outputs/classifier. Legacy `share_stem=True` also
-   federates `encoder1`.
+3. `src/federated/model_split.py` — splits the model into a shared and a personalized state, from the
+   `sharing` spec that `src/federated/config.py::shared_modules(config)` resolves:
+   - **`federated.shared_modules` absent (or null)** — the legacy rule, byte for byte: state_dict
+     keys matched by **prefix** on `encoder2..5` + `bottleneck`, plus `encoder1` when `share_stem`
+     is true. Every historical run used it; on Multi_BTSUNet the prefix also captures `bottleneck2`.
+   - **An explicit list** of top-level module names — a key is shared iff its first component is
+     **exactly** one of them. The list must agree with `share_stem` about `encoder1`; `share_stem`
+     defaults to true, so a list without `encoder1` needs `share_stem: false` set.
+   - `validate_sharing` checks the built model before Flower starts: it refuses an empty shared
+     set (MTUNetPlusPlus matches nothing, so federating it now fails loudly), non-float shared
+     tensors, and listed names that own no tensor (`decoder6`, `downsample`).
+   - The E6 wide set (`studies/e6_sharing/wide_sharing.yaml`) lists 17 modules: the trunk,
+     `decoder1..5`, `upsample1..5`, `process_encoder_5` and `process_decoder_5`. That is 32
+     tensors, 64.07% of MTnnUNet's values against 29.48% for the trunk. `encoder1`, `output1..4`,
+     `classifier` and Kendall's `task_log_vars` stay personalized. A shared module starts from the
+     global initial parameters in both arms, so `personalized_init_seed` only reaches the
+     personalized remainder.
+   - Each client's `metadata.yaml` records its `shared_modules`; `execution.log` has one
+     `[sharing] modules=… tensors=… params=… (…% of …)` line per run.
+   - The M1 conflict probes use shared **parameters** only. A shared block that a client's objective
+     never reaches (the decoder on a cls-only client, `process_*` on a seg-only client) is stored as
+     zeros, so its per-block cosine is NaN while `shared_total` stays finite.
 4. `src/federated/local_trainer.py` — per-task local train/eval using the configured segmentation or classification criterion.
 5. `src/federated/client.py` — Flower `NumPyClient`; persists the latest personalized state +
    optimizer **to disk per client** (simulation clients are ephemeral). Stable worker seeds pair
@@ -311,6 +332,7 @@ the budget, not the federation.
 | `datasets` / `n_clients.<dataset>` | Active datasets and clients per dataset/task |
 | `datasets.<name>.client_topology` | `single_task` (default) or `multi_task` (one client, several tasks, same images) |
 | `share_stem` | Federate the input stem; must be false for mixed 1ch/3ch runs |
+| `shared_modules` | Optional. Top-level modules to federate, matched exactly (the E6 wide set lists 17). Absent = legacy trunk (`encoder2..5` + `bottleneck`, plus `encoder1` with `share_stem`). Must agree with `share_stem` on `encoder1`. Lives in run configs/manifests, never in `src/config.yaml` (study hash; `StudyHashGuardTests`) |
 | `personalized_init_seed` | `dataset` (working default since E3): every client of a dataset starts from the same stem/heads; `client` draws one per client and is the fallback when the key is absent, so historical configs keep resolving unchanged. Local-only reads the same key, so the pair stays matched |
 | `local_training.mode` | `steps` (fixed `steps_per_round`) or `epochs` (`local_epochs` passes) |
 | `aggregation.mode` | `hierarchical` (main) or `flat` (FedAvg-style ablation) |
