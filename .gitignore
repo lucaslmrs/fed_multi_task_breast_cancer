@@ -114,3 +114,5 @@ htmlcov/
 
 *.pdf
 *.html
+# The monitor page is source, not a generated report.
+!src/monitor/static/index.html
