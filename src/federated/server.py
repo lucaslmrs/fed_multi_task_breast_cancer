@@ -423,7 +423,8 @@ def _validate_update_shapes(updates):
         shapes = [tuple(array.shape) for array in update["arrays"]]
         if shapes != reference:
             raise ValueError(
-                "Clients returned incompatible shared states; check share_stem/channels. "
+                "Clients returned incompatible shared states; check "
+                "federated.shared_modules/share_stem/channels. "
                 f"Expected {reference[:2]}..., got {shapes[:2]}... from {update['dataset']}"
             )
 

@@ -77,6 +77,58 @@ def personalized_init_seed(config: dict) -> str:
     return str(config["federated"].get("personalized_init_seed", "client")).lower()
 
 
+def shared_modules(config: dict):
+    """The FedAvg-shared part of the model, in the form ``model_split`` takes as ``sharing``.
+
+    Without ``federated.shared_modules`` (absent or null) this returns ``bool(share_stem)``: the
+    legacy spec, which ``model_split`` matches by state_dict-key PREFIX exactly as every historical
+    run did (on Multi_BTSUNet that prefix rule also captures ``bottleneck2``). An explicit list is
+    returned as a tuple of top-level module names, matched EXACTLY against each key's first
+    component. The list must be a non-empty list of unique, non-empty, dot-free names, may not name
+    the personalized Kendall log-variances, and must agree with ``share_stem`` about ``encoder1``,
+    so the two keys can never describe different stems. Whether each name exists in the model is
+    checked by ``model_split.validate_sharing`` once the model is built.
+    """
+    from src.utils.supervision import LOG_VARS_ATTR
+
+    federated = config["federated"]
+    configured = federated.get("shared_modules")
+    share_stem = bool(federated.get("share_stem", True))
+    if configured is None:
+        return share_stem
+    if not isinstance(configured, (list, tuple)) or not configured:
+        raise ValueError("federated.shared_modules must be a non-empty list of module names")
+    names = []
+    for name in configured:
+        if not isinstance(name, str) or not name.strip() or name != name.strip():
+            raise ValueError(
+                f"federated.shared_modules entries must be non-empty names, got {name!r}"
+            )
+        if "." in name:
+            raise ValueError(
+                f"federated.shared_modules names top-level modules; '{name}' contains a dot"
+            )
+        if name == LOG_VARS_ATTR:
+            raise ValueError(
+                f"federated.shared_modules cannot list '{LOG_VARS_ATTR}': the Kendall "
+                "log-variances are personalized"
+            )
+        names.append(name)
+    if len(set(names)) != len(names):
+        raise ValueError(f"federated.shared_modules contains duplicates: {names}")
+    if "encoder1" in names and not share_stem:
+        raise ValueError(
+            "federated.shared_modules lists encoder1 but federated.share_stem is false; "
+            "set share_stem: true to federate the stem, or drop encoder1 from the list"
+        )
+    if share_stem and "encoder1" not in names:
+        raise ValueError(
+            "federated.share_stem is true (the default when absent) but federated.shared_modules "
+            "omits encoder1; set share_stem: false for a personalized stem, or list encoder1"
+        )
+    return tuple(names)
+
+
 def training_telemetry_config(config: dict) -> dict:
     """Resolve observational training-curve settings without affecting experiment design."""
     telemetry = dict(config["federated"].get("training_telemetry", {}))
@@ -129,6 +181,7 @@ def validate_federated_config(config: dict) -> None:
                 f"Legacy channel-stacking augmentations must be disabled for RGB dataset '{name}'"
             )
 
+    shared_modules(config)  # an explicit federated.shared_modules list fails here, before Flower
     share_stem = config["federated"].get("share_stem", True)
     channel_counts = {cfg["channels"] for cfg in resolved.values()}
     if share_stem and len(channel_counts) > 1:

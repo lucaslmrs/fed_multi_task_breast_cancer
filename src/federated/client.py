@@ -29,11 +29,13 @@ from src.federated.config import (
     dataset_config,
     local_training_config,
     personalized_init_seed,
+    shared_modules,
     training_telemetry_config,
 )
 from src.federated.model_split import (
     get_personalized_state,
     get_shared_state,
+    resolved_shared_modules,
     set_personalized_state,
     set_shared_state,
 )
@@ -130,6 +132,8 @@ class FederatedClient(NumPyClient):
         self.data_cfg = dataset_config(config, dataset)
         self.num_classes = len(self.data_cfg["classes"])
         self.share_stem = config["federated"].get("share_stem", True)
+        # What FedAvg averages: legacy bool (prefix rule) or explicit federated.shared_modules.
+        self.sharing = shared_modules(config)
         self.inversely_weighted = config["loss"]["inversely_weighted"]
         local_training = local_training_config(config)
         self.local_training_mode = str(local_training.get("mode", "epochs")).lower()
@@ -264,6 +268,7 @@ class FederatedClient(NumPyClient):
             "focal_gamma": self.focal_gamma,
             "channels": self.data_cfg["channels"],
             "share_stem": self.share_stem,
+            "shared_modules": resolved_shared_modules(self.model, self.sharing),
             "initial_seed": self.initial_seed,
             "personalized_init_seed": self.personalized_init_seed,
             "data_order_seed": self.data_order_seed,
@@ -425,7 +430,7 @@ class FederatedClient(NumPyClient):
                 self.model.load_state_dict(state["model"])
             else:
                 set_personalized_state(
-                    self.model, state["personalized"], share_stem=self.share_stem
+                    self.model, state["personalized"], sharing=self.sharing
                 )
             self.optimizer.load_state_dict(state["optimizer"])
         return self.state_path.exists()
@@ -439,13 +444,13 @@ class FederatedClient(NumPyClient):
             payload["model"] = self.model.state_dict()
         else:
             payload["personalized"] = get_personalized_state(
-                self.model, share_stem=self.share_stem
+                self.model, sharing=self.sharing
             )
         torch.save(payload, self.state_path)
 
     # ---- Flower API -----------------------------------------------------------------------
     def get_parameters(self, config):
-        return get_shared_state(self.model, share_stem=self.share_stem)
+        return get_shared_state(self.model, sharing=self.sharing)
 
     def fit(self, parameters, config):
         server_round = int(config.get("server_round", 0))
@@ -460,7 +465,7 @@ class FederatedClient(NumPyClient):
         # Both arms receive the exact same initial shared trunk.  On later rounds the standalone
         # arm resumes its own full model, whereas federated clients accept the new global trunk.
         if not self.standalone or not has_local_state:
-            set_shared_state(self.model, parameters, share_stem=self.share_stem)
+            set_shared_state(self.model, parameters, sharing=self.sharing)
 
         if self.local_training_mode == "steps":
             batch_sampler = self.train_loader.batch_sampler
@@ -572,12 +577,12 @@ class FederatedClient(NumPyClient):
             f"task_batches_{name}": float(value)
             for name, value in train_result.get("task_batches", {}).items()
         })
-        return get_shared_state(self.model, self.share_stem), self.n_train, metrics
+        return get_shared_state(self.model, self.sharing), self.n_train, metrics
 
     def evaluate(self, parameters, config):
         self._load_state()
         if not self.standalone:
-            set_shared_state(self.model, parameters, share_stem=self.share_stem)
+            set_shared_state(self.model, parameters, sharing=self.sharing)
         val = local_trainer.evaluate_local(
             self.model, self.val_loader, self.task, self.device, self.num_classes,
             self.seg_criterion, self.cls_criterion, self.inversely_weighted,

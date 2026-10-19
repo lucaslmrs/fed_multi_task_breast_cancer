@@ -136,7 +136,7 @@ def trunk_gradient_halves(client, batches):
     from src.utils.supervision import resolve_task_lambdas
 
     model = client.model
-    keys = shared_keys(model, client.share_stem)
+    keys = shared_keys(model, client.sharing)
     params = dict(model.named_parameters())
     lambdas = resolve_task_lambdas(client.tasks, client.task_lambdas)
     half = len(batches) // 2
@@ -168,7 +168,7 @@ def collect_fit_probes(client, server_round):
     directory = round_dir(client.state_dir.parent, server_round)
     directory.mkdir(parents=True, exist_ok=True)
     if lookahead_enabled(client.config):
-        torch.save(get_personalized_state(client.model, client.share_stem),
+        torch.save(get_personalized_state(client.model, client.sharing),
                    directory / f"{client.client_id}_pre.pt")
     # In steps mode the round yields ``steps_per_round`` batches, which caps the probe count.
     batches = list(itertools.islice(iter(client.train_loader), settings["probe_batches"]))
@@ -220,8 +220,8 @@ def cleanup_round(directory):
 def _loss(client, personalized, trunk, batches):
     from src.federated import local_trainer
 
-    set_personalized_state(client.model, personalized, share_stem=client.share_stem)
-    set_shared_state(client.model, trunk, share_stem=client.share_stem)
+    set_personalized_state(client.model, personalized, sharing=client.sharing)
+    set_shared_state(client.model, trunk, sharing=client.sharing)
     result = local_trainer.evaluate_local(
         client.model, batches, client.task, client.device, client.num_classes,
         client.seg_criterion, client.cls_criterion, client.inversely_weighted,
