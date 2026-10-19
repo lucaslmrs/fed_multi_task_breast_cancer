@@ -31,13 +31,17 @@ Criado em 2026-10-04.
 | E1 | Validação do treinamento | ✅ | `feat/training-validation-v2` | 2026-10-16 |
 | E2 | App local de monitoramento e comparação | ✅ | `feat/monitor-app` | 2026-10-16 |
 | E5 | Validação das fontes (consolidação) | ✅ | `docs/sources` | 2026-10-16 |
-| E3 | Ablação: loss fed multitask multi-dataset | ⏳ | `exp/loss-ablation` | 2026-10-16 |
+| E3 | Ablação: loss fed multitask multi-dataset | ✅ | `exp/loss-ablation` | 2026-10-18 |
 | E4 | Ablação: pré-processamento de imagens | ⬜ | `exp/preprocessing-ablation` | — |
+| E6 | Compartilhamento ampliado (decoder federado) | ⬜ | `exp/wider-sharing` | — |
+| E7 | Transfer learning (ResNet-34 ImageNet) | ⬜ | `exp/transfer-learning` | — |
 
-Ordem de execução: **E0 → E1 → E2 → E5 → E3 → E4**.
+Ordem de execução: **E0 → E1 → E2 → E5 → E3 → (E4 ∥ E6) → E7**.
 - E0 foi incluída em 2026-10-08 a pedido do usuário. A métrica atual de conflito dá ≈ 0 para todos
   os pares de clientes, inclusive pares que deveriam estar alinhados, e é preciso saber se isso é
   ausência real de conflito ou cegueira da métrica antes de usá-la na E1 (D9) e na E3.
+- E6 e E7 foram incluídas em 2026-10-18 a pedido do usuário. A E7 depende do mecanismo de
+  compartilhamento da E6 (`shared_modules`), por isso vem depois dela.
 - Validar o treinamento antes de construir em cima dele.
 - O app acelera a leitura e a comparação das ablações.
 - As fontes verificadas embasam a escolha dos braços das ablações.
@@ -1724,6 +1728,9 @@ runs existentes, e isso é coberto por teste.
 - Para cada braço, ler também o conflito (M1/M2), o cancelamento e o diagnóstico D1–D15 (A1, A2,
   D13), para explicar o mecanismo e não só o número.
 - A decisão final (loss de seg, λ e ponderação) é registrada aqui e em `docs/DECISION_SOURCES.md`.
+- **Aplicada em 2026-10-18:** tabelas, regra por célula, mecanismo e decisão no **Registro**
+  (Fase B). Vence `init_seed_dataset`; a loss fica DiceBCE 0.5/0.5 com Batch Dice, λ 4:1 e
+  agregação 4:1.
 
 #### E3.7 — Pendências conhecidas
 
@@ -1775,7 +1782,7 @@ manifest da Fase B; (d) registro no `plano.md` depois de cada fase.
     salvo no estado pessoal dos clientes BUSI/TCGA/SIIM e está ausente nos clientes `single_task`
     do ISIC.
   - Próximo: E3.4 (d), configs da Fase A e manifest da Fase B.
-- 2026-10-16 — **E3.4 (d) concluída; a E3 aguarda os treinos (⏳).**
+- 2026-10-16 — **E3.4 (d) concluída; a E3 aguarda os treinos** (⏳ até 2026-10-18; ✅ na Fase B).
   - Fase A: `studies/e3_loss/phase_a/{batch_dice,dice_heavy,focal_dice}.yaml`, gerados a partir do
     config da B0 (run de 29/09). Cada um muda só a seção `loss`, e o cabeçalho traz a origem e o
     comando. Smoke de 1 época com 16 amostras nos 4 datasets: 12 runs OK, e a chave de cada
@@ -1816,6 +1823,143 @@ manifest da Fase B; (d) registro no `plano.md` depois de cada fase.
     SIIM deixa de ser candidata à E4 por "não aprendível a 128 px", mas a resolução continua sendo
     um braço válido da E4.
   - **Manifest da Fase B:** `loss.dice_batch: true`.
+- 2026-10-18 — **Fase B concluída (18 runs; seeds 1993–1995): vence `init_seed_dataset`.**
+  - `runs/studies/e3_loss_ablation/`: 6 braços × 3 seeds, todos `complete` (STUDY_OK). ~30 h de GPU
+    em sequência (1h29–1h46 por run), abaixo da estimativa de 32–50 h.
+  - Fontes: `analysis/{summary_by_seed,method_comparisons,per_client_method_deltas}.csv` e, por run,
+    `conflict_summary.csv`, `negative_transfer_summary.csv` e `diagnostics/`. Holdout único (CV=1):
+    o `analyze.py` marca tudo `descriptive_only_single_holdout` e não calcula Wilcoxon.
+
+  Métrica primária por célula: Dice positivo na seg, balanced accuracy na cls. Média ± desvio entre
+  as 3 seeds; em cada seed, média dos clientes da célula (BUSI e TCGA: 2; ISIC seg, ISIC cls e
+  SIIM: 4).
+
+  | Célula | `primary` | `lambda_1to1` | `agg_task_1to1` | `kendall` | `init_seed_dataset` | `local_only` |
+  |---|---|---|---|---|---|---|
+  | BUSI seg | 0.611 ± 0.033 | 0.614 ± 0.020 | 0.609 ± 0.025 | 0.615 ± 0.033 | 0.628 ± 0.024 | 0.660 ± 0.016 |
+  | BUSI cls | 0.614 ± 0.061 | 0.551 ± 0.019 | 0.581 ± 0.028 | 0.627 ± 0.012 | 0.637 ± 0.002 | 0.692 ± 0.035 |
+  | ISIC seg | 0.845 ± 0.009 | 0.843 ± 0.011 | 0.843 ± 0.009 | 0.845 ± 0.009 | 0.849 ± 0.008 | 0.853 ± 0.011 |
+  | ISIC cls | 0.361 ± 0.017 | 0.342 ± 0.006 | 0.356 ± 0.011 | 0.342 ± 0.003 | 0.376 ± 0.016 | 0.362 ± 0.025 |
+  | SIIM seg | 0.195 ± 0.007 | 0.150 ± 0.010 | 0.192 ± 0.013 | 0.186 ± 0.009 | 0.209 ± 0.011 | 0.219 ± 0.019 |
+  | SIIM cls | 0.578 ± 0.031 | 0.640 ± 0.010 | 0.576 ± 0.026 | 0.593 ± 0.024 | 0.606 ± 0.031 | 0.647 ± 0.035 |
+  | TCGA seg | 0.683 ± 0.051 | 0.680 ± 0.050 | 0.685 ± 0.052 | 0.685 ± 0.052 | 0.685 ± 0.047 | 0.695 ± 0.060 |
+  | TCGA cls | 0.889 ± 0.026 | 0.880 ± 0.030 | 0.895 ± 0.024 | 0.890 ± 0.023 | 0.909 ± 0.014 | 0.909 ± 0.011 |
+
+  Δ contra o `primary`, pareado por seed (média ± desvio do Δ entre seeds). **Negrito**: passa a
+  regra da E3.6.
+
+  | Célula | `lambda_1to1` | `agg_task_1to1` | `kendall` | `init_seed_dataset` |
+  |---|---|---|---|---|
+  | BUSI seg | +0.003 ± 0.020 | −0.002 ± 0.017 | +0.004 ± 0.009 | +0.017 ± 0.009 |
+  | BUSI cls | **−0.064 ± 0.050** | −0.033 ± 0.041 | +0.013 ± 0.049 | +0.023 ± 0.059 |
+  | ISIC seg | −0.001 ± 0.002 | −0.001 ± 0.001 | 0.000 ± 0.000 | +0.004 ± 0.002 |
+  | ISIC cls | **−0.019 ± 0.012** | −0.005 ± 0.010 | −0.019 ± 0.020 | **+0.015 ± 0.009** |
+  | SIIM seg | **−0.045 ± 0.008** | −0.003 ± 0.006 | −0.010 ± 0.005 | +0.014 ± 0.017 |
+  | SIIM cls | **+0.062 ± 0.024** | −0.003 ± 0.006 | +0.015 ± 0.015 | **+0.028 ± 0.012** |
+  | TCGA seg | −0.004 ± 0.008 | +0.002 ± 0.002 | +0.002 ± 0.003 | +0.001 ± 0.026 |
+  | TCGA cls | −0.010 ± 0.011 | +0.006 ± 0.003 | +0.001 ± 0.004 | **+0.020 ± 0.012** |
+  | Média das 8 células | −0.010 | −0.005 | +0.001 | +0.015 |
+
+  Δ contra o `local_only`, pareado por seed. **Negrito**: o braço federado fica abaixo do local-only
+  pela regra da E3.6.
+
+  | Célula | `primary` | `lambda_1to1` | `agg_task_1to1` | `kendall` | `init_seed_dataset` |
+  |---|---|---|---|---|---|
+  | BUSI seg | −0.049 ± 0.043 | −0.046 ± 0.024 | **−0.051 ± 0.030** | −0.045 ± 0.040 | −0.032 ± 0.036 |
+  | BUSI cls | **−0.078 ± 0.050** | **−0.142 ± 0.016** | **−0.111 ± 0.044** | **−0.065 ± 0.029** | **−0.055 ± 0.035** |
+  | ISIC seg | −0.009 ± 0.005 | −0.010 ± 0.005 | −0.010 ± 0.005 | −0.009 ± 0.005 | −0.004 ± 0.008 |
+  | ISIC cls | −0.001 ± 0.039 | −0.020 ± 0.032 | −0.006 ± 0.030 | −0.020 ± 0.022 | +0.014 ± 0.041 |
+  | SIIM seg | **−0.024 ± 0.013** | **−0.069 ± 0.020** | **−0.027 ± 0.012** | **−0.033 ± 0.017** | −0.010 ± 0.028 |
+  | SIIM cls | **−0.069 ± 0.016** | −0.007 ± 0.026 | **−0.072 ± 0.014** | **−0.055 ± 0.012** | **−0.041 ± 0.005** |
+  | TCGA seg | **−0.011 ± 0.009** | **−0.015 ± 0.011** | −0.009 ± 0.008 | −0.009 ± 0.008 | −0.010 ± 0.029 |
+  | TCGA cls | −0.020 ± 0.021 | **−0.029 ± 0.021** | −0.014 ± 0.019 | **−0.019 ± 0.017** | +0.000 ± 0.009 |
+  | Média das 8 células | −0.033 | −0.042 | −0.037 | −0.032 | −0.017 |
+
+  - **Regra da E3.6**, célula a célula: o efeito conta se |Δ médio| superar o desvio do Δ pareado
+    entre seeds **e** o ruído GPU (BUSI 0.05; demais 0.01). A regra usa os valores sem
+    arredondamento: um −0.010 sem negrito ou fica abaixo de 0.01 antes de arredondar (−0.0095 a
+    −0.0098) ou tem desvio maior que o Δ.
+    - `init_seed_dataset` × `primary`: Δ positivo nas 8 células; passa em 3 (ISIC cls, SIIM cls,
+      TCGA cls). Nenhuma célula piora.
+    - `lambda_1to1` × `primary`: passa em 4, com sinais opostos. Sobe a cls do SIIM (+0.062) e
+      derruba a seg do SIIM (−0.045) e a cls do BUSI (−0.064) e do ISIC (−0.019). A cls do SIIM
+      estava sub-ponderada, mas o ganho sai da seg.
+    - `agg_task_1to1` e `kendall` × `primary`: nenhuma célula passa.
+    - Contra o `local_only`: o `primary` fica abaixo em 4 células (BUSI cls, SIIM seg, SIIM cls,
+      TCGA seg); o `init_seed_dataset`, em 2 (BUSI cls −0.055, SIIM cls −0.041). Nenhum braço
+      federado supera o local-only em célula alguma.
+    - **Sensibilidade.** Lendo "desvio entre seeds" como o maior desvio dos dois braços comparados,
+      e não o do Δ pareado, o `init_seed_dataset` passa só no SIIM seg (+0.014) e perde as 3 células
+      de cls. O
+      `lambda_1to1` mantém as 4, e o `kendall` passa a piorar o ISIC cls (−0.019). A ordem dos
+      braços não muda.
+  - **Média das 8 células (definição).** Média simples dos Δ das 8 células, com peso igual. Em cada
+    célula, a média dos clientes por seed e depois a das 3 seeds. Lacuna para o local-only:
+    `primary` **−0.0325**, `init_seed_dataset` **−0.0173**.
+    - Os −0.036 → −0.018 da mensagem do `e66f575` são a mesma média de 8 células, mas com
+      **acurácia** na cls (−0.0355 / −0.0176). Não são média por cliente.
+    - A média por cliente (24 pares cliente-tarefa × 3 seeds) dá −0.030 / −0.015 com balanced
+      accuracy e −0.038 / −0.017 com acurácia.
+    - Vale o número com a métrica primária: **−0.033 → −0.017**.
+  - **Métricas secundárias (cls).** Contra o `primary`, o `init_seed_dataset` sobe nas 4 células o
+    macro-F1 (+0.014 a +0.046) e a AUC (+0.013 a +0.024). O `lambda_1to1` só sobe no SIIM (macro-F1
+    +0.105, AUC +0.045) e cai nas outras 3.
+
+  **Mecanismo** (só o que os arquivos sustentam; média ± desvio entre seeds):
+  - **M1** (cosseno dos gradientes do trunk no θ recebido, média das 21 rodadas amostradas), pares
+    intra-dataset com as mesmas tarefas: `init_seed_dataset` **0.098 ± 0.006**, demais braços
+    0.002–0.003. Normalizado pelo teto intra-cliente: 0.33 ± 0.03 contra −0.001 a 0.011.
+    - Por dataset (`init_seed_dataset`): BUSI 0.076, ISIC 0.046, SIIM 0.085, TCGA 0.151. Nos demais
+      braços, |cos| ≤ 0.014.
+    - Inter-dataset e intra com tarefas diferentes: |cos| ≤ 0.005 em todos os braços.
+  - **Cancelamento** (`overall` − referência ortogonal, média das 200 rodadas): `init_seed_dataset`
+    −0.017 (primeiro terço −0.047; último −0.001); demais braços −0.0005 a −0.0007 (primeiro terço
+    ≈ −0.003). O alinhamento é forte no começo e chega perto do ortogonal no último terço, como na
+    E0.1b.
+  - Os braços de loss (λ, agregação, Kendall) não mexem na geometria: M1 e cancelamento ficam iguais
+    aos do `primary`.
+  - **Colapso da seg do SIIM** (D6: Dice positivo de validação < 0.05 no último terço). Seeds com
+    um cliente colapsado: `primary` 2/3, `lambda_1to1` 3/3, `agg_task_1to1` 2/3, `kendall` 2/3,
+    `init_seed_dataset` **0/3**, `local_only` 0/3.
+    - É sempre um cliente por run. No `lambda_1to1`, ele nunca aprende (pico de validação ≤ 0.053).
+    - Pior cliente no teste: `primary` 0.113, `lambda_1to1` 0.005, `agg_task_1to1` 0.113,
+      `kendall` 0.080, `init_seed_dataset` 0.153, `local_only` 0.157.
+    - Com Batch Dice, o colapso da E0 (4 clientes com seed `dataset`) **não se replica**. A resposta
+      à pergunta do braço na E3.3 é não. A E0 usava Dice por amostra, então a loss e a seed mudaram
+      juntas entre os dois; dentro da E3, a seed é a única diferença.
+  - **Cls do SIIM** (12 pares cliente × seed): D2 (CE de treino no acaso) em 10–12 em todos os
+    braços, exceto o `lambda_1to1` (6). D7 (balanced acc. de validação no piso) em 8–10 nos
+    federados com λ 4:1, 2 no `local_only` e 0 no `lambda_1to1`.
+  - **D13 (ISIC → MEL)** nas 3 seeds de todos os braços federados e em nenhuma do `local_only`. No
+    `init_seed_dataset`, a fração predita de MEL é menor (34/34/51% contra 42/42/61% no `primary`;
+    prevalência 10–11%).
+  - **D15 (teto de rodadas)** disparou nos 18 runs, inclusive nos 3 do `local_only`. Em cada run,
+    de 8 a 16 dos 24 pares cliente-tarefa têm o mínimo da val loss e a melhor métrica nos últimos
+    10% das rodadas. O orçamento de 200 rodadas limita todos os braços, federados ou não, e por isso
+    as próximas etapas (E6, E7) usam 400 rodadas.
+    - **Ressalva:** não existe controle de 400 rodadas (`primary` e `local_only`). Comparar um run de
+      400 rodadas com a E3 mistura orçamento e intervenção.
+
+  **Decisão.**
+  - **Loss de seg:** DiceBCE 0.5/0.5 com Batch Dice (`loss.dice_batch: true`). Fica nos manifests e
+    nos configs de run, **não** no `src/config.yaml`: o `StudyHashGuardTests`
+    (`tests/test_e3_loss_options.py`) proíbe a chave ali, porque o hash de estudo cobre o config
+    inteiro.
+  - **Cls:** CE com `balanced_fold`, sem mudança.
+  - **λ local:** 4:1, derivado de `aggregation.task_weights` (`loss.task_lambdas` fica ausente).
+  - **Agregação por tarefa:** 4:1.
+  - **Seed pessoal:** `federated.personalized_init_seed: dataset`, no `src/config.yaml` desde o
+    `e66f575`. O fallback do código continua `client`, então todo config sem a chave, inclusive os
+    dos runs históricos, resolve como foi produzido.
+  - **Rejeitados:**
+    - Kendall: nenhuma célula melhora, e M1 e cancelamento ficam iguais aos do controle.
+    - λ 1:1: troca seg por cls no SIIM, piora a cls do BUSI e do ISIC e tem a pior média das 8
+      células.
+    - Agregação 1:1: nenhuma célula muda.
+  - Div-1 (deep supervision) e Div-2 (Focal com pesos) seguem abertas.
+  - Registro das fontes em `docs/DECISION_SOURCES.md`: notas da E3 em D05, D08, D12 e D12b; D26
+    nova.
+  - Tudo descritivo: 3 seeds, holdout único, sem p-valores.
 
 ---
 
@@ -1856,3 +2000,70 @@ registrada.
 
 **Registro.**
 - 2026-10-04 — etapa planejada (macro).
+
+---
+
+## E6 — Compartilhamento ampliado (decoder federado)
+
+**Objetivo.** Medir o efeito de federar também o decoder, e não só o encoder.
+
+**Situação atual.**
+- O trunk compartilhado é `encoder2..5` + `bottleneck` (`TRUNK_PREFIXES` em
+  `src/federated/model_split.py`): **29.5%** dos parâmetros do MTnnUNet.
+- O stem (`encoder1`), o decoder inteiro, as saídas e o classificador são pessoais (D02 e D03 em
+  `docs/DECISION_SOURCES.md`).
+- O conjunto compartilhado é fixo no código. Não há chave de config para mudá-lo.
+
+**Entregáveis (macro).**
+1. Mecanismo configurável de módulos compartilhados (`shared_modules`). Sem a chave, o trunk e o
+   hash de estudo continuam os atuais, com teste.
+2. Conjunto amplo: federar também `decoder1–5`, `upsample1–5`, `process_encoder_5` e
+   `process_decoder_5`, além de `encoder2–5` + `bottleneck`. Passa de 29.5% para **64.1%** dos
+   parâmetros (medido para 1 e 3 canais, com 2, 3 e 7 classes).
+3. Continuam pessoais: `encoder1`, `output1–4` e `classifier`.
+4. Agregação hierárquica inalterada.
+5. Handoff de treino, análise (app, diagnóstico D1–D15, M1/M2, cancelamento) e fonte registrada
+   (D02 muda de alcance).
+
+**Treino necessário?** Sim: 1 run federado solto, seed 1993, 400 rodadas, executado pelo usuário.
+
+**Critério de pronto.** Run de 400 rodadas lido contra a E3, com a decisão sobre o compartilhamento
+registrada e a ressalva de orçamento explícita (não existe controle de 400 rodadas).
+
+**Detalhamento.** _(a preencher)_
+
+**Registro.**
+- 2026-10-18 — etapa planejada (macro).
+
+---
+
+## E7 — Transfer learning (ResNet-34 ImageNet)
+
+**Objetivo.** Medir o efeito de um encoder pré-treinado no ImageNet sobre o treino federado.
+
+**Situação atual.**
+- Nenhum modelo do zoo (`src/models/`) usa pesos pré-treinados: todos partem de inicialização
+  aleatória.
+- O MTnnUNet usa InstanceNorm (D20). O conjunto compartilhado é fixo no código até a E6.
+
+**Entregáveis (macro).**
+1. Uma arquitetura nova: encoder ResNet-34 do torchvision com pesos ImageNet, com os blocos
+   expostos sob os nomes de módulo do MTnnUNet, para que a divisão compartilhado/pessoal continue
+   valendo.
+2. BatchNorm do encoder como `FrozenBatchNorm`: estatísticas, escala e deslocamento congelados, sem
+   divergência entre clientes.
+3. Compartilhamento amplo da E6: encoder pré-treinado e decoder compartilhados; o stem (`encoder1`)
+   segue pessoal.
+4. Handoff de treino, análise e fonte registrada (D20 muda para o encoder pré-treinado).
+
+**Treino necessário?** Sim: 1 run federado solto, seed 1993, 400 rodadas, executado pelo usuário.
+
+**Critério de pronto.** Run de 400 rodadas lido contra a E6, com a decisão sobre o encoder
+pré-treinado registrada.
+
+**Riscos/dependências.** Depende do mecanismo `shared_modules` da E6.
+
+**Detalhamento.** _(a preencher)_
+
+**Registro.**
+- 2026-10-18 — etapa planejada (macro).
