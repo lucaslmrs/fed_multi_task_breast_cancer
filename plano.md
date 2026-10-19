@@ -2038,8 +2038,11 @@ registrada e a ressalva de orçamento explícita (não existe controle de 400 ro
 
 #### E6.0 — Fatos (levantados em 2026-10-18)
 
-- **Tamanhos** (MTnnUNet: 53 chaves, 15 819 799 valores, sem buffers). Iguais com 1 e 3 canais e
-  com 2, 3 e 7 classes, porque stem, saídas e classificador ficam fora do conjunto compartilhado.
+- **Tamanhos** (MTnnUNet: 53 chaves, sem buffers). Os tamanhos compartilhados (10/4 663 296 e
+  32/10 135 840) são iguais com 1 e 3 canais e com 2, 3 e 7 classes, porque stem, saídas e
+  classificador ficam fora do conjunto compartilhado. O total 15 819 799 e as frações abaixo são do
+  modelo de referência (BUSI, 1 canal/3 classes); no ISIC (3 canais/7 classes, total 15 821 403) a
+  fração ampla é 64.06%.
 
   | Conjunto | Blocos | Chaves | Valores | Fração |
   |---|---|---|---|---|
@@ -2244,6 +2247,18 @@ registrada e a ressalva de orçamento explícita (não existe controle de 400 ro
 - **Sketch do M1 por bloco ~2.2× menor:** o `sketch_dim` (65536) é repartido pelo tamanho dos
   blocos, e o total compartilhado passa de 4.66 M para 10.14 M. O cosseno por bloco do trunk fica
   mais ruidoso que na E3.
+- **Números de mecanismo não comparáveis com a E3:** as linhas `pair_class`/`dataset_pair` do
+  `conflict_summary` (bloco `shared_total`) e o cancelamento `negative_transfer_*`
+  (overall/intra/inter, do Gram de todo o conjunto compartilhado) passam a cobrir os 17 blocos, não
+  os 5 do trunk. Os registros da E3 (M1 `intra_same_tasks` 0.098 ± 0.006, cancelamento −0.017) são
+  sobre o trunk. Além disso, os dois clientes `single_task` do ISIC têm suporte não nulo disjunto em
+  `decoder1–4`/`upsample1–4`/`process_*`, o que puxa o cosseno seg×cls do ISIC para 0 (e o D9 para
+  "sem interação"). Uma leitura do M1 equivalente à E3 tem de ser recalculada sobre os 5 blocos do
+  trunk a partir dos `*_m1.npz` por bloco (normas exatas + sketches) ou de `conflict_m1_pairs.csv`.
+  O cancelamento só do trunk **não é recuperável** dos artefatos: o `aggregation_history.json`
+  guarda só cossenos por bloco arredondados, sem normas nem Gram. Se for desejado, persistir um
+  cancelamento do subconjunto trunk é mudança de código a decidir antes do run de 400 rodadas. O
+  `negative_transfer.html` e o log ainda chamam a grandeza de "trunk compartilhado".
 - O `aggregation_history.json` pode chegar a ~85 MB: 400 rodadas e 17 blocos, contra 14 MB na E3.
 - **Sem controle a 400 rodadas** (nem `primary` nem `local_only`): orçamento e intervenção ficam
   confundidos.

@@ -270,7 +270,7 @@ decoder too); wherever this section says "trunk", read "the shared set".
      tensors, and listed names that own no tensor (`decoder6`, `downsample`).
    - The E6 wide set (`studies/e6_sharing/wide_sharing.yaml`) lists 17 modules: the trunk,
      `decoder1..5`, `upsample1..5`, `process_encoder_5` and `process_decoder_5`. That is 32
-     tensors, 64.07% of MTnnUNet's values against 29.48% for the trunk. `encoder1`, `output1..4`,
+     tensors, 64.07% of the BUSI reference MTnnUNet's values against 29.48% for the trunk. `encoder1`, `output1..4`,
      `classifier` and Kendall's `task_log_vars` stay personalized. A shared module starts from the
      global initial parameters in both arms, so `personalized_init_seed` only reaches the
      personalized remainder.
