@@ -2255,10 +2255,11 @@ registrada e a ressalva de orçamento explícita (não existe controle de 400 ro
   `decoder1–4`/`upsample1–4`/`process_*`, o que puxa o cosseno seg×cls do ISIC para 0 (e o D9 para
   "sem interação"). Uma leitura do M1 equivalente à E3 tem de ser recalculada sobre os 5 blocos do
   trunk a partir dos `*_m1.npz` por bloco (normas exatas + sketches) ou de `conflict_m1_pairs.csv`.
-  O cancelamento só do trunk **não é recuperável** dos artefatos: o `aggregation_history.json`
-  guarda só cossenos por bloco arredondados, sem normas nem Gram. Se for desejado, persistir um
-  cancelamento do subconjunto trunk é mudança de código a decidir antes do run de 400 rodadas. O
-  `negative_transfer.html` e o log ainda chamam a grandeza de "trunk compartilhado".
+  O cancelamento só do trunk passou a ser gravado (decisão do usuário, 2026-10-19): quando há
+  mais que o trunk compartilhado, o servidor grava também `negative_transfer_trunk` por rodada
+  (Gram só de `encoder2–5` + `bottleneck`, com os pesos reais da agregação), e o relatório escreve
+  `negative_transfer_trunk_{rounds,summary}.csv`. É esse o número comparável com o −0.017 da E3.
+  O `negative_transfer.html` e o log ainda chamam a grandeza total de "trunk compartilhado".
 - O `aggregation_history.json` pode chegar a ~85 MB: 400 rodadas e 17 blocos, contra 14 MB na E3.
 - **Sem controle a 400 rodadas** (nem `primary` nem `local_only`): orçamento e intervenção ficam
   confundidos.
