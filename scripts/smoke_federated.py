@@ -162,8 +162,34 @@ def _verify_m1_coverage(run_path):
                     f"M1 coverage: {directory.name}/{client_id} has a non-finite or zero "
                     f"shared_total gradient ({exact.tolist()})"
                 )
+    if cd.lookahead_enabled(config):
+        _verify_m2_coverage(round_dirs, clients)
     print(f"M1_COVERAGE_OK rounds={expected_rounds} clients={len(clients)} "
           f"blocks={len(expected_blocks)}")
+
+
+def _verify_m2_coverage(round_dirs, clients):
+    """Every sampled round holds a lookahead CSV from EVERY client, covering both splits.
+
+    Like M1, a failing ``collect_lookahead`` is swallowed by ``observational()``; the consolidated
+    run-level M2 file still passes when one client is missing, so the per-client files are checked.
+    """
+    for directory in round_dirs:
+        targets = sorted(path.name[:-len("_m2.csv")] for path in directory.glob("*_m2.csv"))
+        if targets != clients:
+            raise RuntimeError(
+                f"M2 coverage: {directory.name} has lookahead files {targets}, expected one per "
+                f"client {clients}; missing {sorted(set(clients) - set(targets))}"
+            )
+        for client_id in clients:
+            rows = pd.read_csv(directory / f"{client_id}_m2.csv")
+            if set(rows["split"]) != {"train", "val"} or set(rows["target"]) != {client_id}:
+                raise RuntimeError(
+                    f"M2 coverage: {directory.name}/{client_id} lacks a split or has foreign targets"
+                )
+            if not np.isfinite(rows["z"]).all():
+                raise RuntimeError(f"M2 coverage: {directory.name}/{client_id} has non-finite z")
+    print(f"M2_COVERAGE_OK rounds={len(round_dirs)} clients={len(clients)}")
 
 
 def _verify_paired_controls(federated_path, standalone_path):
