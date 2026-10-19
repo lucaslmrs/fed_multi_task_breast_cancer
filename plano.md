@@ -1782,7 +1782,7 @@ manifest da Fase B; (d) registro no `plano.md` depois de cada fase.
     salvo no estado pessoal dos clientes BUSI/TCGA/SIIM e está ausente nos clientes `single_task`
     do ISIC.
   - Próximo: E3.4 (d), configs da Fase A e manifest da Fase B.
-- 2026-10-16 — **E3.4 (d) concluída; a E3 aguarda os treinos** (⏳ até 2026-10-18; ✅ na Fase B).
+- 2026-10-16 — **E3.4 (d) concluída; a E3 aguarda os treinos (⏳).**
   - Fase A: `studies/e3_loss/phase_a/{batch_dice,dice_heavy,focal_dice}.yaml`, gerados a partir do
     config da B0 (run de 29/09). Cada um muda só a seção `loss`, e o cabeçalho traz a origem e o
     comando. Smoke de 1 época com 16 amostras nos 4 datasets: 12 runs OK, e a chave de cada
@@ -1824,8 +1824,9 @@ manifest da Fase B; (d) registro no `plano.md` depois de cada fase.
     um braço válido da E4.
   - **Manifest da Fase B:** `loss.dice_batch: true`.
 - 2026-10-18 — **Fase B concluída (18 runs; seeds 1993–1995): vence `init_seed_dataset`.**
-  - `runs/studies/e3_loss_ablation/`: 6 braços × 3 seeds, todos `complete` (STUDY_OK). ~30 h de GPU
-    em sequência (1h29–1h46 por run), abaixo da estimativa de 32–50 h.
+  - `runs/studies/e3_loss_ablation/`: 6 braços × 3 seeds, todos `complete` no `run_index.csv`, com
+    `analysis/` gerado e nenhum D1. ~30 h de GPU em sequência (1h29–1h46 por run), abaixo da
+    estimativa de 32–50 h.
   - Fontes: `analysis/{summary_by_seed,method_comparisons,per_client_method_deltas}.csv` e, por run,
     `conflict_summary.csv`, `negative_transfer_summary.csv` e `diagnostics/`. Holdout único (CV=1):
     o `analyze.py` marca tudo `descriptive_only_single_holdout` e não calcula Wilcoxon.
@@ -1890,9 +1891,8 @@ manifest da Fase B; (d) registro no `plano.md` depois de cada fase.
       federado supera o local-only em célula alguma.
     - **Sensibilidade.** Lendo "desvio entre seeds" como o maior desvio dos dois braços comparados,
       e não o do Δ pareado, o `init_seed_dataset` passa só no SIIM seg (+0.014) e perde as 3 células
-      de cls. O
-      `lambda_1to1` mantém as 4, e o `kendall` passa a piorar o ISIC cls (−0.019). A ordem dos
-      braços não muda.
+      de cls. O `lambda_1to1` mantém as 4, e o `kendall` passa a piorar o ISIC cls (−0.019). A
+      ordem dos braços não muda.
   - **Média das 8 células (definição).** Média simples dos Δ das 8 células, com peso igual. Em cada
     célula, a média dos clientes por seed e depois a das 3 seeds. Lacuna para o local-only:
     `primary` **−0.0325**, `init_seed_dataset` **−0.0173**.
@@ -1914,19 +1914,23 @@ manifest da Fase B; (d) registro no `plano.md` depois de cada fase.
     - Inter-dataset e intra com tarefas diferentes: |cos| ≤ 0.005 em todos os braços.
   - **Cancelamento** (`overall` − referência ortogonal, média das 200 rodadas): `init_seed_dataset`
     −0.017 (primeiro terço −0.047; último −0.001); demais braços −0.0005 a −0.0007 (primeiro terço
-    ≈ −0.003). O alinhamento é forte no começo e chega perto do ortogonal no último terço, como na
-    E0.1b.
+    −0.002 a −0.003). O alinhamento é forte no começo e chega perto do ortogonal no último terço,
+    como na E0.1b.
   - Os braços de loss (λ, agregação, Kendall) não mexem na geometria: M1 e cancelamento ficam iguais
     aos do `primary`.
   - **Colapso da seg do SIIM** (D6: Dice positivo de validação < 0.05 no último terço). Seeds com
     um cliente colapsado: `primary` 2/3, `lambda_1to1` 3/3, `agg_task_1to1` 2/3, `kendall` 2/3,
     `init_seed_dataset` **0/3**, `local_only` 0/3.
-    - É sempre um cliente por run. No `lambda_1to1`, ele nunca aprende (pico de validação ≤ 0.053).
+    - É sempre um cliente por run. No `lambda_1to1`, ele nunca aprende (pico de validação de 0.029
+      a 0.053).
     - Pior cliente no teste: `primary` 0.113, `lambda_1to1` 0.005, `agg_task_1to1` 0.113,
       `kendall` 0.080, `init_seed_dataset` 0.153, `local_only` 0.157.
     - Com Batch Dice, o colapso da E0 (4 clientes com seed `dataset`) **não se replica**. A resposta
-      à pergunta do braço na E3.3 é não. A E0 usava Dice por amostra, então a loss e a seed mudaram
-      juntas entre os dois; dentro da E3, a seed é a única diferença.
+      à pergunta do braço na E3.3 é não. A E0 tinha a mesma política de seed (`dataset`) e a mesma
+      seed de treino (1993), mas usava Dice por amostra, outro master de partição e BUSI sem pesos
+      de classe. Entre os dois, a loss mudou junto com a partição, então a diferença não se atribui
+      só ao Batch Dice. Dentro da E3, a política de seed pessoal é a única diferença entre `primary`
+      e `init_seed_dataset`.
   - **Cls do SIIM** (12 pares cliente × seed): D2 (CE de treino no acaso) em 10–12 em todos os
     braços, exceto o `lambda_1to1` (6). D7 (balanced acc. de validação no piso) em 8–10 nos
     federados com λ 4:1, 2 no `local_only` e 0 no `lambda_1to1`.
