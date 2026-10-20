@@ -37,14 +37,23 @@ em blocos separados de **Segmentação** e **Classificação**.
   - `pending`: braço do `execution_plan.csv` sem pasta.
 - **Run.**
   - Métricas finais por dataset/tarefa (média ± dp entre cliente × fold) e por cliente.
+  - Matrizes de confusão de teste por dataset (linhas = classe real, colunas = prevista), em
+    contagem ou em % por linha (a diagonal é o recall), somando os clientes ou de um cliente só.
+    Fonte: `<setup>_cls_predictions.csv`.
   - Curvas por dataset, uma linha por cliente. A validação é `post_aggregation_round`; o treino é
     a média dos passos locais da rodada.
   - Pesos de agregação, cancelamento contra a referência ortogonal, conflito M1/M2 (com a ressalva
     do Δ inteiro), telemetria de GPU e tempo por fase.
   - Diagnóstico D1–D15 com filtros e links para os relatórios estáticos (`run_report.html`,
     `negative_transfer.html`, `dashboard.html`, `report.html`).
-- **Comparar.** Marque dois ou mais runs. A página mostra métricas finais lado a lado com Δ
-  contra o primeiro (★) e curvas médias por dataset. Também mostra avisos quando:
+- **Comparar.** Marque dois ou mais runs. A página mostra, nesta ordem:
+  - Dice positivo e balanced accuracy por dataset em barras, um run por barra (teste; o último
+    valor de validação, em barra clara, para run ainda sem métricas finais);
+  - curvas de treino, com a escolha entre a média por dataset e cada cliente de cada run;
+  - matrizes de confusão de teste por dataset, um run por matriz (% por linha);
+  - métricas finais lado a lado com Δ contra o primeiro (★).
+
+  Também mostra avisos quando:
   - `local_training.mode` difere;
   - os masters diferem (regra D12);
   - a topologia difere;

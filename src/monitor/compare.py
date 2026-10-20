@@ -86,6 +86,7 @@ def compare(run_dirs, entries):
             rows.append({**row, "delta_vs_reference": delta})
         runs.append({"entry": entry, "final": rows,
                      "final_available": bool(final.get("available")),
-                     "curves": mean_curves(readers.curves(run_dir))})
+                     "curves": mean_curves(readers.curves(run_dir)),
+                     "confusion": readers.confusion(run_dir)})
     return readers.clean({"reference": entries[0]["path"] if entries else "", "runs": runs,
                           "warnings": warnings_for(entries), "note": DESCRIPTIVE_NOTE})

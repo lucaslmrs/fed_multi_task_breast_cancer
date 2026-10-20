@@ -221,6 +221,49 @@ class ToleranceTests(unittest.TestCase):
         self.assertEqual(json.dumps(payload, allow_nan=False), '{"a": null, "b": [null, 1.0]}')
 
 
+class ConfusionTests(unittest.TestCase):
+    def _predictions(self, run):
+        rows = [  # (client, truth, predicted)
+            ("c0", 0, 0), ("c0", 0, 1), ("c0", 1, 1), ("c0", 2, 0),
+            ("c1", 1, 1), ("c1", 2, 2), ("c1", 0, 0),
+        ]
+        frame = pd.DataFrame([{"setup": "federated", "fold": 0, "client_id": c, "dataset": "DS",
+                               "ground_truth": t, "predicted": p, "class_name_0": "a",
+                               "class_name_1": "b", "class_name_2": "c"} for c, t, p in rows])
+        frame.to_csv(run / "federated_cls_predictions.csv", index=False)
+
+    def test_counts_pool_clients_and_keep_each_client(self):
+        with tempfile.TemporaryDirectory() as root:
+            run = _federated(root, "run")
+            self._predictions(run)
+            payload = readers.confusion(run)
+            self.assertTrue(payload["available"])
+            (dataset,) = payload["datasets"]
+            self.assertEqual(dataset["classes"], ["a", "b", "c"])
+            # rows = true class, columns = predicted
+            self.assertEqual(dataset["counts"], [[2, 1, 0], [0, 2, 0], [1, 0, 1]])
+            self.assertEqual(dataset["n"], 7)
+            by_client = {c["client_id"]: c["counts"] for c in dataset["clients"]}
+            self.assertEqual(by_client["c0"], [[1, 1, 0], [0, 1, 0], [1, 0, 0]])
+            self.assertEqual(by_client["c1"], [[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+
+    def test_without_predictions_reports_a_reason(self):
+        with tempfile.TemporaryDirectory() as root:
+            payload = readers.confusion(_federated(root, "run"))
+            self.assertFalse(payload["available"])
+            self.assertTrue(payload["reason"])
+
+    def test_compare_carries_the_matrices(self):
+        with tempfile.TemporaryDirectory() as root:
+            a, b = _federated(root, "a"), _federated(root, "b")
+            self._predictions(a)
+            entries = [{"path": "a", "name": "a", "status": "complete"},
+                       {"path": "b", "name": "b", "status": "complete"}]
+            runs = compare.compare([a, b], entries)["runs"]
+            self.assertTrue(runs[0]["confusion"]["available"])
+            self.assertFalse(runs[1]["confusion"]["available"])
+
+
 class CacheTests(unittest.TestCase):
     def test_unchanged_files_are_not_reread(self):
         with tempfile.TemporaryDirectory() as root:

@@ -366,14 +366,14 @@ async function openRun(path) {
   state.lastFinal = null;
   state.curves = null;
   const sections = {
-    header: el("div"), highlights: el("div"), final: el("div"), curves: el("div"), aggregation: el("div"),
+    header: el("div"), highlights: el("div"), final: el("div"), confusion: el("div"), curves: el("div"), aggregation: el("div"),
     conflict: el("div"), resources: el("div"), diagnostics: el("div"),
   };
   main.replaceChildren(...Object.values(sections));
   state.sections = sections;
   renderHeader(run.entry);
   renderFinal(run.final);
-  await Promise.all([loadCurves(), loadSection("aggregation", renderAggregation),
+  await Promise.all([loadCurves(), loadSection("confusion", renderConfusion), loadSection("aggregation", renderAggregation),
     loadSection("conflict", renderConflict), loadSection("resources", renderResources),
     loadSection("diagnostics", (p) => { state.diagnostics = p; renderDiagnostics(); })]);
   if (run.entry.status === "running") startLive();
@@ -397,7 +397,7 @@ async function refreshLive() {
     if (run.entry.status !== "running") {
       // Finished (or went stale): load the end-of-fold artifacts once and stop polling.
       stopTimer();
-      await Promise.all([loadSection("aggregation", renderAggregation),
+      await Promise.all([loadSection("confusion", renderConfusion), loadSection("aggregation", renderAggregation),
         loadSection("conflict", renderConflict), loadSection("resources", renderResources),
         loadSection("diagnostics", (p) => { state.diagnostics = p; renderDiagnostics(); })]);
       loadCatalog();
@@ -559,6 +559,93 @@ function renderFinal(final) {
   }).filter(Boolean);
   state.sections.final.replaceChildren(card("Métricas finais (teste)", ...blocks,
     el("p", { class: "note" }, "Média ± dp entre cliente × fold, que não são réplicas independentes (descritivo).")));
+}
+
+// ---- confusion matrices ---------------------------------------------------------------------
+
+const SEQUENTIAL_SCALE = [[0, "#FFF7F1"], [0.5, "#C98A96"], [1, "#7B2032"]];
+
+// Rows = true class, columns = predicted. "row" turns each row into the share of that true class
+// (the diagonal is then the recall of the class).
+function confusionTrace(classes, counts, mode) {
+  const z = counts.map((row) => {
+    const total = row.reduce((a, b) => a + b, 0);
+    return mode === "row" ? row.map((v) => (total ? v / total : null)) : row;
+  });
+  return { type: "heatmap", z, x: classes, y: classes, colorscale: SEQUENTIAL_SCALE, showscale: false,
+    zmin: 0, zmax: mode === "row" ? 1 : undefined,
+    customdata: counts, texttemplate: mode === "row" ? "%{z:.0%}" : "%{z}", textfont: { size: classes.length > 4 ? 10 : 13 },
+    hovertemplate: "real %{y} → previsto %{x}: %{customdata} (%{z:.3g})<extra></extra>" };
+}
+
+function confusionLayout(title, classes) {
+  const n = classes.length;
+  return { title: { text: title, font: { size: 13 } }, hovermode: "closest",
+    height: Math.max(300, 120 + n * 46), margin: { l: 150, r: 12, t: 40, b: 100 },
+    xaxis: { title: { text: "previsto", standoff: 10 }, tickangle: n > 3 ? -35 : 0, side: "bottom" },
+    yaxis: { title: { text: "real", standoff: 14 }, autorange: "reversed", automargin: true } };
+}
+
+function confusionNote(payload) {
+  return el("p", { class: "note" }, "Linhas = classe real, colunas = classe prevista, no teste. "
+    + "\"% por linha\" mostra a fração de cada classe real: a diagonal é o recall da classe. "
+    + `Fonte: ${payload.kind}_cls_predictions.csv.`);
+}
+
+function renderConfusion(payload) {
+  const container = state.sections.confusion;
+  if (!payload.available) {
+    container.replaceChildren(card("Matrizes de confusão (teste)", unavailable(payload)));
+    return;
+  }
+  const c = state.controls.confusion || (state.controls.confusion = { mode: "row", client: "all" });
+  const folds = new Set(payload.datasets.flatMap((d) => d.clients.map((x) => x.fold)));
+  const key = (x) => (folds.size > 1 ? `${x.client_id} f${x.fold}` : x.client_id);
+  const clientIds = [...new Set(payload.datasets.flatMap((d) => d.clients.map(key)))].sort();
+  if (c.client !== "all" && !clientIds.includes(c.client)) c.client = "all";
+  const modeControl = el("span", { class: "segmented" }, [["row", "% por linha"], ["count", "contagem"]].map(([v, text]) => el("button", {
+    class: c.mode === v ? "active" : undefined, onclick: () => { c.mode = v; renderConfusion(payload); },
+  }, text)));
+  const charts = el("div", { class: "charts" });
+  const pending = [];
+  for (const d of payload.datasets) {
+    let counts = d.counts, label = `todos os clientes (n=${d.n})`;
+    if (c.client !== "all") {
+      const hit = d.clients.find((x) => key(x) === c.client);
+      if (!hit) continue;
+      counts = hit.counts;
+      label = key(hit);
+    }
+    const node = el("div", { class: "chart" });
+    charts.append(node);
+    pending.push(() => plot(node, [confusionTrace(d.classes, counts, c.mode)], confusionLayout(`${d.dataset} — ${label}`, d.classes)));
+  }
+  container.replaceChildren(card("Matrizes de confusão (teste)",
+    el("div", { class: "controls" }, modeControl,
+      select([["all", "todos (soma)"], ...clientIds.map((id) => [id, id])], c.client, (v) => { c.client = v; renderConfusion(payload); }, "cliente")),
+    charts.children.length ? charts : el("p", { class: "note" }, "Esse cliente não tem tarefa de classificação."),
+    confusionNote(payload)));
+  pending.forEach((draw) => draw());
+}
+
+// One row per dataset, one matrix per run (pooled over clients), share per true class.
+function compareConfusion(runs, labels, pending) {
+  const datasets = [...new Set(runs.flatMap((r) => (r.confusion && r.confusion.available ? r.confusion.datasets.map((d) => d.dataset) : [])))].sort();
+  const title = "Matrizes de confusão (teste, % por linha)";
+  if (!datasets.length) return card(title, el("p", { class: "note" }, "Nenhum run selecionado tem predições de classificação."));
+  const blocks = datasets.map((dataset) => {
+    const charts = el("div", { class: "charts" });
+    runs.forEach((run, i) => {
+      const d = run.confusion && run.confusion.available && run.confusion.datasets.find((x) => x.dataset === dataset);
+      if (!d) return;
+      const node = el("div", { class: "chart" });
+      charts.append(node);
+      pending.push(() => plot(node, [confusionTrace(d.classes, d.counts, "row")], confusionLayout(labels[i], d.classes)));
+    });
+    return el("div", { class: "task-block" }, el("h3", { class: "task-title" }, dataset), charts);
+  });
+  return card(title, ...blocks,
+    el("p", { class: "note" }, "Linhas = classe real, colunas = classe prevista; soma de todos os clientes de cada run. A diagonal é o recall de cada classe."));
 }
 
 // ---- curves ---------------------------------------------------------------------------------
@@ -877,8 +964,9 @@ function renderCompare() {
   const pending = [];
   const highlights = compareHighlights(runs, labels, pending);
   const curves = compareCurves(runs, labels, pending);
+  const confusionCard = compareConfusion(runs, labels, pending);
   const finals = compareFinals(runs, labels);
-  main.replaceChildren(header, highlights, curves, finals);
+  main.replaceChildren(header, highlights, curves, confusionCard, finals);
   // Plotted only once attached: a detached node has no width and Plotly falls back to 700px.
   pending.forEach((draw) => draw());
 }
