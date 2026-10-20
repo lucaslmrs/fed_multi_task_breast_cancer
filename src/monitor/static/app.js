@@ -844,6 +844,7 @@ function renderDiagnostics() {
 async function openCompare() {
   stopTimer();
   state.view = "compare";
+  state.compareClientCurves = {};  // a running run must not show stale per-client curves
   state.selected = null;
   renderTree();
   const paths = [...state.compare];
@@ -873,6 +874,127 @@ function renderCompare() {
       { label: "budget", value: (r) => r.entry.budget_mode || "—" },
       { label: "diag.", value: (r) => r.entry.diagnostics && r.entry.diagnostics.status ? pill(r.entry.diagnostics.status) : "—" }], runs));
 
+  const pending = [];
+  const highlights = compareHighlights(runs, labels, pending);
+  const curves = compareCurves(runs, labels, pending);
+  const finals = compareFinals(runs, labels);
+  main.replaceChildren(header, highlights, curves, finals);
+  // Plotted only once attached: a detached node has no width and Plotly falls back to 700px.
+  pending.forEach((draw) => draw());
+}
+
+// Dice positivo and balanced accuracy per dataset, one bar per run. A run without final test
+// metrics (still running) falls back to its last validation value and says so in the legend.
+function compareHighlights(runs, labels, pending) {
+  const charts = el("div", { class: "charts" });
+  const sources = new Set();
+  for (const h of HIGHLIGHTS) {
+    const datasets = [...new Set(runs.flatMap((run) => [
+      ...run.final.filter((r) => r.task === h.task && h.test.includes(r.metric)).map((r) => r.dataset),
+      ...Object.keys(run.curves).filter((d) => h.curve.some((k) => run.curves[d][`val/${k}`])),
+    ]))].filter((d) => d && d !== "all").sort();
+    if (!datasets.length) continue;
+    const traces = runs.map((run, i) => {
+      let fromVal = false;
+      const values = datasets.map((dataset) => {
+        const row = h.test.map((m) => run.final.find((r) => r.dataset === dataset && r.task === h.task && r.metric === m)).find(Boolean);
+        if (row) return { y: row.mean, err: row.std };
+        const key = h.curve.map((k) => `val/${k}`).find((k) => (run.curves[dataset] || {})[k]);
+        const xy = key && run.curves[dataset][key];
+        if (!xy || !xy.y.length) return { y: null, err: null };
+        fromVal = true;
+        return { y: xy.y[xy.y.length - 1], err: null };
+      });
+      if (fromVal) sources.add("val");
+      return { type: "bar", x: datasets, y: values.map((v) => v.y), name: labels[i] + (fromVal ? " (validação)" : ""),
+        marker: { color: seriesColor(i), opacity: fromVal ? 0.55 : 1 },
+        error_y: { type: "data", array: values.map((v) => v.err ?? 0), visible: values.some((v) => v.err), color: css("--muted"), thickness: 1 },
+        text: values.map((v) => (v.y === null ? "" : fmt(v.y, 3))), textposition: "outside", cliponaxis: false, textfont: { size: 9 },
+        hovertemplate: "%{x}: %{y:.3f}<extra>%{fullData.name}</extra>" };
+    });
+    const node = el("div", { class: "chart" });
+    charts.append(node);
+    pending.push(() => plot(node, traces, {
+      title: { text: `${h.label} por dataset`, font: { size: 13 } }, barmode: "group", hovermode: "closest",
+      yaxis: { title: h.label, rangemode: "tozero" } }));
+  }
+  const title = "Destaques: Dice e balanced accuracy";
+  if (!charts.children.length) return card(title, el("p", { class: "note" }, "Nenhum run tem Dice ou balanced accuracy."));
+  const notes = ["Teste: média entre cliente × fold; a barra de erro é o dp (descritivo)."];
+  if (sources.has("val")) notes.push("Barras claras: run sem métricas finais; mostram o último valor de validação (média entre clientes).");
+  return card(title, charts, ...notes.map((n) => el("p", { class: "note" }, n)));
+}
+
+// Per-client curves come from /api/curves, loaded lazily the first time that view is chosen.
+async function loadCompareClientCurves(runs) {
+  const cache = state.compareClientCurves || (state.compareClientCurves = {});
+  await Promise.all(runs.map(async (run) => {
+    if (cache[run.entry.path]) return;
+    try { cache[run.entry.path] = await api(`/api/curves?path=${q(run.entry.path)}`); }
+    catch (error) { cache[run.entry.path] = { available: false, reason: String(error) }; }
+  }));
+}
+
+const CLIENT_DASHES = ["solid", "dot", "dash", "longdash", "dashdot", "longdashdot"];
+
+function compareCurves(runs, labels, pending) {
+  const c = state.controls.compare || (state.controls.compare = {});
+  if (!c.view) c.view = "mean";
+  const datasets = [...new Set(runs.flatMap((r) => Object.keys(r.curves)))].sort();
+  const curveKeys = [...new Set(runs.flatMap((r) => Object.values(r.curves).flatMap((d) => Object.keys(d))))].sort();
+  if (!curveKeys.includes(c.metric)) c.metric = defaultMetric(curveKeys);
+  const viewControl = el("span", { class: "segmented" }, [["mean", "média por dataset"], ["clients", "cada cliente"]].map(([v, text]) => el("button", {
+    class: c.view === v ? "active" : undefined,
+    onclick: async () => {
+      c.view = v;
+      if (v === "clients") await loadCompareClientCurves(runs);
+      renderCompare();
+    },
+  }, text)));
+  const charts = el("div", { class: "charts" });
+  const cache = state.compareClientCurves || {};
+  const perClient = c.view === "clients" && runs.every((r) => cache[r.entry.path]);
+  const [split, ...rest] = (c.metric || "").split("/");
+  const seriesKey = rest.join("/");
+  for (const dataset of datasets) {
+    let traces;
+    if (perClient) {
+      traces = runs.flatMap((run, i) => {
+        const payload = cache[run.entry.path];
+        if (!payload || !payload.available) return [];
+        const folds = new Set(payload.series.map((s) => String(s.fold)));
+        return payload.series.filter((s) => s.dataset === dataset && s[split] && s[split][seriesKey]).map((s, j) => ({
+          x: s[split][seriesKey].x, y: s[split][seriesKey].y, mode: "lines", type: "scatter",
+          name: `${s.client_id}${folds.size > 1 ? ` f${s.fold}` : ""}`, legendgroup: labels[i],
+          legendgrouptitle: { text: labels[i], font: { size: 11 } },
+          line: { color: seriesColor(i), width: 1.2, dash: CLIENT_DASHES[j % CLIENT_DASHES.length] } }));
+      });
+    } else {
+      traces = runs.map((run, i) => {
+        const xy = (run.curves[dataset] || {})[c.metric];
+        return xy ? { x: xy.x, y: xy.y, name: labels[i], mode: "lines", line: { color: seriesColor(i), width: 1.8 } } : null;
+      }).filter(Boolean);
+    }
+    if (!traces.length) continue;
+    const node = el("div", { class: "chart" });
+    charts.append(node);
+    pending.push(() => plot(node, traces, { title: { text: `${dataset} — ${curveKeyLabel(c.metric)}`, font: { size: 13 } },
+      xaxis: { title: perClient ? "" : "rodada / época" },
+      ...(perClient ? { height: 560, hovermode: "closest", margin: { l: 52, r: 12, t: 34, b: 30 },
+        legend: { orientation: "h", x: 0, y: -0.1, yanchor: "top", font: { size: 10 }, groupclick: "togglegroup" } } : {}) }));
+  }
+  const note = perClient
+    ? "Cada linha é um cliente (eixo x: rodada ou época): a cor identifica o run e o traço, o cliente. Clique no nome de um run na legenda para ocultar ou mostrar todos os seus clientes."
+    : "Cada linha é a média entre os clientes (e folds) do dataset, por run.";
+  return card("Curvas de treino",
+    el("div", { class: "controls" },
+      curveKeys.length ? select(curveKeys.map((k) => [k, curveKeyLabel(k)]), c.metric, (v) => { c.metric = v; renderCompare(); }, "métrica") : null,
+      viewControl),
+    charts.children.length ? charts : el("p", { class: "note" }, "Sem curvas para essa métrica."),
+    el("p", { class: "note" }, note));
+}
+
+function compareFinals(runs, labels) {
   const keys = new Map();
   runs.forEach((run) => run.final.forEach((row) => keys.set(`${row.dataset}|${row.task}|${row.metric}`, row)));
   const rows = [...keys.keys()].sort().map((key) => {
@@ -895,29 +1017,8 @@ function renderCompare() {
       return (d > 0) !== lowerIsBetter(r.metric) ? "pos" : "neg";
     } });
   });
-  const finals = card("Métricas finais lado a lado (média ± dp entre cliente × fold)",
+  return card("Métricas finais lado a lado (média ± dp entre cliente × fold)",
     rows.length ? table(columns, rows) : el("p", { class: "note" }, "Nenhum run selecionado tem métricas finais."));
-
-  const datasets = [...new Set(runs.flatMap((r) => Object.keys(r.curves)))].sort();
-  const curveKeys = [...new Set(runs.flatMap((r) => Object.values(r.curves).flatMap((d) => Object.keys(d))))].sort();
-  const c = state.controls.compare || (state.controls.compare = {});
-  if (!curveKeys.includes(c.metric)) c.metric = defaultMetric(curveKeys);
-  const charts = el("div", { class: "charts" });
-  const curves = card("Curvas médias por dataset (média entre clientes × folds)",
-    el("div", { class: "controls" }, curveKeys.length ? select(curveKeys.map((k) => [k, curveKeyLabel(k)]), c.metric, (v) => { c.metric = v; renderCompare(); }, "métrica") : null),
-    charts);
-  main.replaceChildren(header, finals, curves);
-  for (const dataset of datasets) {
-    const traces = runs.map((run, i) => {
-      const xy = (run.curves[dataset] || {})[c.metric];
-      return xy ? { x: xy.x, y: xy.y, name: labels[i], mode: "lines", line: { color: seriesColor(i), width: 1.8 } } : null;
-    }).filter(Boolean);
-    if (!traces.length) continue;
-    const node = el("div", { class: "chart" });
-    charts.append(node);
-    plot(node, traces, { title: { text: `${dataset} — ${curveKeyLabel(c.metric)}`, font: { size: 13 } }, xaxis: { title: "rodada / época" } });
-  }
-  if (!charts.children.length) charts.replaceWith(el("p", { class: "note" }, "Sem curvas para essa métrica."));
 }
 
 // ---- boot -----------------------------------------------------------------------------------
