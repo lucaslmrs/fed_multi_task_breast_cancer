@@ -7,6 +7,7 @@ Criada em 2026-10-27 a partir de um grill sobre o pré-projeto
 | Arquivo | Conteúdo |
 |---|---|
 | `escopo_e_decisoes.md` | Pergunta, hipóteses reformuladas, mapa experimento → hipótese, decisões, ramos registrados e pendências |
+| `literatura_mas_fedmtl.md` | O que MAS e FedMTL dizem de fato sobre transferência negativa e conflito, com páginas, lido dos PDFs |
 | `mapa_da_pesquisa.html` | A mesma informação em página única, com a **árvore de decisões interativa** (abre offline, sem CDN) |
 
 Nada aqui muda código, configs ou artefatos congelados. É um documento de pensamento: nenhuma

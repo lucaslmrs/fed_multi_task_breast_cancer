@@ -80,7 +80,10 @@
   medido é a diluição, a fusão global precisa de algo além de projeção ortogonal (por exemplo, uma
   taxa de aprendizado do servidor) para não reduzir o passo de cada grupo?
 - **P2 — Como medir H2**: rodadas até o platô de validação, com quais limiares?
-- **P3 — Baselines externos**: incluir FedMTL (o mais próximo da proposta)? MAS?
+- **P3 — Baselines externos**: incluir FedMTL (o mais próximo da proposta)? MAS? Antes de decidir,
+  ler `literatura_mas_fedmtl.md`: o MAS supõe que todo cliente tem todas as tarefas, e o FedMTL
+  agrega também as cabeças e não tem corpo global único, então nenhum dos dois encaixa direto no
+  cenário FedPer multi-domínio.
 - **P4 — Fechar E4/E6/E7**: rodar os treinos pendentes ou registrar como trabalho futuro, dado o prazo.
 - **P5 — Coleta online de Δ×wᵢ** no M2, para ver a diluição ao longo do treino e não só no estado final.
 
