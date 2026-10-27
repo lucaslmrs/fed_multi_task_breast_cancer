@@ -20,6 +20,11 @@ Buscar como os autores medem e reportam isso, para alinhar ou justificar a escol
 - [x] Gradient diversity (Yin et al., 2018) — `Σ‖gᵢ‖² / ‖Σ gᵢ‖²`, parente próximo da razão usada aqui.
       → Def. 4, AISTATS 2018. Nossa razão é uma adaptação (D15).
 - [ ] FedMTL / FedPer / HC-FMTL — há alguma métrica de conflito por rodada?
+      → FedMTL (Sen & Borcea, 2024): não; só matrizes de similaridade num instante, usadas para
+        ponderar a agregação. Ver `FedMTL - Privacy-Preserving Federated Multi-Task Learning.md`.
+      → MAS (Zhuang et al., 2023), lido junto: afinidade TAG por rodada (Fig. 7), funcional e sem
+        limiares. Ver `MAS - Towards Resource-Efficient Federated Multiple-Task Learning.md`.
+      → Falta: FedPer e HC-FMTL.
 - [ ] Artigos que definem transferência negativa como perda de desempenho em relação ao local-only:
       como relacionam isso a medidas geométricas (cosseno, cancelamento)?
 - [x] Decidir se reportamos por rodada, média final ou curva, e se usamos limiares qualitativos.
