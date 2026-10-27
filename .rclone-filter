@@ -5,7 +5,7 @@
 - data.zip
 - data/*/archives/**
 - data/*/raw/**
-- data/*/processed_128/**
+- data/*/processed_*/**
 - data/*/curated/**
 - runs/**/*.pt
 + **

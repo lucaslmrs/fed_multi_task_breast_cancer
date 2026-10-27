@@ -56,7 +56,14 @@ edits inside an existing canonical skill are visible immediately through both li
 # another dataset's variant), so set that first.
 python -m src.dataset.Curated_BUSI_preprocessing   # data.dataset: Curated_BUSI
 python -m src.dataset.ISIC_2018_preprocessing      # data.dataset: ISIC_2018
+python -m src.dataset.TCGA_LGG_preprocessing       # data.dataset: TCGA_LGG
 python -m src.dataset.SIIM_ACR_preprocessing       # data.dataset: SIIM_ACR
+# TCGA-LGG and SIIM-ACR can also write a NEW variant without editing config.yaml (both flags
+# together; classes from datasets.<DS>.classes; an existing non-empty variant folder aborts):
+python -m src.dataset.TCGA_LGG_preprocessing --variant processed_256 --image-size 256
+python -m src.dataset.SIIM_ACR_preprocessing --variant processed_256 --image-size 256
+python -m scripts.preprocessing_needs           # read-only: lesion size and empty share per variant
+python -m scripts.partition_equivalence --help  # is a master rebuilt at another resolution the same?
 
 # Train (CV=1 selects deterministic holdout; CV>=2 selects cross-validation)
 python -m src.training_multitask      # segmentation + classification
@@ -109,10 +116,13 @@ data/<dataset>/
 ```
 
 Currently present: `data/Curated_BUSI/`, `data/ISIC_2018/`, `data/TCGA_LGG/` and `data/SIIM_ACR/`,
-all with a
-`processed_128` variant.
-The variant's resolution comes from `data.image_size`; the preprocessing refuses to write a
-different size into an existing variant.
+all with a `processed_128` variant; `data/TCGA_LGG/` and `data/SIIM_ACR/` also have a
+`processed_256` variant (E4, per-dataset resolution; see `docs/PREPROCESSING_NEEDS.md`). The
+multi-dataset pipeline reads each dataset's variant from `datasets.<name>.variant`, so one run can
+mix resolutions: the stems are personalized and MTnnUNet only needs H and W divisible by 32.
+The variant's resolution comes from `data.image_size` (or `--image-size`); the preprocessing refuses
+to write a different size into an existing variant, and a `--variant` given on the command line
+refuses any existing non-empty folder.
 
 **All dataset paths are derived in `src/dataset/paths.py` from `data.root`/`data.dataset`/`data.variant`.**
 Never rebuild these paths by hand — call `paths.processed_dir()`, `paths.mapping_file()`,

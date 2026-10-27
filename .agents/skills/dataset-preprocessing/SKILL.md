@@ -1,6 +1,6 @@
 ---
 name: dataset-preprocessing
-description: Executar ou depurar o pré-processamento de um dataset já suportado (Curated BUSI, ISIC 2018), transformando a pasta raw/ do dataset na variante que o treino lê. Use ao preparar dados antes de treinar, validar caminhos e pré-requisitos, entender o mapping.csv gerado, ou diagnosticar um [ABORT] do script de pré-processamento. Gatilhos - "pré-processar", "preprocessing", "preparar os dados", "gerar mapping.csv", "rodar o preprocessing do BUSI/ISIC", "processed_128".
+description: Executar ou depurar o pré-processamento de um dataset já suportado (Curated BUSI, ISIC 2018, TCGA-LGG, SIIM-ACR), transformando a pasta raw/ do dataset na variante que o treino lê, inclusive uma variante nova em outra resolução pela CLI --variant/--image-size. Use ao preparar dados antes de treinar, validar caminhos e pré-requisitos, entender o mapping.csv gerado, ou diagnosticar um [ABORT] do script de pré-processamento. Gatilhos - "pré-processar", "preprocessing", "preparar os dados", "gerar mapping.csv", "rodar o preprocessing do BUSI/ISIC/TCGA/SIIM", "processed_128", "processed_256".
 ---
 
 # Pré-processamento de um dataset suportado
@@ -32,20 +32,40 @@ abortam de propósito caso contrário — sem essa trava, rodar o script do ISIC
 
 Checklist, nesta ordem:
 
-1. `data.dataset` no `src/config.yaml` bate com o script que você vai rodar.
-2. `data.variant` e `data.image_size` são coerentes entre si (`processed_128` ↔ `image_size: 128`).
+1. `data.dataset` no `src/config.yaml` bate com o script que você vai rodar — **ou**, só para
+   TCGA-LGG e SIIM-ACR, você usa a CLI de variante nova (`--variant processed_<N> --image-size N`,
+   sempre juntas), que escolhe o dataset do próprio script e não exige editar o `config.yaml`.
+2. `data.variant` e `data.image_size` são coerentes entre si (`processed_128` ↔ `image_size: 128`);
+   na CLI, o nome da variante precisa soletrar o tamanho (`processed_256` ↔ `--image-size 256`).
    Escrever outra resolução dentro de uma variante existente é bloqueado por `assert_variant_resolution`.
-3. `data/<dataset>/raw/` existe e está populado. Só o script de pré-processamento lê essa pasta.
-4. Para o BUSI com `CURATED=True`: `data/Curated_BUSI/curation_list.csv` existe, com colunas
+3. Com a CLI, a pasta da variante **não pode existir com conteúdo** (`assert_new_variant` aborta se
+   houver `mapping.csv` ou qualquer arquivo). Variante se escreve uma vez; um run parcial é apagado
+   à mão, nunca retomado. Isso protege a `processed_128`, que todos os masters congelados leem.
+4. Com a CLI, `datasets.<DS>.classes` existe no `src/config.yaml` (as classes vêm do registro, não
+   de `data.classes`).
+5. `data/<dataset>/raw/` existe e está populado. Só o script de pré-processamento lê essa pasta.
+6. Para o BUSI com `CURATED=True`: `data/Curated_BUSI/curation_list.csv` existe, com colunas
    `class` e `id`, separado por `;`.
-5. Pacotes disponíveis: `numpy` (**tem que ser `<2`**), `pandas`, `cv2`, `yaml`.
+7. Pacotes disponíveis: `numpy` (**tem que ser `<2`**), `pandas`, `cv2`, `yaml` (e `pydicom` para o
+   SIIM-ACR).
 
 ## Executar
 
 ```bash
 python -m src.dataset.Curated_BUSI_preprocessing   # exige data.dataset: Curated_BUSI
 python -m src.dataset.ISIC_2018_preprocessing      # exige data.dataset: ISIC_2018
+python -m src.dataset.TCGA_LGG_preprocessing       # exige data.dataset: TCGA_LGG
+python -m src.dataset.SIIM_ACR_preprocessing       # exige data.dataset: SIIM_ACR
+
+# Variante nova, sem editar o config.yaml (só TCGA-LGG e SIIM-ACR):
+python -m src.dataset.TCGA_LGG_preprocessing --variant processed_256 --image-size 256
+python -m src.dataset.SIIM_ACR_preprocessing --variant processed_256 --image-size 256
 ```
+
+Depois de uma variante nova: confira no log que **nenhuma** máscara `became empty` (lesão apagada
+pelo resize) e compare as estatísticas com `python -m scripts.preprocessing_needs` (só leitura).
+Se ela vai para um estudo federado, o master novo precisa ser **o mesmo** master lido em outra
+resolução: `python -m scripts.partition_equivalence` (ver `docs/PREPROCESSING_NEEDS.md`).
 
 ## O que cada script faz
 

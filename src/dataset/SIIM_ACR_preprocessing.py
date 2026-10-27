@@ -41,6 +41,8 @@ and COLUMN-MAJOR (the official `mask2rle` iterates x in the outer loop), hence t
 in the upper half of the radiograph, as expected of apical pneumothorax.
 
 Run with:  python -m src.dataset.SIIM_ACR_preprocessing
+           (needs `data.dataset: SIIM_ACR` in config.yaml), or, for a NEW variant without editing
+           config.yaml:  python -m src.dataset.SIIM_ACR_preprocessing --variant processed_256 --image-size 256
 """
 
 import hashlib
@@ -51,11 +53,11 @@ import cv2
 import numpy as np
 import pandas as pd
 import pydicom
-import yaml
 
 from src.dataset import paths
 from src.dataset.preprocessing_utils import (add_image_metadata, assert_target_dataset,
-                                             assert_variant_resolution, resize_image, resize_mask)
+                                             assert_variant_resolution, preprocessing_data_config,
+                                             resize_image, resize_mask)
 
 # =======================
 # User-Configurable Settings
@@ -278,9 +280,10 @@ def summarize(df: pd.DataFrame, rows: List[dict], config_data: dict) -> None:
 # =======================
 # Main
 # =======================
-def main():
-    with open(CONFIG_FILE) as cf:
-        config_data = yaml.load(cf, Loader=yaml.FullLoader)["data"]
+def main(argv=None):
+    # Without flags: config.yaml's data block, as before. With --variant/--image-size: a NEW variant
+    # of this dataset, without editing config.yaml (see preprocessing_data_config).
+    config_data = preprocessing_data_config(DATASET, argv, CONFIG_FILE)
 
     assert_target_dataset(config_data, DATASET)
     assert_variant_resolution(paths.mapping_file(config_data), config_data["image_size"])
