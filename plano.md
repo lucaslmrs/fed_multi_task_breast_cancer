@@ -32,7 +32,7 @@ Criado em 2026-10-04.
 | E2 | App local de monitoramento e comparação | ✅ | `feat/monitor-app` | 2026-10-16 |
 | E5 | Validação das fontes (consolidação) | ✅ | `docs/sources` | 2026-10-16 |
 | E3 | Ablação: loss fed multitask multi-dataset | ✅ | `exp/loss-ablation` | 2026-10-18 |
-| E4 | Ablação: pré-processamento de imagens | ⬜ | `exp/preprocessing-ablation` | — |
+| E4 | Ablação: pré-processamento de imagens | ⏳ | `exp/preprocessing-ablation` | 2026-10-18 |
 | E6 | Compartilhamento ampliado (decoder federado) | ⏳ | `exp/wider-sharing` | 2026-10-18 |
 | E7 | Transfer learning (ResNet-34 ImageNet) | ⏳ | `exp/transfer-learning` | 2026-10-18 |
 
