@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recorte da Dissertação</title>
+<style>
+:root{
+  --ink:#0A0B0F; --wine-black:#1E1216; --burgundy:#7B2032; --rose:#C2A19A; --cream:#FFF7F1;
+  --bg:var(--cream); --surface:#FFFFFF; --text:var(--wine-black); --muted:#5b4a4e;
+  --accent:var(--burgundy); --line:#e6d6cf; --fill:#f3e6e0;
+  --n:#7B2032; --a:#8a6a63; --f:#9a8f8c; --i:#3d3437;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:var(--ink); --surface:var(--wine-black); --text:var(--cream); --muted:#c9b8b3;
+    --accent:#B83D54; --line:#3a272d; --fill:#2a1a1f;
+    --n:#B83D54; --a:#C2A19A; --f:#8f8582; --i:#d9cbc7;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:var(--ink); --surface:var(--wine-black); --text:var(--cream); --muted:#c9b8b3;
+  --accent:#B83D54; --line:#3a272d; --fill:#2a1a1f;
+  --n:#B83D54; --a:#C2A19A; --f:#8f8582; --i:#d9cbc7;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1040px;margin:0 auto;padding:40px 16px 80px}
+h1{font-size:2rem;line-height:1.2;margin:0 0 6px}
+h2{font-size:1.3rem;margin:48px 0 12px;padding-bottom:6px;border-bottom:2px solid var(--accent)}
+h3{font-size:1.05rem;margin:0 0 6px}
+.sub{color:var(--muted);margin:0 0 24px}
+.lead{background:var(--surface);border-left:4px solid var(--accent);padding:16px 20px;border-radius:6px}
+.lead ol{margin:0;padding-left:20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:16px}
+.card p{margin:6px 0;font-size:.94rem}
+.card .q{font-style:italic}
+.badge{display:inline-block;font-size:.72rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+  padding:2px 8px;border-radius:999px;color:var(--bg);margin-right:6px}
+.b-n{background:var(--n)} .b-a{background:var(--a)} .b-f{background:var(--f)} .b-i{background:var(--i)}
+.where{color:var(--muted);font-size:.84rem}
+.key{font-weight:600;color:var(--accent)}
+table{width:100%;border-collapse:collapse;background:var(--surface);font-size:.92rem}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:var(--fill)}
+td.c{text-align:center;font-weight:700;white-space:nowrap}
+.scroll{overflow-x:auto}
+.rec{background:var(--fill);border:2px solid var(--accent);border-radius:8px;padding:16px 20px;margin-top:16px}
+.tension{background:var(--surface);border:2px dashed var(--accent);border-radius:8px;padding:16px 20px}
+.legend span{margin-right:14px;font-size:.88rem}
+.proj{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.proj div{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font-size:.92rem}
+.proj b{display:block;color:var(--accent);margin-bottom:4px}
+footer{margin-top:48px;color:var(--muted);font-size:.85rem}
+</style>
+</head>
+<body>
+<main>
+<h1>Recorte da pesquisa de mestrado</h1>
+<p class="sub">FedCHAMP × o que o repositório construiu · registro de 26/10/2026 · fontes: pré-projeto PPGEC/UPE, <code>plano.md</code>, <code>docs/</code></p>
+
+<div class="lead">
+<ol>
+<li>O projeto aprovado é o <b>FedCHAMP</b>: FL multi-domínio e multi-tarefa que mitiga a transferência negativa com <b>corpo-cabeça + agrupamento de clientes por protótipos</b>.</li>
+<li>A Etapa 1 (corpo-cabeça) está pronta. A <b>Etapa 2 (protótipos e clusterização) não existe</b>; o "cluster" atual é o rótulo do dataset.</li>
+<li>Cresceram frentes fora do projeto: topologia HC-FMTL, ablações de loss, resolução, decoder federado, transfer learning, monitor, paper só de BUSI.</li>
+<li>A frente mais forte (E0) <b>contradiz a premissa</b>: entre datasets não há cancelamento relevante na escala da agregação; o custo dominante é a <b>diluição do passo (~10×)</b>.</li>
+<li>Decidido: <b>transferência negativa ampliada</b> (cancelamento <i>ou</i> diluição); saem só PANDA + detecção e a varredura de backbones; nada implementado é descartado. Direção: <b>FedCHAMP enxuto</b> em 4–6 meses.</li>
+</ol>
+</div>
+
+<h2>O pré-projeto em uma tela</h2>
+<div class="proj">
+  <div><b>Problema</b>Na agregação ingênua com vários domínios e tarefas, os conhecimentos se cancelam → transferência negativa.</div>
+  <div><b>Pergunta</b>Corpo-cabeça + agrupamento por protótipos garante que os conhecimentos não se cancelem?</div>
+  <div><b>Hipóteses</b>H1 sem cancelamento · H2 convergência mais rápida · H3 supera standalone com poucos dados.</div>
+  <div><b>Baselines</b>Standalone · FedAvg · MAS · FedMTL.</div>
+  <div><b>Dados</b>ISIC 2018 · TCGA-LGG · PANDA · SIIM-ACR; Dirichlet; clientes few-shot.</div>
+  <div><b>Prazo</b>Cronograma de 12 meses; restam <b>4–6 meses</b> para a dissertação escrita.</div>
+</div>
+
+<h2>Projeto × repositório</h2>
+<p class="legend">✅ feito · 🟡 parcial ou diferente · ❌ não existe · ➕ existe, mas não estava no projeto</p>
+<div class="scroll">
+<table>
+<tr><th>Item do pré-projeto</th><th>Estado</th><th>Observação</th></tr>
+<tr><td>Desacoplamento corpo-cabeça</td><td class="c">✅</td><td>FedPer: trunk <code>encoder2..5</code>+bottleneck federado; stem, decoder e cabeças locais</td></tr>
+<tr><td>Escolha de backbone (CNN × ViT)</td><td class="c">🟡</td><td>MTnnUNet fixo; ResNet-34 (E7) implementado sem resultado; nenhum ViT/YOLO</td></tr>
+<tr><td>Protótipos locais</td><td class="c">❌</td><td>—</td></tr>
+<tr><td>Clusterização de clientes no servidor</td><td class="c">❌</td><td>—</td></tr>
+<tr><td>Agregação hierárquica em 2 fases</td><td class="c">🟡</td><td>Existe, com o <b>dataset como cluster oráculo</b></td></tr>
+<tr><td>Resolução de conflito na fase global</td><td class="c">❌</td><td>Só medição, não correção</td></tr>
+<tr><td>Medir cancelamento (H1)</td><td class="c">✅ ➕</td><td>Muito além do proposto: cosseno, razão de cancelamento, M1, M2 com controle nulo</td></tr>
+<tr><td>Convergência (H2)</td><td class="c">🟡</td><td>Curvas existem; comparação não feita; braços sub-treinados (D15)</td></tr>
+<tr><td>Poucos dados vs standalone (H3)</td><td class="c">🟡</td><td>Feito; <b>desfavorável</b> exceto no BUSI</td></tr>
+<tr><td>ISIC · TCGA · SIIM</td><td class="c">✅</td><td>Pré-processados, no master</td></tr>
+<tr><td>PANDA · detecção · few-shot</td><td class="c">❌</td><td>—</td></tr>
+<tr><td>Curated BUSI</td><td class="c">➕</td><td>Origem do repo ("ultrassom" está nos domínios do projeto)</td></tr>
+<tr><td>Baselines Standalone · FedAvg</td><td class="c">✅</td><td><code>standalone: True</code> · modo <code>flat</code></td></tr>
+<tr><td>Baselines MAS · FedMTL</td><td class="c">❌</td><td>Artigos em <code>referencies/</code></td></tr>
+<tr><td>HC-FMTL, E3, E4, E6, E7, monitor, E5, CIARP</td><td class="c">➕</td><td>Fora do projeto</td></tr>
+</table>
+</div>
+
+<h2>A tensão central</h2>
+<div class="tension">
+<p>O projeto supõe que <b>o problema é cancelamento</b>. A E0 mediu isso no cenário do projeto:</p>
+<ul>
+<li>cosseno entre deltas de datasets diferentes ≈ 0; cancelamento ≈ referência ortogonal (updates <b>ortogonais, não opostos</b>);</li>
+<li>interferência por curvatura com o update inteiro, mas <b>desprezível na escala real da agregação</b>;</li>
+<li><span class="key">o custo dominante é a diluição do passo próprio (~10×)</span>.</li>
+</ul>
+<p>Um mecanismo que só evita somar clientes incompatíveis ataca uma causa que ainda não apareceu. Isso não invalida a pesquisa: a pergunta é sim/não e a evidência é uma resposta. Mas decide como H1 entra na dissertação. <span class="where">Ressalva: E0 tem uma seed, um holdout e só o estado final.</span></p>
+</div>
+
+<h2>Frentes desenvolvidas no repositório</h2>
+<p class="legend"><span><span class="badge b-n">N</span>núcleo</span><span><span class="badge b-a">A</span>apoio</span><span><span class="badge b-f">F</span>futuro</span><span><span class="badge b-i">I</span>infraestrutura</span></p>
+<div class="grid">
+  <div class="card"><h3><span class="badge b-a">A</span>F1 · FedPer em mama (BUSI)</h3>
+    <p>Federado &gt; local-only em cls (exploratório); seg neutra; centralizado é teto.</p>
+    <p class="where">→ resultado preliminar que valida a Etapa 1 · CIARP</p></div>
+  <div class="card"><h3><span class="badge b-n">N</span>F2 · Multi-domínio (4 datasets)</h3>
+    <p>Stem por modalidade, agregação hierárquica, supervisão parcial. Federado abaixo do baseline em ISIC e SIIM.</p>
+    <p class="where">→ cenário experimental do FedCHAMP</p></div>
+  <div class="card"><h3><span class="badge b-i">I</span>F3 · Topologia HC-FMTL</h3>
+    <p>Cliente com várias tarefas sobre as mesmas imagens, sem duplicar silos.</p>
+    <p class="where">→ decisão de configuração justificada</p></div>
+  <div class="card"><h3><span class="badge b-n">N</span>F4 · Conflito e transferência negativa</h3>
+    <p>Cosseno, cancelamento, M1, M2. <span class="key">Diluição ~10× &gt; conflito.</span></p>
+    <p class="where">→ instrumento de avaliação de H1 + resultado</p></div>
+  <div class="card"><h3><span class="badge b-a">A</span>F5 · Loss e orçamento (E3)</h3>
+    <p>Batch Dice, CE balanced_fold, λ 4:1, seed por dataset. Tudo sub-treinado (D15).</p>
+    <p class="where">→ configuração fixada + tabela de ablação</p></div>
+  <div class="card"><h3><span class="badge b-f">F</span>F6 · E4 · E6 · E7</h3>
+    <p>Resolução, decoder federado, ResNet-34. Implementados, sem resultado.</p>
+    <p class="where">→ trabalhos futuros (E7 pode ser o único teste de backbone)</p></div>
+  <div class="card"><h3><span class="badge b-i">I</span>F7 · Rigor e ferramentas</h3>
+    <p>B0, E1, E2 monitor, E5 fontes, partição congelada, estatística exploratória.</p>
+    <p class="where">→ protocolo e apêndice</p></div>
+</div>
+
+<h2>Recortes possíveis</h2>
+<div class="scroll">
+<table>
+<tr><th></th><th>1 · FedCHAMP enxuto</th><th>2 · Pivotar para "não é cancelamento"</th><th>3 · Pré-projeto inteiro</th></tr>
+<tr><td><b>Faz</b></td><td>Protótipos + clusterização mínima; compara com standalone, FedAvg, cluster oráculo e FedMTL se couber</td><td>E0 + E3 com 3 seeds; sem protótipos</td><td>PANDA, detecção, backbones, MAS, FedMTL, few-shot, protótipos</td></tr>
+<tr><td><b>Corta</b></td><td>PANDA, detecção, varredura de backbones, MAS, few-shot sintético, E4, E6</td><td>Etapa 2 do projeto</td><td>Nada</td></tr>
+<tr><td><b>Pró</b></td><td>Fiel ao projeto; reaproveita quase tudo; a diluição vira resultado de H1</td><td>Menos trabalho novo; contribuição mais limpa</td><td>Cumpre tudo</td></tr>
+<tr><td><b>Contra</b></td><td>Uma peça nova em 4–6 meses; o ganho pode ser pequeno</td><td>Abandona o título; renegociar com orientadores</td><td>Inviável no prazo</td></tr>
+</table>
+</div>
+<div class="rec"><b>Recomendação: Opção 1.</b> Pergunta prática: <i>o agrupamento por protótipos recupera o cluster oráculo, e algum dos dois reduz o cancelamento ou supera o FedAvg e o standalone?</i> Critério para qualquer experimento novo: <i>ele testa H1, H2 ou H3 com o FedCHAMP ou um baseline da tabela?</i> Se não, vai para trabalhos futuros.</div>
+
+<h2>Sessão grill-me</h2>
+<div class="scroll">
+<table>
+<tr><th>#</th><th>Pergunta</th><th>Recomendação / resposta</th></tr>
+<tr><td>Q1</td><td>O que diz o projeto aprovado?</td><td>✅ Pré-projeto FedCHAMP; a direção segue sendo mitigar a transferência negativa</td></tr>
+<tr><td>Q2</td><td>Prazo?</td><td>✅ 4–6 meses</td></tr>
+<tr><td>Q3</td><td>Resultado negativo é aceitável?</td><td>Reformulada como Q8 após ler o projeto</td></tr>
+<tr><td>Q8</td><td>Como posicionar H1 diante da E0?</td><td>✅ <b>Ampliar o conceito</b>: transferência negativa = federado abaixo do standalone, por cancelamento <i>ou</i> diluição</td></tr>
+<tr><td>Q9</td><td>Implementar protótipos + clusterização?</td><td>✅ Não agora: esta fase só organiza; Etapa 2 segue como ramo aberto</td></tr>
+<tr><td>Q11</td><td>O que sai do escopo?</td><td>✅ PANDA + detecção e varredura de backbones. Nada implementado é descartado (E4, E6, E7 ficam)</td></tr>
+<tr><td>Q12/13</td><td>Orientadores cientes? Qualificação?</td><td>✅ Sabem; qualificação feita</td></tr>
+<tr><td>Q10</td><td>Quais baselines da literatura?</td><td>Aberto · FedMTL primeiro; MAS não cortado</td></tr>
+<tr><td>Q14</td><td>Que mecanismo ataca a diluição?</td><td>Aberto · peso do próprio cluster, trunk por cluster, seed por dataset</td></tr>
+<tr><td>Q15</td><td>Métrica operacional de transferência negativa?</td><td>Aberto · lacuna federado − standalone, decomposta pela E0</td></tr>
+<tr><td>Q16</td><td>Papel de E4/E6/E7?</td><td>Aberto · hipóteses de mitigação, não frentes independentes</td></tr>
+<tr><td>Q17</td><td>Cluster oráculo basta ou protótipos são obrigatórios?</td><td>Aberto · levar aos orientadores</td></tr>
+</table>
+</div>
+<div class="rec"><b>Decidido em 26/10:</b> conceito de transferência negativa ampliado; cortes só em PANDA + detecção e varredura de backbones; nada já implementado é descartado; nenhuma implementação nesta fase. Os ramos estão na <a href="arvore_de_decisoes.html">árvore de decisões interativa</a>.</div>
+
+<footer>research_decisions/ · 00_projeto_vs_repositorio.md · 01_frentes_de_pesquisa.md · 02_opcoes_de_recorte.md · 03_perguntas_abertas.md</footer>
+</main>
+</body>
+</html>
