@@ -1,4 +1,4 @@
-# MAS e FedMTL: o que os artigos dizem sobre transferência negativa e conflito
+# MAS, FedMTL e FMTL-Bench: o que os artigos dizem sobre transferência negativa e conflito
 
 > Leitura feita em 2026-10-27 **diretamente dos PDFs**, sem usar o que o repositório ou o
 > pré-projeto dizem sobre eles. As páginas são as do PDF.
@@ -105,7 +105,63 @@ treino local isolado.
 | MAS mede "conflito de gradientes" | Mede **afinidade de loss** (lookahead TAG), entre tarefas dentro do cliente; não fala em conflito de gradientes. |
 | MAS: clientes com tarefas diferentes | **Todos os clientes têm todas as tarefas**; a motivação principal é custo de treino. |
 
+## FMTL-Bench (Yang et al., 2024)
+
+> Yang, Lu, Huang, Sirejiding, Lu, Ding. *Federated Multi-Task Learning on Non-IID Data Silos: An
+> Experimental Study.* arXiv:2402.12876v2 (16 abr. 2024). Lido do PDF em 2026-10-27.
+
+**O que é.** Um **benchmark**, não um método. São NYUD-v2 e PASCAL-Context, com 4 a 8 clientes,
+tarefas densas (profundidade, bordas, normais, segmentação semântica, partes humanas), até 100
+rodadas, ResNet-18 ou Swin-T pré-treinados (p. 2–4). São 7 cenários (Fig. 2, p. 3), entre eles:
+- **NIID-2 SDST**: cada cliente com uma tarefa diferente (equivale à topologia `single_task`);
+- **NIID-6/7 UBCDMT/UBCDST**: domínios diferentes e volumes desbalanceados (o mais próximo do
+  cenário multi-dataset deste projeto).
+
+**Baselines** (p. 4, §3.2.3): Local, FedAvg, FedProx, FedAMP, FedRep, PCGrad, CAGrad, MaT-FL e
+"FedMTL". **Atenção:** o "FedMTL" deles é a ref. [52], **Smith et al., NeurIPS 2017** (MOCHA),
+e **não** o FedMTL de Sen & Borcea. O MAS não é avaliado. FedRep e MaT-FL usam desacoplamento de
+parâmetros (só o encoder é transmitido), como o FedPer deste projeto.
+
+**O que diz sobre transferência negativa e conflito.**
+- O termo "negative transfer" **não aparece**.
+- p. 7–8, §3.4.1: "the PCGrad algorithm, designed to resolve gradient conflict issues, generally
+  underperforms". Na tabela do IID-1 (p. 5), o PCGrad fica em −6.6 % (MD) e −23.8 % (TC) contra o
+  Local, com ResNet.
+- p. 9, §3.4.4: o desacoplamento de parâmetros "can resist optimization direction conflicts from
+  the MTL process and reduce model performance losses", além de reduzir a comunicação.
+- **Nenhuma medida de conflito** é feita; o benchmark mede só desempenho final, curvas por rodada
+  e custo.
+
+**Resultados relevantes** (Δ% contra o Local; G-FL = teste global, P-FL = teste local).
+- **Uma tarefa por cliente** (NIID-2, -5, -7): FedAvg, FedProx e CAGrad com decoders por tarefa
+  "has extremely poor performance"; FedAMP e FedMTL só conseguem "a slight G-FL improvement
+  compared to the Local algorithm" (p. 8). NIID-2 com ResNet: FedAvg −25.7 %.
+- **Entre domínios** (NIID-7, ResNet, G-FL, Tab. 5, p. 6): Local 0.00; FedAMP +0.09; FedMTL +0.03;
+  FedRep −2.08; MaT-FL −2.15; FedAvg −27.2 %. Conclusão deles (p. 8): "all baselines perform
+  significantly worse in most tasks [...] cross-domain tasks pose a challenge for FMTL, thereby
+  necessitating design of additional optimization strategies".
+- **No IID** (IID-1), FedAvg e FedProx são os melhores (+13.5 %); com mais clientes e menos dados
+  por cliente, todos menos FedAvg e FedProx caem (p. 9).
+- **Pré-treino** e **backbone maior** melhoram tudo (p. 9).
+- Com rótulos balanceados, vários modelos de tarefa única superam um modelo multitarefa local
+  (p. 8).
+- **Estatística:** usam Wilcoxon com Bonferroni e diagrama de diferença crítica (Nemenyi) e falam
+  em "statistically significant" (Fig. 4, p. 7). Isso não vale para este projeto, que proíbe a
+  expressão.
+
 ## Relação com este projeto (interpretação, não está nos artigos)
+
+- **O FMTL-Bench é a evidência externa mais próxima dos resultados da E3.** No cenário entre
+  domínios, nenhum método federado supera o Local de forma relevante, e o próprio artigo pede
+  estratégias novas. Isso sustenta que "federado < local-only" é o comportamento esperado da
+  literatura, e não um defeito da implementação, e dá um bom ponto de partida para a Etapa 2.
+- O FMTL-Bench também mostra o **PCGrad**, um método feito para conflito de gradientes, **piorando**
+  o desempenho. Isso é coerente com a E0: se o conflito não é o mecanismo dominante, resolver
+  conflito não ajuda. Ainda assim, o artigo **não mede** conflito, então essa ligação é uma
+  interpretação.
+- O desacoplamento corpo-cabeça (FedRep, MaT-FL) é o que o artigo recomenda contra conflitos. É a
+  Etapa 1, que já está feita.
+- Nenhum dos três artigos considera a **diluição do passo**.
 
 - O **M2 da E0** usa a mesma família de medida do MAS (lookahead do TAG), mas **entre clientes e
   datasets** e com **controle nulo** e **escala aplicada Δ×wᵢ**. Nenhum dos dois artigos faz isso.
