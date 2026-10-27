@@ -163,9 +163,9 @@ Models live under `src/models/` in three sub-packages:
 |---|---|
 | `segmentation/` | BTSUNet, nnUNet, ResidualUNet (custom); UNet, AttentionUNet, UnetPlusPlus, SwinUNETR, SegResNet (MONAI) |
 | `classification/` | BTSUNetClassifier, UNetPlusPlusClassifier, nnUNetClassifier |
-| `multitask/` | **MTnnUNet** (default), MTUNetPlusPlus, Multi_BTSUNet, Multi_FSB_BTS_UNet, AdityanNetwork |
+| `multitask/` | **MTnnUNet** (default), MTResNet34UNet (ImageNet encoder, E7), MTUNetPlusPlus, Multi_BTSUNet, Multi_FSB_BTS_UNet, AdityanNetwork |
 
-`experiment_init.py` dispatches architecture names to constructors and wires up the optimizer, loss criteria, and LR scheduler from config values.
+`experiment_init.py` dispatches architecture names to constructors and wires up the optimizer, loss criteria, and LR scheduler from config values. An unknown multi-task name raises (it used to return an empty module).
 
 ### MTnnUNet (default multi-task model)
 
@@ -173,6 +173,32 @@ Models live under `src/models/` in three sub-packages:
 - **Deep supervision**: 4 segmentation outputs at different scales; losses are inversely weighted (`1/(n+1)`) if `loss.inversely_weighted=True`.
 - **Classification head**: fuses `encoder5`, `upsample(bottleneck)`, and `process_decoder5` features via concatenation → `ConvInNormLeReLU` → `AdaptiveAvgPool2d` → two FC layers.
 - `forward()` returns `([cls_logits], [seg4, seg3, seg2, seg1])`.
+
+### MTResNet34UNet (ImageNet transfer, E7)
+
+`src/models/multitask/MTResNet34UNet.py`, run by `studies/e7_transfer/resnet34_imagenet.yaml`.
+- **Same module names and geometry as MTnnUNet**, so `model_split` and the server work unchanged:
+  `encoder2` = ResNet-34 `conv1+bn1+relu` (H/2), `encoder3` = `maxpool+layer1` (H/4), `encoder4..5`
+  = `layer2..3`, `bottleneck` = `layer4` (H/32), all with ImageNet weights. `encoder1` is a
+  personalized `LevelBlock(C, 32, 32)` on the raw input that now feeds only `decoder1`'s skip.
+  Decoders, upsamples and `process_*` use ResNet widths and train from scratch; outputs and
+  classifier are MTnnUNet's. 1 or 3 input channels; H and W must be multiples of 32.
+- **BatchNorm is `FrozenBatchNorm2d`**: statistics, scale and shift are float32 buffers, never
+  trained (`docs/DECISION_SOURCES.md`, D27). They travel in the shared state, and FedAvg of
+  identical arrays returns them unchanged.
+- **The input contract lives in the model**: `x/255`, grayscale repeated to 3 channels, ImageNet
+  mean/std. The loader already delivers RGB (`BUSI_dataset.py` converts OpenCV's BGR) — do not swap
+  channels again.
+- **Every pretrained module must be shared.** Only the reference model of
+  `_initial_shared_parameters` loads the checkpoint; clients (both arms), candidates and final
+  evaluation build random weights and receive the encoder as the initial global parameters.
+  `model_split.assert_pretrained_shared` refuses a `federated.shared_modules` that leaves one
+  personalized.
+- **Weights are never downloaded during training.** Cache them once (torchvision verifies the hash;
+  the loader re-checks the `b627a593` sha256 prefix):
+  `python -c "from torchvision.models import resnet34, ResNet34_Weights; resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)"`
+- `init_multitask_model` requires an explicit `pretrained=` for it, which keeps the baseline and
+  centralized paths (guarded, not ported) from training it from scratch by accident.
 
 ### Loss and training loop
 

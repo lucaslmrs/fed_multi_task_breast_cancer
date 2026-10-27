@@ -32,9 +32,9 @@ Criado em 2026-10-04.
 | E2 | App local de monitoramento e comparação | ✅ | `feat/monitor-app` | 2026-10-16 |
 | E5 | Validação das fontes (consolidação) | ✅ | `docs/sources` | 2026-10-16 |
 | E3 | Ablação: loss fed multitask multi-dataset | ✅ | `exp/loss-ablation` | 2026-10-18 |
-| E4 | Ablação: pré-processamento de imagens | ⬜ | `exp/preprocessing-ablation` | — |
+| E4 | Ablação: pré-processamento de imagens | ⏳ | `exp/preprocessing-ablation` | 2026-10-18 |
 | E6 | Compartilhamento ampliado (decoder federado) | ⏳ | `exp/wider-sharing` | 2026-10-18 |
-| E7 | Transfer learning (ResNet-34 ImageNet) | ⬜ | `exp/transfer-learning` | — |
+| E7 | Transfer learning (ResNet-34 ImageNet) | ⏳ | `exp/transfer-learning` | 2026-10-18 |
 
 Ordem de execução: **E0 → E1 → E2 → E5 → E3 → (E4 ∥ E6) → E7**.
 - E0 foi incluída em 2026-10-08 a pedido do usuário. A métrica atual de conflito dá ≈ 0 para todos
@@ -2320,7 +2320,224 @@ pré-treinado registrada.
 
 **Riscos/dependências.** Depende do mecanismo `shared_modules` da E6.
 
-**Detalhamento.** _(a preencher)_
+**Detalhamento.**
+
+#### E7.0 — Fatos (levantados em 2026-10-18)
+
+- **Modelo.** O `MTResNet34UNet` tem 27.927.639 valores de estado (1 canal, 3 classes), contra
+  15.819.799 do MTnnUNet. No compartilhamento amplo da E6 viajam 202 tensores e 23.914.976 valores:
+  **85,6%** do modelo, contra 64,1% no MTnnUNet. Ficam pessoais `encoder1`, `output1–4` e
+  `classifier`, e as formas compartilhadas são iguais com 1 e 3 canais.
+- **Parte pré-treinada.** 180 tensores e 21.301.696 valores: 36 convoluções e os 144 buffers das 36
+  camadas `FrozenBatchNorm2d`. Os buffers estão no `state_dict`, mas não em `parameters()`.
+- **Loader.** As imagens chegam em float 0–255, sem normalização. As de 3 canais já vêm em RGB
+  (`BUSI_dataset.py` converte o BGR do OpenCV). O TCGA entra com os 3 canais de RM
+  (pré-contraste, FLAIR, pós-contraste) tratados como RGB.
+- **Pesos.** `~/.cache/torch/hub/checkpoints/resnet34-b627a593.pth` (87.319.819 bytes; sha256
+  `b627a593…0590f`), o `ResNet34_Weights.IMAGENET1K_V1` do torchvision 0.22. Esse checkpoint não
+  traz `num_batches_tracked`.
+- **Base.** O E6-C2 (`7e46ba8`) trouxe `federated.shared_modules` e o M1 só sobre parâmetros, pulando
+  `grad is None`. Sem ele, os buffers FrozenBN dariam KeyError no M1, e o `observational()` engoliria
+  o erro.
+- **Master.** `data/federated_studies/e3_loss_ablation/seed_1993/federated_mapping.csv`, sha256
+  `389116b5…bd3b` (conferido em 2026-10-18).
+
+#### E7.1 — Decisões (grill de 2026-10-18)
+
+1. Um run federado solto: seed 1993, 400 rodadas, `steps` 10, sem `study_runner`, sem gêmeo
+   local-only e sem controle. A comparação com a E6 fica com o usuário.
+2. Config base: a do vencedor da E3 (`init_seed_dataset`, seed 1993). Mudam só a arquitetura,
+   `shared_modules`, `rounds` e o bloco `experiment`. O master é o mesmo da E3.
+3. BN **totalmente congelada** (estatísticas, γ e β). As alternativas viram próximos passos (E7.9).
+4. Compartilhamento amplo da E6 (17 módulos), com o stem `encoder1` pessoal. A agregação
+   hierárquica não muda.
+
+#### E7.2 — Arquitetura (`src/models/multitask/MTResNet34UNet.py`)
+
+Os nomes de módulo e a geometria são os do MTnnUNet, então split, `validate_sharing` e servidor
+funcionam sem mudança.
+
+| Módulo | Conteúdo | Canais | px @128 | Compartilhado | Pré-treinado |
+|---|---|---|---|---|---|
+| `encoder1` | `LevelBlock(C,32,32)` sobre x cru (0–255) | C→32 | 128 | não | não |
+| `encoder2` | `conv1`, `bn1`, `relu` sobre a entrada normalizada | 3→64 | 64 | sim | sim |
+| `encoder3` | `maxpool`, `layer1` | 64→64 | 32 | sim | sim |
+| `encoder4` / `encoder5` / `bottleneck` | `layer2` / `layer3` / `layer4` | →128 / →256 / →512 | 16 / 8 / 4 | sim | sim |
+| `upsample5–1`, `decoder5–1` | ConvT + `LevelBlock`, larguras 512→256→128→64→32→16 | | 8→128 | sim | não |
+| `process_encoder_5` / `process_decoder_5` | `ConvInNormLeReLU` 256→256 / 128→256 | | 8 | sim | não |
+| `output1–4` | supervisão profunda em resolução cheia, como no MTnnUNet | →1 | 128 | não | não |
+| `classifier` | `ConvInNormLeReLU` 768→512, GAP, FC 512→256→n′ (n′ = 1 no binário) | | | não | não |
+
+- O backbone é uma variável local (`resnet34(weights=None, norm_layer=FrozenBatchNorm2d)`), nunca
+  atribuída a `self`. Assim, `fc` e `avgpool` não entram no `state_dict` e nenhuma chave se repete.
+- A entrada do caminho pré-treinado é calculada no modelo: `x/255`, repetição de 1 para 3 canais e
+  normalização pela média e desvio do ImageNet, guardados em buffers `persistent=False` (fora do
+  estado).
+- `ValueError` se `sequences ∉ {1,3}`, se os canais da entrada não batem ou se H/W não são múltiplos
+  de 32.
+- O `forward` devolve `([cls], [out4, out3, out2, out1])` em logits crus, sem sigmoid. `width` e
+  `deep_supervision` são ignorados.
+- Init Kaiming (leaky ReLU, bias zero) nas `Conv2d` de `encoder1`, `decoder1–5` e `output1–4`; o resto
+  do que não é pré-treinado fica com a init padrão do PyTorch.
+
+#### E7.3 — Pesos e BN
+
+- `imagenet_checkpoint_path()` = `torch.hub.get_dir()/checkpoints/resnet34-b627a593.pth` (respeita
+  `TORCH_HOME`).
+- `map_imagenet_state()`: `conv1.`→`encoder2.conv1.`, `bn1.`→`encoder2.bn1.`,
+  `layer1.`→`encoder3.layer1.`, `layer2.`→`encoder4.`, `layer3.`→`encoder5.`,
+  `layer4.`→`bottleneck.`. Descarta `fc.*` e `num_batches_tracked` e levanta erro em qualquer outra
+  chave.
+- `load_imagenet_encoder()`:
+  - guarda offline: `FileNotFoundError` com o caminho e o comando de download, sem nunca chamar
+    `load_state_dict_from_url`;
+  - prefixo do sha256 `b627a593` e `torch.load(weights_only=True, map_location="cpu")`;
+  - o conjunto de chaves mapeadas é exatamente o dos `pretrained_modules`, e `missing`/`unexpected`
+    são conferidos;
+  - uma linha `[pretrained] … loaded` no `execution.log`.
+- **FrozenBN.** Os buffers float32 viajam no estado compartilhado. Todo cliente devolve os mesmos
+  valores, e a média ponderada de arrays idênticos é a identidade bit a bit (`_weighted_arrays`,
+  testado). O servidor não muda. Fonte e alternativas no D27 de `docs/DECISION_SOURCES.md`.
+
+#### E7.4 — Integração
+
+- **`init_multitask_model(..., pretrained=None)`**, com import preguiçoso:
+  - `MTResNet34UNet` exige `pretrained` explícito. Isso protege baseline, centralized e
+    `load_multitask_experiment_artefacts`, que não foram portados.
+  - `pretrained=True` em outra arquitetura levanta erro.
+  - Nome desconhecido levanta `ValueError`; antes devolvia um `nn.Module()` vazio em silêncio.
+- **`training_federated.py`:** `_build_model(..., pretrained=False)`. Só o modelo de referência de
+  `_initial_shared_parameters` é construído com `pretrained=True`, e só para arquiteturas em
+  `PRETRAINED_ARCHITECTURES`; em seguida vêm `assert_pretrained_shared` e `validate_sharing`.
+  Candidatos, `_test_client` e a sonda do log `[sharing]` usam `pretrained=False`.
+- **`client.py`** constrói com `pretrained=False`. Os pesos chegam aos clientes só pelos parâmetros
+  iniciais globais, nos dois braços: o local-only também os recebe na rodada 1.
+- **`model_split.assert_pretrained_shared(model, sharing)`** levanta erro se algum módulo de
+  `pretrained_modules` ficar pessoal, porque ele começaria aleatório em todo cliente.
+- **M1** usa só parâmetros (E6-C2), então os buffers ficam fora das sondas. No **M2**, os deltas dos
+  buffers são zeros.
+- **Smoke:** `_verify_frozen_pretrained(run_path, max_conv1_drift=0.05)` roda para arquiteturas
+  pré-treinadas.
+  - Exige os buffers FrozenBN de `global_shared.pt` (no local-only, os do `state.pt` de cada cliente)
+    **iguais** aos do ImageNet.
+  - Exige distância L2 relativa de `encoder2.conv1.weight` ao ImageNet < 0,05; uma init aleatória
+    fica perto de 1,4.
+  - Com `max_conv1_drift=None`, confere só os buffers e imprime a distância: é a checagem pós-treino.
+
+#### E7.5 — Testes (`tests/test_e7_resnet34.py`: 35 testes, 1 pulado sem CUDA)
+
+- **Forward:** C=1 e 3, n=2 e 7, a 128 e a 256. As saídas de seg ficam em resolução cheia, e os
+  tensores devolvidos são exatamente as saídas das cabeças (logits crus). Contrato de entrada.
+- **`state_dict`:** módulos de topo exatos (sem `backbone`/`fc`), sem `num_batches_tracked`, tudo em
+  ponto flutuante, sem mean/std; 144 buffers FrozenBN fora de `parameters()`.
+- **Split amplo:** 202 tensores e 23.914.976 valores; formas iguais entre gray e rgb; o pessoal é
+  exatamente `{encoder1, output1–4, classifier}`. Compartilhado + pessoal reproduzem o forward bit a
+  bit.
+- **Carregamento**, com um checkpoint falso numa pasta temporária e o prefixo do sha trocado: mapa
+  exato, chave não mapeada recusada, `pretrained=True` carrega só o encoder, sha divergente recusado e
+  guarda offline com as funções de download trocadas por falhas (nunca chamadas). O checkpoint real
+  é conferido quando está no cache.
+- **Demais:** dispatch; freeze (um passo do Adam não muda buffer algum); `assert_pretrained_shared`;
+  `_weighted_arrays` como identidade bit a bit; M1 sem KeyError, com os blocos não alcançados zerados
+  como na E6; `_initial_shared_parameters` devolvendo os valores do ImageNet;
+  `_verify_frozen_pretrained` (passa; falha com um buffer movido; falha só no drift com `conv1`
+  aleatória); config do run.
+- **BF16 CUDA** (`skipUnless`): forward/backward sob `PrecisionPolicy("bf16","cuda")`, loss e
+  gradientes finitos, buffers intactos. Roda uma vez pelo orquestrador, com a GPU livre; os agentes
+  rodam tudo com `CUDA_VISIBLE_DEVICES=`.
+
+#### E7.6 — Config (`studies/e7_transfer/resnet34_imagenet.yaml`)
+
+Gerado com `yaml.safe_load` do config base, as mudanças e `safe_dump(sort_keys=False)`, mais o
+cabeçalho. O flatten-and-diff contra a base (também coberto por teste) dá só:
+- `model.architecture`: `MTnnUNet` → `MTResNet34UNet`;
+- `federated.shared_modules`: ausente → os 17 módulos da E6;
+- `federated.rounds`: 200 → 400;
+- `experiment`: `{study_id: e7_transfer_learning, arm_id: resnet34_imagenet, method_id:
+  resnet34_imagenet, seed: 1993, setup: federated}`.
+
+O resto fica igual: Adam 1e-4, batch 32, BF16, M1+M2 a cada 10 rodadas, `num_gpus` 0,5 e o master da
+E3 seed 1993.
+
+#### E7.7 — Validação (2026-10-18, CPU, `CUDA_VISIBLE_DEVICES=`)
+
+- Suíte completa: `Ran 304 tests … OK (skipped=4)`. `scripts.sync_agent_assets --check`: OK.
+- Smoke `scripts.smoke_federated --config studies/e7_transfer/resnet34_imagenet.yaml
+  --conflict-diagnostics` (161 s):
+  - `SMOKE_OK`;
+  - `M1_COVERAGE_OK rounds=[1, 2] clients=5 blocks=17`, incluindo `ISIC_2018_seg_0` e
+    `ISIC_2018_cls_0`;
+  - `FROZEN_PRETRAINED_OK fold_0 round 2 buffers=144 conv1_rel_l2=0.000848`;
+  - `global_shared.pt` com 202 chaves; no log, `[sharing] … tensors=202 params=23914976 (85.63% of
+    27927639)` e `[pretrained] … 180 tensors, 21301696 values`.
+  - Movido para `runs/validation/e7_smoke/`, com a saída em `smoke_stdout.log`.
+- Pendente: o teste BF16 CUDA, rodado uma vez pelo orquestrador.
+
+#### E7.8 — Handoff de treino
+
+1. *O que alterar:* nada no `src/config.yaml`. O config `studies/e7_transfer/resnet34_imagenet.yaml`
+   está versionado.
+2. *Pré-voo:*
+   - checkpoint presente: `sha256sum ~/.cache/torch/hub/checkpoints/resnet34-b627a593.pth` começa com
+     `b627a593`. Se faltar, baixar uma vez (~83 MB; o treino nunca baixa):
+     `.venv/bin/python -c "from torchvision.models import resnet34, ResNet34_Weights; resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)"`;
+   - `sha256sum /home/lucas/fed_multi_task_breast_cancer/data/federated_studies/e3_loss_ablation/seed_1993/federated_mapping.csv`
+     = `389116b5…bd3b`;
+   - `nvidia-smi --query-compute-apps=pid --format=csv,noheader` vazio; um run por vez na GPU.
+3. *Comando:*
+
+   ```bash
+   cd /home/lucas/fed_e7_transfer && .venv/bin/python -m src.training_federated --config studies/e7_transfer/resnet34_imagenet.yaml
+   ```
+
+4. *Retomada:* como na E6. `run(cfg, run_path=…, resume=True)` só reaproveita folds completos; com
+   CV=1, uma interrupção recomeça da rodada 1.
+5. *Tempo e recursos:*
+   - ~3h30–4h30 (~0,9–1,1× o custo por rodada da E3, com o modelo reconstruído a cada rodada);
+   - disco: ~5 GB, mais ~1,6 GB transitórios (`deltas.npz`) por rodada amostrada pelo M2, apagados no
+     fim da rodada;
+   - RAM de pico: ~3,5 GB por cliente mais ~3 GB no driver; `num_gpus` 0,5.
+6. *Artefatos:* `runs/<ts>_FEDERATED_MTResNet34UNet_Curated_BUSI-ISIC_2018-SIIM_ACR-TCGA_LGG/`.
+7. *Sucesso:*
+   - os critérios da E6: 24 linhas de teste; 41 diretórios `fold_0/conflict/round_*`, cada um com 16
+     `*_m1.npz` e 16 `*_m2.csv`; nenhum D1;
+   - `global_shared.pt` da rodada 400 com **202** chaves (o MTnnUNet amplo tem 32);
+   - a linha `[pretrained] ImageNet ResNet-34 loaded … 180 tensors` no `execution.log`;
+   - buffers FrozenBN da rodada 400 iguais aos do ImageNet:
+     `.venv/bin/python -c "from scripts.smoke_federated import _verify_frozen_pretrained as v; v('runs/<run>', max_conv1_drift=None)"`
+     imprime `FROZEN_PRETRAINED_OK fold_0 round 400 buffers=144 …` (o `conv1_rel_l2` é só
+     informativo).
+
+#### E7.9 — Pendências (próximos passos)
+
+- **(a)** Estatísticas congeladas com γ/β treináveis e compartilhados.
+- **(b)** FedBN (`li2021fedbn`): BN pessoal por cliente.
+- LR discriminativo: hoje o encoder pré-treinado e o decoder do zero usam o mesmo Adam 1e-4.
+- Entrada de 224 px: o ImageNet foi treinado a 224; a 128, o `bottleneck` fica em 4×4.
+- Estatísticas do ImageNet aplicadas aos canais de RM do TCGA.
+- O `encoder1` agora só alimenta o skip do `decoder1` (no MTnnUNet, alimentava o encoder inteiro): o
+  stem pessoal deixa de adaptar a modalidade ao trunk.
+- Baseline e centralized ficam protegidos (`pretrained` obrigatório), mas não portados: a E7 não tem
+  referência não federada.
+- E7 contra E6 muda arquitetura **e** pré-treino ao mesmo tempo. Separar os dois exigiria um braço
+  `MTResNet34UNet` sem pré-treino.
+- Herdadas da E6: a diluição do ISIC no decoder e em `process_*`, e a falta de controle a 400
+  rodadas (orçamento confundido com intervenção).
+- Logs do Ray maiores: `init_multitask_model` registra o modelo inteiro a cada construção.
 
 **Registro.**
 - 2026-10-18 — etapa planejada (macro).
+- 2026-10-18 — **implementação concluída; aguarda o treino (⏳).** Detalhamento E7.0–E7.9 escrito a
+  partir do plano aprovado.
+  - Commits na `exp/transfer-learning`, a partir do E6-C2 (`7e46ba8`): `99e5dfc` (modelo, dispatch e
+    guarda de nome desconhecido), `ec58230` (carregamento do ImageNet, integração,
+    `assert_pretrained_shared` e checagem do smoke), `5036d32` (config do run), `64d7d52`
+    (`AGENTS.md` e D27), mais este registro. A branch vai ser rebaseada sobre a E6 final.
+  - Desvios do desenho: (1) o modelo de referência usa `pretrained=True` só para arquiteturas
+    pré-treinadas, porque no MTnnUNet `pretrained=True` levanta erro; (2) `_verify_frozen_pretrained`
+    ganhou `max_conv1_drift` (`None` confere só os buffers, para o run de 400 rodadas) e o caminho
+    local-only.
+  - Suíte, sync check e smoke OK (E7.7). O teste BF16 CUDA fica para o orquestrador.
+  - Observação: o `*.html` do `.gitignore` também ignora `src/monitor/static/index.html`. Numa
+    worktree nova, o `test_monitor` dá 404 até o arquivo ser linkado da checkout principal; foi
+    linkado aqui, sem mudar nada versionado.

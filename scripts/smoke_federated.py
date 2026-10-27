@@ -4,7 +4,8 @@ The script keeps ``src/config.yaml`` untouched. It exercises one client for ever
 dataset/task pair, both aggregation rounds, per-client persistence, and final unified evaluation
 on fold zero. Training/validation/test loaders are capped to keep the check suitable for CI or a
 developer workstation. ``--setup both`` also validates the paired local-only arm and builds the
-cross-setup analysis report.
+cross-setup analysis report. A pretrained architecture (MTResNet34UNet) is also checked for an
+ImageNet encoder whose FrozenBN buffers never moved (``_verify_frozen_pretrained``).
 """
 
 import argparse
@@ -19,6 +20,7 @@ import yaml
 from src.experiments.analyze import run as analyze_runs
 from src.dataset.federated_partition import build_multi_dataset_partition
 from src.training_federated import run
+from src.utils.experiment_init import PRETRAINED_ARCHITECTURES
 
 
 def _verify_run(run_path, setup, datasets):
@@ -192,6 +194,67 @@ def _verify_m2_coverage(round_dirs, clients):
     print(f"M2_COVERAGE_OK rounds={len(round_dirs)} clients={len(clients)}")
 
 
+def _verify_frozen_pretrained(run_path, max_conv1_drift=0.05):
+    """The ImageNet encoder reached the trunk, and its FrozenBN buffers never moved.
+
+    Reads every ``fold_*/global_shared.pt`` of a federated run (or every client's full
+    ``state.pt`` of a local-only run). Each FrozenBatchNorm2d buffer must equal the mapped ImageNet
+    tensor EXACTLY: nothing trains it and FedAvg of identical arrays is the identity. The relative
+    L2 distance of ``encoder2.conv1.weight`` from ImageNet must stay below ``max_conv1_drift``: a
+    random initialization sits near 1.4, so a smoke (2 rounds) proves the weights came from the
+    checkpoint. After a full run the drift is legitimately larger; pass ``max_conv1_drift=None`` to
+    check the buffers only and just print it.
+    """
+    import torch
+
+    from src.models.multitask.MTResNet34UNet import MTResNet34UNet, load_imagenet_state
+    from src.utils.experiment_init import PRETRAINED_ARCHITECTURES
+
+    run_path = Path(run_path)
+    config = yaml.safe_load((run_path / "config.yaml").read_text(encoding="utf-8"))
+    architecture = config["model"]["architecture"]
+    if architecture not in PRETRAINED_ARCHITECTURES:
+        raise RuntimeError(f"{run_path} trains {architecture}, which has no pretrained encoder")
+    imagenet, _, _ = load_imagenet_state()
+    parameters = dict(MTResNet34UNet(sequences=1, regions=1).named_parameters())
+    buffer_keys = [key for key in imagenet if key not in parameters]
+    conv1 = "encoder2.conv1.weight"
+
+    states = {}
+    for path in sorted(run_path.glob("fold_*/global_shared.pt")):
+        stored = torch.load(path, map_location="cpu")
+        states[f"{path.parent.name} round {stored.get('round')}"] = dict(
+            zip(stored["keys"], stored["arrays"]))
+    if not states:  # local-only: no global trunk, every client keeps its full model
+        for path in sorted(run_path.glob("fold_*/client_*/state.pt")):
+            stored = torch.load(path, map_location="cpu")
+            states[f"{path.parent.parent.name}/{path.parent.name} round {stored.get('round')}"] = (
+                stored["model"])
+    if not states:
+        raise RuntimeError(f"Frozen/pretrained check: no global_shared.pt or state.pt in {run_path}")
+
+    for label, state in states.items():
+        missing = [key for key in [*buffer_keys, conv1] if key not in state]
+        if missing:
+            raise RuntimeError(f"Frozen/pretrained check: {label} lacks {missing[:3]}")
+        moved = [key for key in buffer_keys
+                 if not torch.equal(torch.as_tensor(state[key]), imagenet[key])]
+        if moved:
+            raise RuntimeError(
+                f"Frozen/pretrained check: {label} has {len(moved)} FrozenBN buffers that differ "
+                f"from ImageNet, e.g. {moved[:3]}"
+            )
+        reference = imagenet[conv1].double()
+        drift = float((torch.as_tensor(state[conv1]).double() - reference).norm() / reference.norm())
+        if max_conv1_drift is not None and not drift < max_conv1_drift:
+            raise RuntimeError(
+                f"Frozen/pretrained check: {label} {conv1} is {drift:.4f} (relative L2) from "
+                f"ImageNet, expected < {max_conv1_drift}"
+            )
+        print(f"FROZEN_PRETRAINED_OK {label} buffers={len(buffer_keys)} "
+              f"conv1_rel_l2={drift:.6f}")
+
+
 def _verify_paired_controls(federated_path, standalone_path):
     """Check that the two smoke arms differ only by federation, not budget or RNG policy."""
     fed_config = yaml.safe_load((Path(federated_path) / "config.yaml").read_text())
@@ -317,6 +380,8 @@ def main():
                     if args.conflict_diagnostics:
                         _verify_conflict_diagnostics(run_path)
                         _verify_m1_coverage(run_path)
+                if arm_config["model"]["architecture"] in PRETRAINED_ARCHITECTURES:
+                    _verify_frozen_pretrained(run_path)
                 print(f"SMOKE_OK setup={setup} topology={args.topology} run_path={run_path}")
             finally:
                 Path(temporary.name).unlink(missing_ok=True)
