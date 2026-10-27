@@ -13,6 +13,7 @@ from flwr.common import ndarrays_to_parameters, parameters_to_ndarrays
 from flwr.server.strategy import FedAvg
 
 from src.federated import conflict_diagnostics
+from src.federated.model_split import STEM_MODULE, TRUNK_MODULES
 from src.federated.negative_transfer import cancellation_from_gram
 
 TASKS = ("seg", "cls")
@@ -60,6 +61,7 @@ class FedPerStrategy(FedAvg):
         self._sent_arrays = None
         # Raw whole-trunk Gram of the latest round, consumed by the negative-transfer telemetry.
         self._last_total_gram = None
+        self._last_trunk_gram = None
 
     def configure_fit(self, server_round, parameters, client_manager):
         # Round 1 configures from ``initial_parameters``; ``latest_parameters`` is still None then.
@@ -121,6 +123,14 @@ class FedPerStrategy(FedAvg):
                     [update["dataset"] for update in updates],
                 ).items()
             }
+            if self._last_trunk_gram is not None:
+                telemetry["negative_transfer_trunk"] = {
+                    key: None if np.isnan(value) else round(value, 6)
+                    for key, value in cancellation_from_gram(
+                        self._last_trunk_gram, final_weights,
+                        [update["dataset"] for update in updates],
+                    ).items()
+                }
         summary = telemetry["group_participation"]
         logging.info(
             f"[round {server_round}] {self.aggregation_mode}/{self.client_weighting} "
@@ -382,6 +392,12 @@ class FedPerStrategy(FedAvg):
             overall += gram
         grams["shared_total"] = overall
         self._last_total_gram = overall
+        # Cancellation over the historical trunk (encoder2..5 + bottleneck) only when more than
+        # that is shared (E6): keeps the number comparable with runs that shared just the trunk.
+        trunk = [block for block in grams if block in TRUNK_MODULES]
+        extra = [block for block in blocks if block not in TRUNK_MODULES and block != STEM_MODULE]
+        self._last_trunk_gram = (sum(grams[block] for block in trunk)
+                                 if trunk and extra else None)
 
         return {
             "clients": [
@@ -423,7 +439,8 @@ def _validate_update_shapes(updates):
         shapes = [tuple(array.shape) for array in update["arrays"]]
         if shapes != reference:
             raise ValueError(
-                "Clients returned incompatible shared states; check share_stem/channels. "
+                "Clients returned incompatible shared states; check "
+                "federated.shared_modules/share_stem/channels. "
                 f"Expected {reference[:2]}..., got {shapes[:2]}... from {update['dataset']}"
             )
 

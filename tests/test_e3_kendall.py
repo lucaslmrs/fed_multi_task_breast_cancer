@@ -74,9 +74,9 @@ class AttachTests(unittest.TestCase):
         trained = _model(uncertainty=True)
         with torch.no_grad():
             getattr(trained, LOG_VARS_ATTR)["seg"].fill_(0.25)
-        personalized = get_personalized_state(trained, share_stem=False)
+        personalized = get_personalized_state(trained, sharing=False)
         fresh = attach_saved_task_uncertainty(_model(seed=1), personalized)
-        set_personalized_state(fresh, personalized, share_stem=False)
+        set_personalized_state(fresh, personalized, sharing=False)
         self.assertEqual(float(getattr(fresh, LOG_VARS_ATTR)["seg"]), 0.25)
         full = attach_saved_task_uncertainty(_model(seed=1), trained.state_dict())
         full.load_state_dict(trained.state_dict())

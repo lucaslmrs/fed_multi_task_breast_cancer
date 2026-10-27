@@ -93,7 +93,7 @@ def _sign_consistency(a, b):
 def _val_loss(participant, trunk, split="val"):
     client = participant["client"]
     client.model.load_state_dict(participant["model_state"])
-    set_shared_state(client.model, trunk, client.share_stem)
+    set_shared_state(client.model, trunk, client.sharing)
     result = local_trainer.evaluate_local(
         client.model, participant[split], client.task, client.device, client.num_classes,
         client.seg_criterion, client.cls_criterion, client.inversely_weighted,
@@ -170,13 +170,13 @@ def main():
         client = FederatedClient(client_id, dataset, tasks[0], args.fold, config, args.device,
                                  str(master_file), str(out / "clients"))
         if args.at_init:
-            personalized = get_personalized_state(client.model, client.share_stem)
+            personalized = get_personalized_state(client.model, client.sharing)
             optim_state = copy.deepcopy(client.optimizer.state_dict())
         else:
             saved = torch.load(fold_dir / f"client_{client_id}" / "state.pt",
                                map_location=client.device)
             personalized, optim_state = saved["personalized"], saved["optimizer"]
-        set_personalized_state(client.model, personalized, client.share_stem)
+        set_personalized_state(client.model, personalized, client.sharing)
         model_state = copy.deepcopy(client.model.state_dict())
         batches = _round_batches(client, start_round)
         batches_b = _round_batches(client, start_round + 1)

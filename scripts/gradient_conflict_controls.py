@@ -82,14 +82,14 @@ def _train(client, batches, optimizer):
 
 def _delta(client, theta):
     return [after - before for after, before in
-            zip(get_shared_state(client.model, client.share_stem), theta)]
+            zip(get_shared_state(client.model, client.sharing), theta)]
 
 
 def _condition_delta(client, condition, batches, theta, model_state, optim_state, lr):
     """Trunk displacement of one condition, always starting from the identical saved state."""
     def reset():
         client.model.load_state_dict(model_state)
-        set_shared_state(client.model, theta, client.share_stem)
+        set_shared_state(client.model, theta, client.sharing)
 
     if condition in {"real_adam10", "adam1"}:
         reset()
@@ -187,10 +187,10 @@ def main():
         print(f"[{index + 1}/{len(roster)}] {client_id} {tasks}", flush=True)
         client = FederatedClient(client_id, dataset, tasks[0], args.fold, config, args.device,
                                  str(master_file), str(out / "clients"))
-        key_names = key_names or shared_keys(client.model, client.share_stem)
+        key_names = key_names or shared_keys(client.model, client.sharing)
         if args.at_init:
             # The seeded construction IS the round-1 state: own stem/heads, fresh optimizer.
-            personalized = get_personalized_state(client.model, client.share_stem)
+            personalized = get_personalized_state(client.model, client.sharing)
             optim_state = copy.deepcopy(client.optimizer.state_dict())
         else:
             saved = torch.load(fold_dir / f"client_{client_id}" / "state.pt",
@@ -200,9 +200,9 @@ def main():
         if group_reference == client_id:
             reference_personalized[group_reference] = copy.deepcopy(personalized)
         set_personalized_state(client.model, reference_personalized[group_reference],
-                               client.share_stem)
+                               client.sharing)
         ref_state = copy.deepcopy(client.model.state_dict())
-        set_personalized_state(client.model, personalized, share_stem=client.share_stem)
+        set_personalized_state(client.model, personalized, sharing=client.sharing)
         model_state = copy.deepcopy(client.model.state_dict())
         batches = _round_batches(client, start_round)
         batches_b = _round_batches(client, start_round + 1)

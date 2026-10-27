@@ -107,6 +107,91 @@ def _verify_conflict_diagnostics(run_path):
         raise RuntimeError(f"Transient lookahead files were not removed: {leftovers[:2]}")
 
 
+def _verify_m1_coverage(run_path):
+    """Every sampled round holds an M1 probe from EVERY client, all over the same shared blocks.
+
+    A failing probe is swallowed by ``observational()`` on purpose (training must continue), and
+    Ray worker logs never reach ``execution.log``, so before E6 a crashing probe -- a single-task
+    client under wide sharing, a shared buffer -- still let the smoke pass. The files are the only
+    reliable evidence. The expected block set is that of the keys in ``global_shared.pt``; a shared
+    block owning only buffers would have no gradient to probe (none exists today).
+    """
+    import torch
+
+    from src.federated import conflict_diagnostics as cd
+
+    run_path = Path(run_path)
+    fold_dir = run_path / "fold_0"
+    config = yaml.safe_load((run_path / "config.yaml").read_text(encoding="utf-8"))
+    clients = sorted(
+        str(yaml.safe_load(path.read_text(encoding="utf-8"))["client_id"])
+        for path in fold_dir.glob("client_*/metadata.yaml")
+    )
+    if not clients:
+        raise RuntimeError("M1 coverage: fold_0 has no client metadata")
+    expected_rounds = [
+        server_round for server_round in range(1, int(config["federated"]["rounds"]) + 1)
+        if cd.is_sampled_round(config, server_round)
+    ]
+    round_dirs = sorted((fold_dir / cd.CONFLICT_DIR).glob("round_*"))
+    found_rounds = [int(directory.name.split("_")[1]) for directory in round_dirs]
+    if found_rounds != expected_rounds:
+        raise RuntimeError(
+            f"M1 coverage: conflict rounds {found_rounds}, expected sampled rounds {expected_rounds}"
+        )
+    shared = torch.load(fold_dir / "global_shared.pt", map_location="cpu")
+    expected_blocks = list(dict.fromkeys(cd._block(key) for key in shared["keys"]))
+    for directory in round_dirs:
+        probes = sorted(path.name[:-len("_m1.npz")] for path in directory.glob("*_m1.npz"))
+        if probes != clients:
+            raise RuntimeError(
+                f"M1 coverage: {directory.name} has probes {probes}, expected one per client "
+                f"{clients}; missing {sorted(set(clients) - set(probes))}"
+            )
+        for client_id in clients:
+            with np.load(directory / f"{client_id}_m1.npz") as stored:
+                blocks = [str(block) for block in stored["blocks"]]
+                if blocks != expected_blocks:
+                    raise RuntimeError(
+                        f"M1 coverage: {directory.name}/{client_id} probes blocks {blocks}, "
+                        f"expected the shared blocks {expected_blocks}"
+                    )
+                exact = sum(stored[f"{block}::exact"] for block in blocks)
+            if not np.isfinite(exact).all() or exact[3] <= 0:
+                raise RuntimeError(
+                    f"M1 coverage: {directory.name}/{client_id} has a non-finite or zero "
+                    f"shared_total gradient ({exact.tolist()})"
+                )
+    if cd.lookahead_enabled(config):
+        _verify_m2_coverage(round_dirs, clients)
+    print(f"M1_COVERAGE_OK rounds={expected_rounds} clients={len(clients)} "
+          f"blocks={len(expected_blocks)}")
+
+
+def _verify_m2_coverage(round_dirs, clients):
+    """Every sampled round holds a lookahead CSV from EVERY client, covering both splits.
+
+    Like M1, a failing ``collect_lookahead`` is swallowed by ``observational()``; the consolidated
+    run-level M2 file still passes when one client is missing, so the per-client files are checked.
+    """
+    for directory in round_dirs:
+        targets = sorted(path.name[:-len("_m2.csv")] for path in directory.glob("*_m2.csv"))
+        if targets != clients:
+            raise RuntimeError(
+                f"M2 coverage: {directory.name} has lookahead files {targets}, expected one per "
+                f"client {clients}; missing {sorted(set(clients) - set(targets))}"
+            )
+        for client_id in clients:
+            rows = pd.read_csv(directory / f"{client_id}_m2.csv")
+            if set(rows["split"]) != {"train", "val"} or set(rows["target"]) != {client_id}:
+                raise RuntimeError(
+                    f"M2 coverage: {directory.name}/{client_id} lacks a split or has foreign targets"
+                )
+            if not np.isfinite(rows["z"]).all():
+                raise RuntimeError(f"M2 coverage: {directory.name}/{client_id} has non-finite z")
+    print(f"M2_COVERAGE_OK rounds={len(round_dirs)} clients={len(clients)}")
+
+
 def _verify_paired_controls(federated_path, standalone_path):
     """Check that the two smoke arms differ only by federation, not budget or RNG policy."""
     fed_config = yaml.safe_load((Path(federated_path) / "config.yaml").read_text())
@@ -231,6 +316,7 @@ def main():
                     _verify_gradient_conflict(run_path)
                     if args.conflict_diagnostics:
                         _verify_conflict_diagnostics(run_path)
+                        _verify_m1_coverage(run_path)
                 print(f"SMOKE_OK setup={setup} topology={args.topology} run_path={run_path}")
             finally:
                 Path(temporary.name).unlink(missing_ok=True)

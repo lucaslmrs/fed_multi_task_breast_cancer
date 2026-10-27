@@ -33,7 +33,7 @@ Criado em 2026-10-04.
 | E5 | Validação das fontes (consolidação) | ✅ | `docs/sources` | 2026-10-16 |
 | E3 | Ablação: loss fed multitask multi-dataset | ✅ | `exp/loss-ablation` | 2026-10-18 |
 | E4 | Ablação: pré-processamento de imagens | ⬜ | `exp/preprocessing-ablation` | — |
-| E6 | Compartilhamento ampliado (decoder federado) | ⬜ | `exp/wider-sharing` | — |
+| E6 | Compartilhamento ampliado (decoder federado) | ⏳ | `exp/wider-sharing` | 2026-10-18 |
 | E7 | Transfer learning (ResNet-34 ImageNet) | ⬜ | `exp/transfer-learning` | — |
 
 Ordem de execução: **E0 → E1 → E2 → E5 → E3 → (E4 ∥ E6) → E7**.
@@ -2034,10 +2034,263 @@ registrada.
 **Critério de pronto.** Run de 400 rodadas lido contra a E3, com a decisão sobre o compartilhamento
 registrada e a ressalva de orçamento explícita (não existe controle de 400 rodadas).
 
-**Detalhamento.** _(a preencher)_
+**Detalhamento.**
+
+#### E6.0 — Fatos (levantados em 2026-10-18)
+
+- **Tamanhos** (MTnnUNet: 53 chaves, sem buffers). Os tamanhos compartilhados (10/4 663 296 e
+  32/10 135 840) são iguais com 1 e 3 canais e com 2, 3 e 7 classes, porque stem, saídas e
+  classificador ficam fora do conjunto compartilhado. O total 15 819 799 e as frações abaixo são do
+  modelo de referência (BUSI, 1 canal/3 classes); no ISIC (3 canais/7 classes, total 15 821 403) a
+  fração ampla é 64.06%.
+
+  | Conjunto | Blocos | Chaves | Valores | Fração |
+  |---|---|---|---|---|
+  | Trunk (hoje) | 5 | 10 | 4 663 296 | 29.48% |
+  | Amplo (E6) | 17 | 32 | 10 135 840 | 64.07% |
+
+- **A regra legada é por prefixo** (`startswith`), não por nome:
+  - no Multi_BTSUNet, ela captura também o `bottleneck2` (11/9 chaves com/sem stem, contra 10/8
+    por nome exato). Por isso, o caminho legado mantém o `startswith`;
+  - o MTUNetPlusPlus não casa nenhuma chave nas duas regras. Federado, ele não compartilhava nada,
+    e sem erro.
+- **O M1 tinha dois bugs**, e o `observational()` engolia os dois (o smoke passava assim mesmo):
+  - as chaves vinham do `state_dict`, então um buffer compartilhado (os FrozenBN da E7) dava
+    `KeyError`;
+  - com o conjunto amplo, um cliente `single_task` do ISIC tem `grad None` nos blocos que o seu
+    objetivo não alcança, e o `.detach()` dava `AttributeError`. Medido: o cliente só-cls deixa
+    `decoder1–4` e `upsample1–4` sem gradiente; o só-seg deixa `process_encoder_5` e
+    `process_decoder_5`.
+- Os logs dos workers do Ray não chegam ao `execution.log` (o run da E3 tem 0 linhas
+  `local_training=steps`). A prova de cada cliente são os arquivos que ele grava.
+- **Diluição no ISIC.** Dentro do ISIC, os clientes seg têm 80% da massa e os cls 20%
+  (`task_weights` 4:1, 4 clientes de cada). O Adam não mexe em parâmetro com `grad None`, então o
+  cliente devolve esses blocos iguais ao global (delta zero). A atualização do ISIC sai diluída em
+  20% em `decoder1–4`/`upsample1–4` e em 80% em `process_*`.
+- **Inicialização.**
+  - O trunk inicial da E6 é **idêntico** ao da E3. Conferido: os 10 arrays do trunk saem iguais
+    de `_initial_shared_parameters` com os dois configs (mesma seed `__global__`, mesmo modelo de
+    referência).
+  - O decoder deixa de ser pessoal. Na E3, ele vinha da seed pessoal (por dataset, no vencedor).
+    Na E6, ele parte do parâmetro inicial global, igual para os 16 clientes.
+  - O estado inicial global depende dos canais de `federated.datasets[0]`: o `encoder1` consome o
+    RNG antes dos módulos compartilhados. Com 1 ou 3 canais, `encoder2`, decoder e `process_*`
+    saem diferentes; com 2 ou 3 classes, iguais. É comportamento antigo, que agora alcança o
+    decoder.
+- **Referência de custo** (vencedor da E3, seed 1993, 200 rodadas): ~1h41 de treino (6068 s;
+  1h43 de parede no `run_index.csv`) e 2.9 GB em disco. Desses, os clientes ocupam de 119 a 168 MB
+  cada, `conflict/` 341 MB (21 rodadas amostradas) e o `aggregation_history.json` 14 MB.
+
+#### E6.1 — Decisões (grill com o usuário em 2026-10-18)
+
+1. **Um run federado solto**, `python -m src.training_federated --config …`, seed 1993. Sem
+   `study_runner`, sem gêmeo local-only e sem controle extra. A comparação com os runs anteriores
+   fica com o usuário.
+2. **Orçamento:** 400 rodadas com `steps_per_round: 10`, o dobro da E3 (o D15 disparou nos 18 runs).
+3. **Config base:** `runs/studies/e3_loss_ablation/resolved/seed_1993/init_seed_dataset.yaml`, do
+   vencedor da E3. Muda só `rounds`, a intervenção e o bloco `experiment`. O master é o da E3 seed
+   1993.
+4. **Agregação hierárquica inalterada.** A diluição do ISIC fica como pendência (E6.8).
+
+#### E6.2 — Chave `federated.shared_modules` (C1)
+
+- **Ausente ou null:** `shared_modules(config)` devolve `bool(share_stem)`, o spec legado. O
+  `model_split` aplica o `startswith` de sempre, byte a byte.
+- **Presente:** devolve uma tupla de nomes de topo, com casamento **exato** do primeiro componente
+  da chave (`name.split(".", 1)[0]`): `enc` não captura `enc2`.
+- **Validação da lista** em `src/federated/config.py::shared_modules`. Ela roda em toda resolução,
+  não só em `validate_federated_config`, então nenhum chamador recebe uma lista inválida. Recusa:
+  - lista vazia, valor que não é lista, duplicatas;
+  - nome vazio, com espaço nas bordas ou com ponto;
+  - `task_log_vars`, que é pessoal (Kendall);
+  - `encoder1` incoerente com `share_stem`. Ausente, o `share_stem` vale `true`, então uma lista
+    sem `encoder1` exige `share_stem: false` (o config da E3 já tem).
+
+  Uma string como spec dá `TypeError`.
+- **`model_split.validate_sharing(model, sharing)`**, chamado em `_initial_shared_parameters` sobre
+  o modelo de referência e sobre cada candidato, inclusive no standalone. Exige:
+  - conjunto compartilhado não vazio. O MTUNetPlusPlus passa a falhar alto, federado ou local-only;
+  - tensores só de ponto flutuante;
+  - na lista explícita, todo nome é filho de topo dono de algum tensor (recusa `decoder6` e
+    `downsample`).
+- **Registro do que foi compartilhado:**
+  - `resolved_shared_modules` vai para o `metadata.yaml` de cada cliente (`shared_modules`);
+  - uma linha `[sharing] modules=… tensors=32 params=10135840 (64.07% of 15819799)` no
+    `execution.log`, uma vez por run (em `run()`). A contagem é sobre tensores do `state_dict`,
+    então na E7 inclui os buffers FrozenBN.
+- **Call sites:** `client.py`, `training_federated.py`, `conflict_diagnostics.py`,
+  `scripts/gradient_conflict_{controls,methods}.py` (inclusive o keyword em controls), a mensagem
+  do `server.py` e os testes da E3. Gate: `grep -rn "share_stem=" src scripts tests` não acha
+  nenhuma chamada ao `model_split`.
+- **Hash:** a chave não entra no `src/config.yaml` (`StudyHashGuardTests` em
+  `tests/test_e6_sharing.py`).
+
+#### E6.3 — Correção do M1 (C2)
+
+- `trunk_gradient_halves` usa só as chaves de `named_parameters()` e pula `grad is None`.
+- O bloco que o objetivo do cliente não alcança fica **no npz, com zeros**, porque o `m1_pairs`
+  indexa todos os blocos do outro cliente. O cosseno desse bloco sai NaN, e o `shared_total` fica
+  finito. Com o trunk, a saída é bit a bit igual à de antes.
+- `scripts/smoke_federated.py::_verify_m1_coverage`, chamado com `--conflict-diagnostics`. Toda
+  `fold_0/conflict/round_*` amostrada precisa ter o npz de todos os clientes do metadata, com o
+  mesmo conjunto de blocos, igual aos blocos das chaves de `global_shared.pt`. Imprime
+  `M1_COVERAGE_OK rounds=… clients=… blocks=…`.
+- Reaplicar o loop antigo em memória faz os testes novos falharem com os erros originais
+  (`AttributeError` e `KeyError`).
+
+#### E6.4 — Testes (`tests/test_e6_sharing.py`, 29 testes)
+
+- `ResolverTests` e `ValidationTests`: resolução e todas as recusas da E6.2.
+- `LegacyEquivalenceTests`: sem a chave, as chaves são as da regra de prefixo escrita à parte.
+  - MTnnUNet: 1 canal/3 classes e 3 canais/7 classes, com e sem stem, com e sem Kendall.
+  - Multi_BTSUNet mantém o `bottleneck2`.
+  - MTUNetPlusPlus: conjunto vazio, e o `validate_sharing` levanta erro.
+- `ExactMatchTests`: `("enc",)` não captura `enc2.*`.
+- `WideSetTests`:
+  - 32 chaves e 10 135 840 valores, com shapes iguais em gray e rgb;
+  - o pessoal é exatamente `{encoder1, output1–4, classifier}`, mais `task_log_vars` com Kendall;
+  - ida e volta do estado, e a linha `[sharing]`.
+- `InitialSharedTests`: o config de 4 datasets com a lista dá 32 arrays; sem a lista, 10; com o
+  MTUNetPlusPlus, erro antes do Flower.
+- `M1ProbeTests`:
+  - trunk bit a bit igual ao loop antigo;
+  - zeros nos blocos não alcançados (só-cls e só-seg);
+  - buffer compartilhado sem `KeyError`;
+  - clientes mistos passam por `m1_pairs` e `summarize`.
+- `SmokeCoverageTests`: o `_verify_m1_coverage` aceita probes completos e recusa probe faltando ou
+  com outros blocos.
+- `RunConfigTests` (C3): o config versionado tem a lista ampla, `share_stem: false`, 400 rodadas, o
+  bloco `experiment` e o master da E3, e passa no `validate_federated_config`. Com `skipUnless` no
+  config resolvido da E3 em `runs/`: só `federated.rounds`, `federated.shared_modules` e
+  `experiment.{study_id,arm_id,method_id}` diferem dele.
+- `StudyHashGuardTests`: a chave fora do `src/config.yaml`.
+
+#### E6.5 — Config (C3): `studies/e6_sharing/wide_sharing.yaml`
+
+- Gerado com `yaml.safe_load` do config base, as mudanças e `yaml.safe_dump(sort_keys=False)`, mais
+  um cabeçalho no padrão de `studies/e3_loss/phase_a/*.yaml`. A lista entra logo depois de
+  `share_stem`.
+- Diferenças, conferidas por flatten-and-diff (161 → 162 folhas) e por `diff` textual:
+  - `federated.rounds`: 200 → 400;
+  - `federated.shared_modules` (ausente → 17): `encoder2–5`, `bottleneck`, `decoder1–5`,
+    `upsample1–5`, `process_encoder_5`, `process_decoder_5` (no arquivo, em ordem decrescente:
+    `decoder5` … `decoder1`, `upsample5` … `upsample1`);
+  - `experiment`: `study_id: e6_wider_sharing`, `arm_id`/`method_id: wide_sharing`; `seed` 1993 e
+    `setup: federated` já eram iguais.
+- Fica igual à E3: Adam 1e-4, batch 32, BF16, DiceBCE 0.5/0.5 com Batch Dice, λ e agregação 4:1,
+  seed pessoal `dataset`, M1+M2 a cada 10 rodadas (`sketch_dim` 65536), `num_gpus` 0.5 e o master
+  `data/federated_studies/e3_loss_ablation/seed_1993/federated_mapping.csv`.
+
+#### E6.6 — Validação (2026-10-18, CPU, `CUDA_VISIBLE_DEVICES=` vazio)
+
+- **Suíte:** 271 testes, 1 erro e 3 skips (CUDA). O erro é antigo e não vem da E6: o
+  `.gitignore:116` (`*.html`) ignora `src/monitor/static/index.html`, então a worktree não tem a
+  página e o `tests.test_monitor.ServerTests.test_api_and_page` recebe 404.
+- `scripts.sync_agent_assets --check`: OK.
+- **Smoke com o config versionado:**
+  `.venv/bin/python -m scripts.smoke_federated --config studies/e6_sharing/wide_sharing.yaml --conflict-diagnostics`.
+  - `M1_COVERAGE_OK rounds=[1, 2] clients=5 blocks=17` e `SMOKE_OK setup=federated`.
+  - `global_shared.pt` com 32 chaves; o `metadata.yaml` dos 5 clientes lista os 17 módulos.
+  - `ISIC_2018_seg_0` e `ISIC_2018_cls_0` gravaram o npz nas 2 rodadas, cada um com 17 blocos.
+    Nenhum aviso `failed; training continues`; nenhum D1 no diagnóstico.
+  - O `execution.log` tem a linha `[sharing] … tensors=32 params=10135840 (64.07% of 15819799)`.
+  - Movido para `runs/validation/e6_smoke/c3_wide_sharing_20261018_225558_…`, com o stdout e o
+    config de entrada. Ao lado está o smoke do C2, feito antes do C3 com um config temporário (o
+    da E3 mais a lista), com o mesmo resultado.
+- O sha256 do master da E3 seed 1993 continua `389116b5…bd3b`.
+
+#### E6.7 — Handoff de treino
+
+1. **O que alterar:** nada no `src/config.yaml`. O config é o `studies/e6_sharing/wide_sharing.yaml`
+   (diff exato na E6.5).
+2. **Pré-voo:**
+   - `sha256sum /home/lucas/fed_multi_task_breast_cancer/data/federated_studies/e3_loss_ablation/seed_1993/federated_mapping.csv`
+     dá `389116b572254ba492d0f11212079d23c2d32dc8855b4028682951d4d207bd3b`;
+   - `nvidia-smi --query-compute-apps=pid --format=csv,noheader` sai vazio;
+   - um run por vez na GPU. Ordem sugerida: E6 → E7 → E4.
+3. **Comando:**
+   `cd /home/lucas/fed_e6_sharing && .venv/bin/python -m src.training_federated --config studies/e6_sharing/wide_sharing.yaml`
+4. **Tempo e recursos:** ~3h20–3h45 (o braço da E3 levou 1h41 com 200 rodadas). Disco: ~3.5 GB.
+   `num_gpus` 0.5. Cada rodada amostrada pelo M2 grava deltas transitórios de ~690 MB. Depois de
+   ~20 rodadas, conferir os segundos por rodada no `execution.log`.
+5. **Artefatos:** `runs/<ts>_FEDERATED_MTnnUNet_Curated_BUSI-ISIC_2018-SIIM_ACR-TCGA_LGG/`. O
+   `runs/` da worktree é link para o da checkout principal, então o diretório fica fisicamente lá.
+   A análise usa `federated_test_results.csv`, `conflict_*.csv`, `negative_transfer_*.csv`,
+   `diagnostics/` e o app (E2).
+6. **Sucesso:**
+   - 24 linhas de teste;
+   - `global_shared.pt` da rodada 400 com 32 chaves;
+   - 41 diretórios `fold_0/conflict/round_*` (1, 11, …, 391 e 400), cada um com 16 `*_m1.npz` e 16
+     `*_m2.csv`;
+   - nenhum D1.
+
+   ```bash
+   R=runs/<ts>_FEDERATED_MTnnUNet_Curated_BUSI-ISIC_2018-SIIM_ACR-TCGA_LGG
+   .venv/bin/python -c "import pandas as pd; print(len(pd.read_csv('$R/federated_test_results.csv')))"  # 24
+   .venv/bin/python -c "import torch; s=torch.load('$R/fold_0/global_shared.pt', weights_only=False); print(s['round'], len(s['keys']))"  # 400 32
+   ls -d $R/fold_0/conflict/round_* | wc -l  # 41
+   for d in $R/fold_0/conflict/round_*; do echo $d $(ls $d/*_m1.npz | wc -l) $(ls $d/*_m2.csv | wc -l); done  # 16 16
+   .venv/bin/python -c "import pandas as pd; f=pd.read_csv('$R/diagnostics/findings.csv'); print((f.check_id == 'D1').sum())"  # 0
+   grep '\[sharing\]' $R/execution.log  # tensors=32 params=10135840 (64.07% of 15819799)
+   ```
+
+7. **Retomada:** `run(cfg, run_path=…, resume=True)` reaproveita só folds completos. Com CV=1 há um
+   fold só, então uma interrupção recomeça da rodada 1.
+
+#### E6.8 — Pendências
+
+- **Diluição do ISIC** (E6.0): 20% no decoder e 80% em `process_*`, porque os clientes
+  `single_task` devolvem blocos que não treinaram. Decisão do usuário: "revisitar no futuro".
+- **Inicialização do decoder:** na E6, ele parte do estado global, igual para todos os clientes; na
+  E3, vinha da seed pessoal. A comparação com a E3 muda o compartilhamento e a inicialização do
+  decoder juntos. O estado global depende dos canais de `federated.datasets[0]` (E6.0).
+- **Sketch do M1 por bloco ~2.2× menor:** o `sketch_dim` (65536) é repartido pelo tamanho dos
+  blocos, e o total compartilhado passa de 4.66 M para 10.14 M. O cosseno por bloco do trunk fica
+  mais ruidoso que na E3.
+- **Números de mecanismo não comparáveis com a E3:** as linhas `pair_class`/`dataset_pair` do
+  `conflict_summary` (bloco `shared_total`) e o cancelamento `negative_transfer_*`
+  (overall/intra/inter, do Gram de todo o conjunto compartilhado) passam a cobrir os 17 blocos, não
+  os 5 do trunk. Os registros da E3 (M1 `intra_same_tasks` 0.098 ± 0.006, cancelamento −0.017) são
+  sobre o trunk. Além disso, os dois clientes `single_task` do ISIC têm suporte não nulo disjunto em
+  `decoder1–4`/`upsample1–4`/`process_*`, o que puxa o cosseno seg×cls do ISIC para 0 (e o D9 para
+  "sem interação"). Uma leitura do M1 equivalente à E3 tem de ser recalculada sobre os 5 blocos do
+  trunk a partir dos `*_m1.npz` por bloco (normas exatas + sketches) ou de `conflict_m1_pairs.csv`.
+  O cancelamento só do trunk passou a ser gravado (decisão do usuário, 2026-10-19): quando há
+  mais que o trunk compartilhado, o servidor grava também `negative_transfer_trunk` por rodada
+  (Gram só de `encoder2–5` + `bottleneck`, com os pesos reais da agregação), e o relatório escreve
+  `negative_transfer_trunk_{rounds,summary}.csv`. É esse o número comparável com o −0.017 da E3.
+  O `negative_transfer.html` e o log ainda chamam a grandeza total de "trunk compartilhado".
+- O `aggregation_history.json` pode chegar a ~85 MB: 400 rodadas e 17 blocos, contra 14 MB na E3.
+- **Sem controle a 400 rodadas** (nem `primary` nem `local_only`): orçamento e intervenção ficam
+  confundidos.
+- `src/experiments/executive_report.py` descreve o compartilhamento em HTML fixo (só o trunk). Não
+  foi alterado.
+- O MTUNetPlusPlus federado, ou local-only, agora falha alto (conjunto compartilhado vazio).
+- Ficam intocados por serem históricos: `docs/RESEARCH_NOTES.md:45` e o inventário da E5 neste
+  arquivo.
+
+#### E6.9 — Commits
+
+- C1 `332b518` feat(federated): `federated.shared_modules` seleciona os módulos do FedAvg.
+- C2 `7e46ba8` fix(conflict): o M1 pula parâmetros que o objetivo do cliente não alcança, e buffers.
+- C3 `bda85d3` exp(e6): config `studies/e6_sharing/wide_sharing.yaml` e `RunConfigTests`.
+- C4 `3305e50` docs: `AGENTS.md` (pipeline e tabela de chaves) e nota da E6 no D02.
+- C5 docs(plano): este detalhamento e o registro.
 
 **Registro.**
 - 2026-10-18 — etapa planejada (macro).
+- 2026-10-18 — **Detalhamento escrito e implementação concluída; a E6 aguarda o treino (⏳).**
+  - C1–C4 na `exp/wider-sharing` (worktree `/home/lucas/fed_e6_sharing`, a partir do `e6ced0e`).
+    Sem a chave, o compartilhamento é o de sempre; com a lista, 17 módulos, 32 chaves e 64.07%
+    dos valores.
+  - O M1 com o conjunto amplo quebrava em silêncio nos clientes `single_task` do ISIC (e
+    quebraria com os buffers FrozenBN da E7). Está corrigido, e o smoke agora confere a cobertura.
+  - Validação: `tests/test_e6_sharing.py` com 29 testes; suíte com 271 testes, só o erro antigo
+    do monitor (E6.6); sync OK; dois smokes CPU (C2 e C3) em `runs/validation/e6_smoke/`.
+  - Nenhum treino rodado e a GPU não foi usada. `src/config.yaml`, guard-rails,
+    `Curated_BUSI_preprocessing.py`, `processed_128` e os masters estão intactos.
+  - **Próximo passo do usuário:** rodar o handoff da E6.7 (~3h20–3h45) e trazer o run de volta para
+    a leitura contra a E3.
 
 ---
 
