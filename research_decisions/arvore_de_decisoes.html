@@ -4,136 +4,162 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Árvore de Decisões</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
 <style>
 :root{
-  --bg:#FFF7F1; --surface:#FFFFFF; --text:#1E1216; --muted:#5b4a4e; --accent:#7B2032;
-  --line:#e6d6cf; --fill:#f3e6e0;
+  --bg:#FFF7F1; --surface:#FFFFFF; --text:#1E1216; --muted:#6b585d; --accent:#7B2032; --on-accent:#FFF7F1;
+  --line:#e6d6cf; --link:#d4bdb5; --fill:#f6ebe6; --shadow:rgba(30,18,22,.10);
   --s-feito:#2f6b4f; --s-decidido:#7B2032; --s-aberto:#a3661a; --s-mantido:#5a5aa0; --s-cortado:#8f8582;
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
-    --bg:#0A0B0F; --surface:#1E1216; --text:#FFF7F1; --muted:#c9b8b3; --accent:#B83D54;
-    --line:#3a272d; --fill:#2a1a1f;
+    --bg:#0A0B0F; --surface:#1E1216; --text:#FFF7F1; --muted:#c9b8b3; --accent:#B83D54; --on-accent:#FFF7F1;
+    --line:#3a272d; --link:#57404a; --fill:#2a1a1f; --shadow:rgba(0,0,0,.45);
     --s-feito:#5fb08a; --s-decidido:#e0607a; --s-aberto:#e0a24a; --s-mantido:#9a9ae0; --s-cortado:#8f8582;
   }
 }
 :root[data-theme="dark"]{
-  --bg:#0A0B0F; --surface:#1E1216; --text:#FFF7F1; --muted:#c9b8b3; --accent:#B83D54;
-  --line:#3a272d; --fill:#2a1a1f;
+  --bg:#0A0B0F; --surface:#1E1216; --text:#FFF7F1; --muted:#c9b8b3; --accent:#B83D54; --on-accent:#FFF7F1;
+  --line:#3a272d; --link:#57404a; --fill:#2a1a1f; --shadow:rgba(0,0,0,.45);
   --s-feito:#5fb08a; --s-decidido:#e0607a; --s-aberto:#e0a24a; --s-mantido:#9a9ae0; --s-cortado:#8f8582;
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:1180px;margin:0 auto;padding:32px 16px 64px}
-h1{font-size:1.8rem;margin:0 0 4px}
-.sub{color:var(--muted);margin:0 0 18px}
-.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+  display:flex;flex-direction:column}
+header{padding:20px 20px 10px}
+h1{font-size:1.5rem;margin:0}
+.sub{color:var(--muted);margin:2px 0 0;font-size:.9rem}
+.sub a{color:var(--accent)}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:6px 20px 12px}
 .chip{border:1px solid var(--line);background:var(--surface);color:var(--text);border-radius:999px;
-  padding:4px 12px;font:inherit;font-size:.85rem;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
-.chip[aria-pressed="false"]{opacity:.45}
-.chip.btn{border-color:var(--accent)}
-.dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex:none}
-.layout{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:18px;align-items:start}
-@media (max-width:820px){.layout{grid-template-columns:1fr}}
-.tree{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 10px}
-.tree ul{list-style:none;margin:0;padding-left:20px;border-left:1px dashed var(--line)}
-.tree>ul{padding-left:0;border-left:none}
-.tree li{margin:2px 0}
-.node{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;border:1px solid transparent;
-  color:var(--text);font:inherit;padding:4px 6px;border-radius:6px;cursor:pointer}
-.node:hover{background:var(--fill)}
-.node.sel{border-color:var(--accent);background:var(--fill)}
-.tw{width:14px;color:var(--muted);flex:none;font-size:.75rem}
-.lbl{flex:1}
-.root>.node .lbl{font-weight:700}
-li.hidden-status>.node{opacity:.25}
-li.collapsed>ul{display:none}
-.panel{position:sticky;top:16px;background:var(--surface);border:2px solid var(--accent);border-radius:10px;padding:16px 18px}
-.panel h2{margin:0 0 6px;font-size:1.15rem}
-.panel .st{font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
-.panel p{margin:8px 0}
-.panel .ev{background:var(--fill);border-radius:6px;padding:8px 10px;font-size:.9rem}
-.panel .where{color:var(--muted);font-size:.85rem}
-.counts{color:var(--muted);font-size:.85rem;margin-left:auto}
-a{color:var(--accent)}
+  padding:5px 12px;font:inherit;font-size:.84rem;cursor:pointer;display:inline-flex;gap:7px;align-items:center;
+  transition:opacity .2s, border-color .2s}
+.chip:hover{border-color:var(--accent)}
+.chip[aria-pressed="false"]{opacity:.4}
+.chip .dot{width:10px;height:10px;border-radius:50%}
+.sep{flex:1}
+.stage{flex:1;display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:0;min-height:520px;border-top:1px solid var(--line)}
+#chart{position:relative;overflow:hidden;cursor:grab;
+  background-image:radial-gradient(var(--line) 1px, transparent 1px);background-size:22px 22px}
+#chart:active{cursor:grabbing}
+#chart svg{display:block;width:100%;height:100%}
+.hint{position:absolute;left:14px;bottom:10px;font-size:.78rem;color:var(--muted);pointer-events:none}
+aside{border-left:1px solid var(--line);background:var(--surface);padding:20px;overflow:auto}
+aside .crumb{font-size:.78rem;color:var(--muted);margin-bottom:10px}
+aside .pill{display:inline-block;font-size:.72rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  padding:3px 10px;border-radius:999px;color:var(--on-accent)}
+aside h2{font-size:1.2rem;line-height:1.3;margin:10px 0 8px}
+aside p{margin:8px 0;font-size:.93rem}
+aside .ev{background:var(--fill);border-left:3px solid var(--accent);border-radius:4px;padding:8px 10px}
+aside .where{color:var(--muted);font-size:.84rem}
+aside .kids{margin:12px 0 0;padding:0;list-style:none}
+aside .kids li{margin:4px 0}
+aside .kids button{all:unset;cursor:pointer;display:flex;gap:8px;align-items:center;font-size:.9rem;padding:2px 0}
+aside .kids button:hover{color:var(--accent)}
+aside .kids .dot{width:9px;height:9px;border-radius:50%;flex:none}
+@media (max-width:820px){
+  .stage{grid-template-columns:1fr;grid-template-rows:65vh auto}
+  aside{border-left:none;border-top:1px solid var(--line)}
+}
+/* graph */
+.link{fill:none;stroke:var(--link);stroke-width:1.6;transition:stroke .25s, stroke-width .25s}
+.link.on{stroke:var(--accent);stroke-width:2.6}
+.node{cursor:pointer;transition:opacity .25s}
+.node:focus{outline:none}
+.node .card{fill:var(--surface);stroke:var(--sc);stroke-width:1.3;filter:drop-shadow(0 2px 4px var(--shadow));transition:stroke-width .2s, fill .2s}
+.node:hover .card,.node:focus-visible .card{stroke-width:2.4}
+.node.sel .card{stroke-width:3;fill:var(--fill)}
+.node .bar{fill:var(--sc)}
+.node .stl{fill:var(--sc);font-size:10px;font-weight:700;letter-spacing:.07em}
+.node .lbl{fill:var(--text);font-size:13px}
+.node .badge circle{fill:var(--sc)}
+.node .badge text{fill:var(--on-accent);font-size:11px;font-weight:700;text-anchor:middle;dominant-baseline:central}
+.node.root .card{fill:var(--accent);stroke:var(--accent)}
+.node.root .lbl{fill:var(--on-accent);font-size:17px;font-weight:700}
+.node.root .stl{fill:var(--on-accent);opacity:.8}
+.node.root .bar{display:none}
+.node.dim{opacity:.18}
+.st-feito{--sc:var(--s-feito)} .st-decidido{--sc:var(--s-decidido)} .st-aberto{--sc:var(--s-aberto)}
+.st-mantido{--sc:var(--s-mantido)} .st-cortado{--sc:var(--s-cortado)}
+.node.st-cortado .lbl{text-decoration:line-through;fill:var(--muted)}
 </style>
 </head>
 <body>
-<main>
-<h1>Árvore de decisões — FedCHAMP</h1>
-<p class="sub">Clique num ramo para ver o detalhe; use os filtros para destacar estados e a seta para recolher um ramo. Registro de 26/10/2026 · <a href="mapa_de_escopo.html">mapa de escopo</a></p>
-
-<div class="toolbar" id="filters">
-  <button class="chip btn" id="expand" type="button">Expandir tudo</button>
-  <button class="chip btn" id="collapse" type="button">Recolher</button>
-  <span class="counts" id="counts"></span>
+<header>
+  <h1>Árvore de decisões — FedCHAMP</h1>
+  <p class="sub">Clique num nó para abrir ou fechar os ramos e ver o detalhe · arraste para mover, role para dar zoom · 26/10/2026 · <a href="mapa_de_escopo.html">mapa de escopo</a></p>
+</header>
+<div class="toolbar" id="toolbar">
+  <span class="sep"></span>
+  <button class="chip" id="expand" type="button">Expandir tudo</button>
+  <button class="chip" id="collapse" type="button">Recolher</button>
+  <button class="chip" id="fit" type="button">Centralizar</button>
 </div>
-
-<div class="layout">
-  <div class="tree" id="tree" role="tree"></div>
-  <aside class="panel" id="panel" aria-live="polite"></aside>
+<div class="stage">
+  <div id="chart"><span class="hint">arraste · role para zoom</span></div>
+  <aside id="panel" aria-live="polite"></aside>
 </div>
-</main>
 
 <script>
 const STATUS = {
   feito:    {label:"Feito",     desc:"existe no repositório com resultado"},
-  decidido: {label:"Decidido",  desc:"escolha registrada nesta sessão ou em etapa anterior"},
+  decidido: {label:"Decidido",  desc:"escolha registrada"},
   aberto:   {label:"Em aberto", desc:"precisa de decisão"},
   mantido:  {label:"Mantido",   desc:"implementado, sem resultado; não será descartado"},
   cortado:  {label:"Cortado",   desc:"fora do escopo da dissertação"}
 };
 
-const T = {t:"FedCHAMP: mitigar a transferência negativa em FL multi-domínio e multi-tarefa", s:"decidido",
+const T = {l:"FedCHAMP", t:"FedCHAMP: mitigar a transferência negativa em FL multi-domínio e multi-tarefa", s:"decidido",
   d:"Pergunta do pré-projeto: corpo-cabeça + agrupamento por protótipos garante que os conhecimentos não se cancelem? Direção mantida (Q1). Prazo: 4–6 meses (Q2). Orientadores cientes; qualificação feita.",
   w:"00_projeto_vs_repositorio.md", c:[
-  {t:"1 · O que é transferência negativa", s:"decidido",
+  {t:"Transferência negativa", s:"decidido",
    d:"Conceito ampliado (Q8): o federado rende menos que o standalone, por cancelamento (direção) ou por diluição (magnitude). A mitigação precisa endereçar os dois.",
    w:"03_perguntas_abertas.md · Q8", c:[
-     {t:"Cancelamento (direção dos updates)", s:"feito",
+     {t:"Cancelamento (direção)", s:"feito",
       d:"Proposto pelo projeto como causa. Medido na E0: cosseno entre deltas de datasets diferentes ≈ 0; razão de cancelamento ≈ referência ortogonal. Há interferência por curvatura com o update inteiro, mas ela é desprezível na escala real da agregação.",
       e:"Z entre datasets: −16 a −22e-4 com Δ inteiro; −0.2 a +0.4e-4 com Δ × wᵢ (≈ aleatório). Uma seed, um holdout.", w:"plano.md E0.3.9"},
-     {t:"Diluição (magnitude do passo próprio)", s:"feito",
+     {t:"Diluição (magnitude)", s:"feito",
       d:"Achado da E0: o progresso de cada cliente no próprio objetivo cai ~10× quando o update é escalado pelo peso de agregação, e os outros clientes não compensam. É o custo dominante medido.",
       e:"Self Z: +467/+493 com Δ inteiro → +50/+60 com Δ × wⱼ.", w:"plano.md E0.3.9"},
-     {t:"Métrica operacional: lacuna federado − standalone", s:"aberto",
+     {t:"Métrica: lacuna federado − standalone", s:"aberto",
       d:"Q15. Recomendação: lacuna por dataset/tarefa (já medida na E3), decomposta pelo instrumental da E0 em cancelamento e diluição.",
       e:"E3: lacuna média −0.033 (controle) → −0.017 (seed por dataset), 3 seeds, descritivo.", w:"plano.md E3"}
   ]},
-  {t:"2 · Etapa 1: desacoplamento corpo-cabeça", s:"feito",
+  {t:"Etapa 1 · corpo-cabeça", s:"feito",
    d:"FedPer: trunk encoder2..5 + bottleneck federado; stem, decoder e cabeças locais.", w:"src/federated/model_split.py", c:[
      {t:"Stem pessoal por modalidade", s:"feito", d:"encoder1 local porque 1 canal (BUSI/SIIM) e 3 canais (ISIC/TCGA) não têm forma comum.", w:"D03"},
-     {t:"Seed pessoal por dataset", s:"decidido", d:"Todos os clientes de um dataset começam com o mesmo stem e cabeças. Único braço da E3 que melhora as 8 células e cria alinhamento intra-dataset (M1 0.098 vs 0.003). Também é um mitigador de diluição: alinha os updates de um mesmo dataset.", w:"D26"},
+     {t:"Seed pessoal por dataset", s:"decidido", d:"Todos os clientes de um dataset começam com o mesmo stem e cabeças. Único braço da E3 que melhora as 8 células e cria alinhamento intra-dataset (M1 0.098 vs 0.003). Também mitiga a diluição: alinha os updates de um mesmo dataset.", w:"D26"},
      {t:"Backbone", s:"decidido", d:"MTnnUNet (U-Net com InstanceNorm).", c:[
        {t:"MTnnUNet", s:"feito", d:"Backbone de todos os resultados atuais."},
        {t:"ResNet-34 ImageNet (E7)", s:"mantido", d:"Implementado em worktree, 400 rodadas, sem resultado. Pode ser o único ponto da 'escolha de backbone' do projeto.", w:"plano.md E7"},
-       {t:"Varredura YOLO / VGG / MobileNet / ViT / Swin", s:"cortado", d:"Cortado em 26/10 (Q11). Prevista no pré-projeto; inviável no prazo e ortogonal à pergunta."}
+       {t:"Varredura YOLO/VGG/ViT/Swin", s:"cortado", d:"Cortada em 26/10 (Q11): YOLO, VGG16, MobileNetV2, ViT e Swin. Prevista no pré-projeto; inviável no prazo e ortogonal à pergunta."}
      ]},
      {t:"Quanto compartilhar", s:"aberto", d:"Q16: E6 fica como hipótese de mitigação (compartilhar mais = mais transferência, possivelmente mais diluição).", c:[
        {t:"Trunk encoder2..bottleneck", s:"feito", d:"Configuração atual."},
        {t:"Decoder federado (E6)", s:"mantido", d:"Implementado (federated.shared_modules), sem resultado.", w:"plano.md E6"}
      ]}
   ]},
-  {t:"3 · Etapa 2: mecanismo de mitigação", s:"aberto",
+  {t:"Etapa 2 · mitigação", s:"aberto",
    d:"Nada será implementado nesta fase (Q9). Ramo central para a próxima conversa com os orientadores.", c:[
-     {t:"Agrupamento por dataset (cluster oráculo)", s:"feito",
+     {t:"Cluster por dataset (oráculo)", s:"feito",
       d:"Agregação hierárquica: normaliza dentro do dataset, depois dataset_weights. É o limite superior do que um agrupamento aprendido poderia recuperar.",
       e:"Impor a hierarquia: BUSI Dice +0.016, ISIC cls acc −0.046.", w:"D04 · server.py::_hierarchical_weights"},
-     {t:"Agrupamento por protótipos", s:"aberto",
+     {t:"Cluster por protótipos", s:"aberto",
       d:"Peça central do título, ainda inexistente. Versão mínima sugerida: protótipo por classe = média do bottleneck; cosseno; agrupamento aglomerativo; agregação intra-cluster e depois global. Q17: o cluster oráculo basta ou os protótipos são obrigatórios?"},
-     {t:"Resolução de conflito na fase global", s:"aberto",
+     {t:"Resolução de conflito global", s:"aberto",
       d:"Projeção ortogonal (PCGrad-like) ou ponderação por variância, como no pré-projeto. Com a E0 mostrando updates ortogonais entre datasets, o ganho esperado é pequeno."},
      {t:"Mitigação da diluição", s:"aberto",
       d:"Ramo novo, consequência do conceito ampliado (Q14). Os protótipos decidem com quem agregar, mas não devolvem magnitude ao passo próprio.",
       c:[
-        {t:"Peso maior para o próprio cluster na fase global", s:"aberto", d:"Candidato direto contra a diluição."},
+        {t:"Peso maior ao próprio cluster", s:"aberto", d:"Candidato direto contra a diluição: dar mais peso ao próprio cluster na fase global."},
         {t:"Trunk por cluster", s:"aberto", d:"Reduz a diluição, mas aproxima do MAS (fragmenta o modelo único)."},
         {t:"Seed por dataset", s:"decidido", d:"Já adotada; alinha os updates no início e reduz o cancelamento intra-dataset."}
      ]}
   ]},
-  {t:"4 · Cenário experimental", s:"decidido", c:[
+  {t:"Cenário experimental", s:"decidido", d:"Onde as hipóteses são testadas.", c:[
      {t:"Datasets", s:"decidido", c:[
-       {t:"BUSI · ISIC 2018 · TCGA-LGG · SIIM-ACR", s:"feito", d:"Pré-processados e no master. BUSI não estava na lista do projeto, mas 'ultrassom' está nos domínios."},
+       {t:"BUSI · ISIC · TCGA · SIIM", s:"feito", d:"Curated BUSI, ISIC 2018, TCGA-LGG e SIIM-ACR, pré-processados e no master. BUSI não estava na lista do projeto, mas 'ultrassom' está nos domínios."},
        {t:"PANDA (histopatologia)", s:"cortado", d:"Cortado em 26/10 (Q11)."}
      ]},
      {t:"Tarefas", s:"decidido", c:[
@@ -143,106 +169,177 @@ const T = {t:"FedCHAMP: mitigar a transferência negativa em FL multi-domínio e
      {t:"Topologia de clientes", s:"feito", d:"single_task (histórica) e multi_task / HC-FMTL (sem duplicar imagens entre silos). Entra como decisão de configuração justificada.", w:"D13"},
      {t:"Loss (E3)", s:"decidido", d:"DiceBCE com Batch Dice; CE balanced_fold; λ 4:1. Kendall, λ 1:1 e agregação 1:1 rejeitados.", w:"plano.md E3"},
      {t:"Resolução por dataset (E4)", s:"mantido", d:"TCGA e SIIM a 256 px. Implementado, sem resultado. Relevante para a seg do SIIM, que quase não aprende a 128 px.", w:"plano.md E4"},
-     {t:"Clientes few-shot sintéticos", s:"aberto", d:"Previstos no projeto para H3; hoje só há a escassez natural do BUSI."},
-     {t:"Orçamento local (steps vs epochs)", s:"decidido", d:"Só comparar braços com o mesmo modo. 400 rodadas a partir da E6/E7 (D15: todos sub-treinados a 200)."}
+     {t:"Clientes few-shot", s:"aberto", d:"Previstos no projeto para H3; hoje só há a escassez natural do BUSI."},
+     {t:"Orçamento (steps vs epochs)", s:"decidido", d:"Só comparar braços com o mesmo modo. 400 rodadas a partir da E6/E7 (D15: todos sub-treinados a 200)."}
   ]},
-  {t:"5 · Baselines", s:"aberto", d:"Q10.", c:[
+  {t:"Baselines", s:"aberto", d:"Q10.", c:[
      {t:"Standalone", s:"feito", d:"federated.standalone: True, mesmo pipeline e mesma partição."},
-     {t:"FedAvg (agregação ingênua)", s:"feito", d:"Modo flat (braço ablation_flat)."},
+     {t:"FedAvg (ingênuo)", s:"feito", d:"Modo flat (braço ablation_flat)."},
      {t:"FedMTL", s:"aberto", d:"Recomendado primeiro: é o mais próximo do FedCHAMP (corpo-cabeça + similaridade de cabeças). Artigo em referencies/."},
      {t:"MAS", s:"aberto", d:"Não cortado (26/10). Artigo em referencies/."},
      {t:"Centralizado", s:"feito", d:"Só válido no estudo BUSI; ISIC não tem máscara e rótulo na mesma imagem."}
   ]},
-  {t:"6 · Hipóteses e avaliação", s:"aberto", c:[
+  {t:"Hipóteses e avaliação", s:"aberto", d:"H1, H2 e H3 do pré-projeto.", c:[
      {t:"H1 · sem cancelamento", s:"feito", d:"Instrumental pronto (cosseno, cancelamento, M1, M2 com controle nulo). Com o conceito ampliado, H1 passa a separar cancelamento de diluição.", w:"docs/GRADIENT_CONFLICT_METHODS.md"},
-     {t:"H2 · convergência mais rápida", s:"aberto", d:"Curvas existem (monitor); falta a comparação 'rodadas até X' entre braços."},
-     {t:"H3 · supera standalone com poucos dados", s:"feito", d:"Medido; hoje desfavorável, exceto no BUSI (0.60–0.66 vs 0.47–0.51 de balanced acc).", w:"plano.md B0"},
+     {t:"H2 · convergência", s:"aberto", d:"Curvas existem (monitor); falta a comparação 'rodadas até X' entre braços."},
+     {t:"H3 · poucos dados", s:"feito", d:"Federado vs standalone medido; hoje desfavorável, exceto no BUSI (0.60–0.66 vs 0.47–0.51 de balanced acc).", w:"plano.md B0"},
      {t:"Inferência", s:"decidido", d:"Tudo descritivo (1 ou 3 seeds); p-valores só exploratórios; nunca 'estatisticamente significativo'. Perfil final (3 seeds) disponível."}
   ]},
-  {t:"7 · Produtos", s:"decidido", c:[
-     {t:"Paper CIARP 2026 (FedPer em BUSI)", s:"feito", d:"Entra na dissertação como resultado preliminar da Etapa 1.", w:"papers/ciarp2026"},
+  {t:"Produtos", s:"decidido", c:[
+     {t:"Paper CIARP 2026 (BUSI)", s:"feito", d:"FedPer em ultrassom de mama. Entra na dissertação como resultado preliminar da Etapa 1.", w:"papers/ciarp2026"},
      {t:"Dissertação", s:"aberto", d:"4–6 meses."}
   ]}
 ]};
 
-let uid = 0;
-const index = {};
-function build(node, parentUl){
-  const id = "n" + (uid++); node.id = id; index[id] = node;
-  const li = document.createElement("li");
-  li.dataset.status = node.s; li.setAttribute("role","treeitem");
-  const btn = document.createElement("button");
-  btn.type = "button"; btn.className = "node"; btn.dataset.id = id;
-  const tw = document.createElement("span"); tw.className = "tw"; tw.textContent = node.c ? "▾" : "";
-  const dot = document.createElement("span"); dot.className = "dot"; dot.style.background = `var(--s-${node.s})`;
-  dot.title = STATUS[node.s].label;
-  const lbl = document.createElement("span"); lbl.className = "lbl"; lbl.textContent = node.t;
-  btn.append(tw, dot, lbl); li.append(btn);
-  if (node.c){
-    li.setAttribute("aria-expanded","true");
-    const ul = document.createElement("ul"); ul.setAttribute("role","group");
-    node.c.forEach(ch => build(ch, ul)); li.append(ul);
+const W = 236, H = 56, DX = 70, DY = 300;
+const chartEl = document.getElementById("chart");
+const svg = d3.select(chartEl).append("svg").attr("role","img").attr("aria-label","Árvore de decisões do FedCHAMP");
+const g = svg.append("g");
+const gLink = g.append("g");
+const gNode = g.append("g");
+const zoom = d3.zoom().scaleExtent([0.25, 2]).on("zoom", e => g.attr("transform", e.transform));
+svg.call(zoom).on("dblclick.zoom", null);
+
+const root = d3.hierarchy(T, d => d.c);
+const counts = d3.rollup(root.descendants(), v => v.length, d => d.data.s);
+const openDepth = chartEl.getBoundingClientRect().width < 700 ? 1 : 2;
+root.descendants().forEach((d, i) => { d.id = i; d._children = d.children; if (d.depth >= openDepth) d.children = null; });
+root.x0 = 0; root.y0 = 0;
+let selected = root;
+const active = new Set(Object.keys(STATUS));
+const tree = d3.tree().nodeSize([DX, DY]).separation((a, b) => a.parent === b.parent ? 1 : 1.2);
+const label = d => d.data.l || d.data.t;
+
+function wrap(text, max){
+  const words = text.split(" "), lines = [];
+  let cur = "";
+  for (const w of words){
+    if ((cur + " " + w).trim().length > max && cur){ lines.push(cur); cur = w; }
+    else cur = (cur + " " + w).trim();
   }
-  parentUl.append(li);
-  return li;
+  lines.push(cur);
+  if (lines.length > 2){ lines.length = 2; lines[1] = lines[1].replace(/.{0,2}$/, "") + "…"; }
+  return lines;
 }
-const rootUl = document.createElement("ul");
-const rootLi = build(T, rootUl); rootLi.classList.add("root");
-document.getElementById("tree").append(rootUl);
+const linkPath = (s, t) => d3.linkHorizontal()({source:[s.y + W, s.x], target:[t.y, t.x]});
+
+function update(source){
+  tree(root);
+  const nodes = root.descendants(), links = root.links();
+  const t = svg.transition().duration(380);
+  const onPath = new Set(selected.ancestors());
+
+  const node = gNode.selectAll("g.node").data(nodes, d => d.id);
+  const enter = node.enter().append("g")
+    .attr("class", d => `node st-${d.data.s}` + (d.depth === 0 ? " root" : ""))
+    .attr("transform", `translate(${source.y0},${source.x0})`).attr("opacity", 0)
+    .attr("tabindex", 0).attr("role", "button")
+    .on("click", (e, d) => toggle(d))
+    .on("keydown", (e, d) => { if (e.key === "Enter" || e.key === " "){ e.preventDefault(); toggle(d); } });
+  enter.append("rect").attr("class", "card").attr("y", -H/2).attr("width", W).attr("height", H).attr("rx", 12);
+  enter.append("rect").attr("class", "bar").attr("x", 0).attr("y", -H/2 + 8).attr("width", 4).attr("height", H - 16).attr("rx", 2);
+  enter.append("text").attr("class", "txt").each(function(d){
+    const el = d3.select(this);
+    const lines = d.depth === 0 ? [label(d)] : wrap(label(d), 30);
+    const top = lines.length === 1 ? -6 : -13;
+    el.append("tspan").attr("class", "stl").attr("x", 16).attr("y", top - 2)
+      .text(d.depth === 0 ? "PROJETO APROVADO" : STATUS[d.data.s].label.toUpperCase());
+    lines.forEach((ln, i) => el.append("tspan").attr("class", "lbl").attr("x", 16).attr("y", top + 15 + i * 16).text(ln));
+  });
+  enter.append("title").text(d => d.data.t);
+  const badge = enter.append("g").attr("class", "badge").attr("transform", `translate(${W},0)`);
+  badge.append("circle").attr("r", 11);
+  badge.append("text");
+
+  const merged = enter.merge(node);
+  merged.classed("sel", d => d === selected)
+        .classed("dim", d => !active.has(d.data.s))
+        .attr("aria-expanded", d => d._children ? String(!!d.children) : null)
+        .attr("aria-label", d => `${label(d)}, ${STATUS[d.data.s].label}`);
+  merged.select(".badge").attr("display", d => d._children ? null : "none")
+        .select("text").text(d => d.children ? "−" : `+${d._children ? d._children.length : 0}`);
+  merged.transition(t).attr("transform", d => `translate(${d.y},${d.x})`).attr("opacity", 1);
+  node.exit().transition(t).attr("transform", `translate(${source.y},${source.x})`).attr("opacity", 0).remove();
+
+  const link = gLink.selectAll("path.link").data(links, d => d.target.id);
+  const lEnter = link.enter().append("path").attr("class", "link")
+    .attr("d", () => { const o = {x: source.x0, y: source.y0}; return linkPath(o, o); });
+  lEnter.merge(link).classed("on", d => onPath.has(d.target))
+    .transition(t).attr("d", d => linkPath(d.source, d.target));
+  link.exit().transition(t).attr("d", () => { const o = {x: source.x, y: source.y}; return linkPath(o, o); }).remove();
+
+  root.eachBefore(d => { d.x0 = d.x; d.y0 = d.y; });
+}
+
+function toggle(d){
+  if (d._children && d === selected) d.children = d.children ? null : d._children;
+  else if (d._children && !d.children) d.children = d._children;
+  selected = d;
+  show(d);
+  update(d);
+  const cx = d.children ? d.y + (W + DY) / 2 : d.y + W / 2;
+  svg.transition().duration(450).call(zoom.translateTo, cx, d.x);
+}
+
+function fit(){
+  tree(root);
+  const ns = root.descendants();
+  const x0 = d3.min(ns, d => d.x) - H, x1 = d3.max(ns, d => d.x) + H;
+  const y0 = -20, y1 = d3.max(ns, d => d.y) + W + 40;
+  const {width, height} = chartEl.getBoundingClientRect();
+  const k = Math.min(1, width / (y1 - y0), height / (x1 - x0));
+  const tx = (width - (y1 - y0) * k) / 2 - y0 * k;
+  const ty = (height - (x1 - x0) * k) / 2 - x0 * k;
+  svg.transition().duration(450).call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(k));
+}
 
 const panel = document.getElementById("panel");
-function show(id){
-  const n = index[id];
-  document.querySelectorAll(".node.sel").forEach(b => b.classList.remove("sel"));
-  document.querySelector(`.node[data-id="${id}"]`).classList.add("sel");
+function show(d){
+  const n = d.data;
   panel.innerHTML = "";
-  const st = document.createElement("div"); st.className = "st"; st.style.color = `var(--s-${n.s})`;
-  st.textContent = `${STATUS[n.s].label} · ${STATUS[n.s].desc}`;
+  const crumb = document.createElement("div"); crumb.className = "crumb";
+  crumb.textContent = d.ancestors().reverse().map(label).join(" › ");
+  const pill = document.createElement("span"); pill.className = "pill";
+  pill.style.background = `var(--s-${n.s})`; pill.textContent = STATUS[n.s].label;
   const h = document.createElement("h2"); h.textContent = n.t;
-  panel.append(st, h);
-  if (n.d){ const p = document.createElement("p"); p.textContent = n.d; panel.append(p); }
-  if (n.e){ const p = document.createElement("p"); p.className = "ev"; p.textContent = "Evidência: " + n.e; panel.append(p); }
-  if (n.w){ const p = document.createElement("p"); p.className = "where"; p.textContent = "Onde: " + n.w; panel.append(p); }
-  if (n.c){ const p = document.createElement("p"); p.className = "where"; p.textContent = `${n.c.length} sub-ramo(s).`; panel.append(p); }
-}
-document.getElementById("tree").addEventListener("click", e => {
-  const btn = e.target.closest(".node"); if (!btn) return;
-  const li = btn.parentElement;
-  if (e.target.classList.contains("tw") && li.querySelector(":scope>ul")){
-    li.classList.toggle("collapsed");
-    li.setAttribute("aria-expanded", li.classList.contains("collapsed") ? "false" : "true");
-    btn.querySelector(".tw").textContent = li.classList.contains("collapsed") ? "▸" : "▾";
-    return;
+  panel.append(crumb, pill, h);
+  const add = (cls, txt) => { const p = document.createElement("p"); if (cls) p.className = cls; p.textContent = txt; panel.append(p); };
+  add("where", STATUS[n.s].desc);
+  if (n.d) add("", n.d);
+  if (n.e) add("ev", "Evidência: " + n.e);
+  if (n.w) add("where", "Onde: " + n.w);
+  if (d._children){
+    const ul = document.createElement("ul"); ul.className = "kids";
+    d._children.forEach(ch => {
+      const li = document.createElement("li"), b = document.createElement("button");
+      b.innerHTML = `<span class="dot" style="background:var(--s-${ch.data.s})"></span>`;
+      b.append(document.createTextNode(label(ch)));
+      b.onclick = () => { if (!d.children) d.children = d._children; toggle(ch); };
+      li.append(b); ul.append(li);
+    });
+    panel.append(ul);
   }
-  show(btn.dataset.id);
-});
-function setAll(collapsed){
-  document.querySelectorAll("#tree li").forEach(li => {
-    if (!li.querySelector(":scope>ul") || li.classList.contains("root")) return;
-    li.classList.toggle("collapsed", collapsed);
-    li.querySelector(":scope>.node .tw").textContent = collapsed ? "▸" : "▾";
-  });
 }
-document.getElementById("expand").onclick = () => setAll(false);
-document.getElementById("collapse").onclick = () => setAll(true);
 
-const active = new Set(Object.keys(STATUS));
-const counts = {}; Object.values(index).forEach(n => counts[n.s] = (counts[n.s]||0) + 1);
-const bar = document.getElementById("filters");
-const countsEl = document.getElementById("counts");
-Object.entries(STATUS).forEach(([k,v]) => {
+const toolbar = document.getElementById("toolbar"), sep = toolbar.querySelector(".sep");
+Object.entries(STATUS).forEach(([k, v]) => {
   const b = document.createElement("button");
-  b.type = "button"; b.className = "chip"; b.setAttribute("aria-pressed","true");
-  b.innerHTML = `<span class="dot" style="background:var(--s-${k})"></span>${v.label} (${counts[k]||0})`;
+  b.type = "button"; b.className = "chip"; b.setAttribute("aria-pressed", "true");
+  b.innerHTML = `<span class="dot" style="background:var(--s-${k})"></span>${v.label} · ${counts.get(k) || 0}`;
   b.onclick = () => {
-    if (active.has(k)) active.delete(k); else active.add(k);
+    active.has(k) ? active.delete(k) : active.add(k);
     b.setAttribute("aria-pressed", active.has(k));
-    document.querySelectorAll("#tree li").forEach(li => li.classList.toggle("hidden-status", !active.has(li.dataset.status)));
+    gNode.selectAll("g.node").classed("dim", d => !active.has(d.data.s));
   };
-  bar.insertBefore(b, countsEl);
+  toolbar.insertBefore(b, sep);
 });
-countsEl.textContent = `${Object.keys(index).length} ramos`;
-show(T.id);
+document.getElementById("expand").onclick = () => { root.descendants().forEach(d => { if (d._children) d.children = d._children; }); update(root); fit(); };
+document.getElementById("collapse").onclick = () => { root.descendants().forEach(d => { if (d._children) d.children = d.depth >= 1 ? null : d._children; }); selected = root; show(root); update(root); fit(); };
+document.getElementById("fit").onclick = fit;
+
+show(root);
+update(root);
+fit();
 </script>
 </body>
 </html>
