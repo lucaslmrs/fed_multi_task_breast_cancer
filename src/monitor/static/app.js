@@ -366,14 +366,14 @@ async function openRun(path) {
   state.lastFinal = null;
   state.curves = null;
   const sections = {
-    header: el("div"), highlights: el("div"), final: el("div"), curves: el("div"), aggregation: el("div"),
+    header: el("div"), highlights: el("div"), final: el("div"), confusion: el("div"), curves: el("div"), aggregation: el("div"),
     conflict: el("div"), resources: el("div"), diagnostics: el("div"),
   };
   main.replaceChildren(...Object.values(sections));
   state.sections = sections;
   renderHeader(run.entry);
   renderFinal(run.final);
-  await Promise.all([loadCurves(), loadSection("aggregation", renderAggregation),
+  await Promise.all([loadCurves(), loadSection("confusion", renderConfusion), loadSection("aggregation", renderAggregation),
     loadSection("conflict", renderConflict), loadSection("resources", renderResources),
     loadSection("diagnostics", (p) => { state.diagnostics = p; renderDiagnostics(); })]);
   if (run.entry.status === "running") startLive();
@@ -397,7 +397,7 @@ async function refreshLive() {
     if (run.entry.status !== "running") {
       // Finished (or went stale): load the end-of-fold artifacts once and stop polling.
       stopTimer();
-      await Promise.all([loadSection("aggregation", renderAggregation),
+      await Promise.all([loadSection("confusion", renderConfusion), loadSection("aggregation", renderAggregation),
         loadSection("conflict", renderConflict), loadSection("resources", renderResources),
         loadSection("diagnostics", (p) => { state.diagnostics = p; renderDiagnostics(); })]);
       loadCatalog();
@@ -559,6 +559,93 @@ function renderFinal(final) {
   }).filter(Boolean);
   state.sections.final.replaceChildren(card("Métricas finais (teste)", ...blocks,
     el("p", { class: "note" }, "Média ± dp entre cliente × fold, que não são réplicas independentes (descritivo).")));
+}
+
+// ---- confusion matrices ---------------------------------------------------------------------
+
+const SEQUENTIAL_SCALE = [[0, "#FFF7F1"], [0.5, "#C98A96"], [1, "#7B2032"]];
+
+// Rows = true class, columns = predicted. "row" turns each row into the share of that true class
+// (the diagonal is then the recall of the class).
+function confusionTrace(classes, counts, mode) {
+  const z = counts.map((row) => {
+    const total = row.reduce((a, b) => a + b, 0);
+    return mode === "row" ? row.map((v) => (total ? v / total : null)) : row;
+  });
+  return { type: "heatmap", z, x: classes, y: classes, colorscale: SEQUENTIAL_SCALE, showscale: false,
+    zmin: 0, zmax: mode === "row" ? 1 : undefined,
+    customdata: counts, texttemplate: mode === "row" ? "%{z:.0%}" : "%{z}", textfont: { size: classes.length > 4 ? 10 : 13 },
+    hovertemplate: "real %{y} → previsto %{x}: %{customdata} (%{z:.3g})<extra></extra>" };
+}
+
+function confusionLayout(title, classes) {
+  const n = classes.length;
+  return { title: { text: title, font: { size: 13 } }, hovermode: "closest",
+    height: Math.max(300, 120 + n * 46), margin: { l: 150, r: 12, t: 40, b: 100 },
+    xaxis: { title: { text: "previsto", standoff: 10 }, tickangle: n > 3 ? -35 : 0, side: "bottom" },
+    yaxis: { title: { text: "real", standoff: 14 }, autorange: "reversed", automargin: true } };
+}
+
+function confusionNote(payload) {
+  return el("p", { class: "note" }, "Linhas = classe real, colunas = classe prevista, no teste. "
+    + "\"% por linha\" mostra a fração de cada classe real: a diagonal é o recall da classe. "
+    + `Fonte: ${payload.kind}_cls_predictions.csv.`);
+}
+
+function renderConfusion(payload) {
+  const container = state.sections.confusion;
+  if (!payload.available) {
+    container.replaceChildren(card("Matrizes de confusão (teste)", unavailable(payload)));
+    return;
+  }
+  const c = state.controls.confusion || (state.controls.confusion = { mode: "row", client: "all" });
+  const folds = new Set(payload.datasets.flatMap((d) => d.clients.map((x) => x.fold)));
+  const key = (x) => (folds.size > 1 ? `${x.client_id} f${x.fold}` : x.client_id);
+  const clientIds = [...new Set(payload.datasets.flatMap((d) => d.clients.map(key)))].sort();
+  if (c.client !== "all" && !clientIds.includes(c.client)) c.client = "all";
+  const modeControl = el("span", { class: "segmented" }, [["row", "% por linha"], ["count", "contagem"]].map(([v, text]) => el("button", {
+    class: c.mode === v ? "active" : undefined, onclick: () => { c.mode = v; renderConfusion(payload); },
+  }, text)));
+  const charts = el("div", { class: "charts" });
+  const pending = [];
+  for (const d of payload.datasets) {
+    let counts = d.counts, label = `todos os clientes (n=${d.n})`;
+    if (c.client !== "all") {
+      const hit = d.clients.find((x) => key(x) === c.client);
+      if (!hit) continue;
+      counts = hit.counts;
+      label = key(hit);
+    }
+    const node = el("div", { class: "chart" });
+    charts.append(node);
+    pending.push(() => plot(node, [confusionTrace(d.classes, counts, c.mode)], confusionLayout(`${d.dataset} — ${label}`, d.classes)));
+  }
+  container.replaceChildren(card("Matrizes de confusão (teste)",
+    el("div", { class: "controls" }, modeControl,
+      select([["all", "todos (soma)"], ...clientIds.map((id) => [id, id])], c.client, (v) => { c.client = v; renderConfusion(payload); }, "cliente")),
+    charts.children.length ? charts : el("p", { class: "note" }, "Esse cliente não tem tarefa de classificação."),
+    confusionNote(payload)));
+  pending.forEach((draw) => draw());
+}
+
+// One row per dataset, one matrix per run (pooled over clients), share per true class.
+function compareConfusion(runs, labels, pending) {
+  const datasets = [...new Set(runs.flatMap((r) => (r.confusion && r.confusion.available ? r.confusion.datasets.map((d) => d.dataset) : [])))].sort();
+  const title = "Matrizes de confusão (teste, % por linha)";
+  if (!datasets.length) return card(title, el("p", { class: "note" }, "Nenhum run selecionado tem predições de classificação."));
+  const blocks = datasets.map((dataset) => {
+    const charts = el("div", { class: "charts" });
+    runs.forEach((run, i) => {
+      const d = run.confusion && run.confusion.available && run.confusion.datasets.find((x) => x.dataset === dataset);
+      if (!d) return;
+      const node = el("div", { class: "chart" });
+      charts.append(node);
+      pending.push(() => plot(node, [confusionTrace(d.classes, d.counts, "row")], confusionLayout(labels[i], d.classes)));
+    });
+    return el("div", { class: "task-block" }, el("h3", { class: "task-title" }, dataset), charts);
+  });
+  return card(title, ...blocks,
+    el("p", { class: "note" }, "Linhas = classe real, colunas = classe prevista; soma de todos os clientes de cada run. A diagonal é o recall de cada classe."));
 }
 
 // ---- curves ---------------------------------------------------------------------------------
@@ -844,6 +931,7 @@ function renderDiagnostics() {
 async function openCompare() {
   stopTimer();
   state.view = "compare";
+  state.compareClientCurves = {};  // a running run must not show stale per-client curves
   state.selected = null;
   renderTree();
   const paths = [...state.compare];
@@ -873,6 +961,128 @@ function renderCompare() {
       { label: "budget", value: (r) => r.entry.budget_mode || "—" },
       { label: "diag.", value: (r) => r.entry.diagnostics && r.entry.diagnostics.status ? pill(r.entry.diagnostics.status) : "—" }], runs));
 
+  const pending = [];
+  const highlights = compareHighlights(runs, labels, pending);
+  const curves = compareCurves(runs, labels, pending);
+  const confusionCard = compareConfusion(runs, labels, pending);
+  const finals = compareFinals(runs, labels);
+  main.replaceChildren(header, highlights, curves, confusionCard, finals);
+  // Plotted only once attached: a detached node has no width and Plotly falls back to 700px.
+  pending.forEach((draw) => draw());
+}
+
+// Dice positivo and balanced accuracy per dataset, one bar per run. A run without final test
+// metrics (still running) falls back to its last validation value and says so in the legend.
+function compareHighlights(runs, labels, pending) {
+  const charts = el("div", { class: "charts" });
+  const sources = new Set();
+  for (const h of HIGHLIGHTS) {
+    const datasets = [...new Set(runs.flatMap((run) => [
+      ...run.final.filter((r) => r.task === h.task && h.test.includes(r.metric)).map((r) => r.dataset),
+      ...Object.keys(run.curves).filter((d) => h.curve.some((k) => run.curves[d][`val/${k}`])),
+    ]))].filter((d) => d && d !== "all").sort();
+    if (!datasets.length) continue;
+    const traces = runs.map((run, i) => {
+      let fromVal = false;
+      const values = datasets.map((dataset) => {
+        const row = h.test.map((m) => run.final.find((r) => r.dataset === dataset && r.task === h.task && r.metric === m)).find(Boolean);
+        if (row) return { y: row.mean, err: row.std };
+        const key = h.curve.map((k) => `val/${k}`).find((k) => (run.curves[dataset] || {})[k]);
+        const xy = key && run.curves[dataset][key];
+        if (!xy || !xy.y.length) return { y: null, err: null };
+        fromVal = true;
+        return { y: xy.y[xy.y.length - 1], err: null };
+      });
+      if (fromVal) sources.add("val");
+      return { type: "bar", x: datasets, y: values.map((v) => v.y), name: labels[i] + (fromVal ? " (validação)" : ""),
+        marker: { color: seriesColor(i), opacity: fromVal ? 0.55 : 1 },
+        error_y: { type: "data", array: values.map((v) => v.err ?? 0), visible: values.some((v) => v.err), color: css("--muted"), thickness: 1 },
+        text: values.map((v) => (v.y === null ? "" : fmt(v.y, 3))), textposition: "outside", cliponaxis: false, textfont: { size: 9 },
+        hovertemplate: "%{x}: %{y:.3f}<extra>%{fullData.name}</extra>" };
+    });
+    const node = el("div", { class: "chart" });
+    charts.append(node);
+    pending.push(() => plot(node, traces, {
+      title: { text: `${h.label} por dataset`, font: { size: 13 } }, barmode: "group", hovermode: "closest",
+      yaxis: { title: h.label, rangemode: "tozero" } }));
+  }
+  const title = "Destaques: Dice e balanced accuracy";
+  if (!charts.children.length) return card(title, el("p", { class: "note" }, "Nenhum run tem Dice ou balanced accuracy."));
+  const notes = ["Teste: média entre cliente × fold; a barra de erro é o dp (descritivo)."];
+  if (sources.has("val")) notes.push("Barras claras: run sem métricas finais; mostram o último valor de validação (média entre clientes).");
+  return card(title, charts, ...notes.map((n) => el("p", { class: "note" }, n)));
+}
+
+// Per-client curves come from /api/curves, loaded lazily the first time that view is chosen.
+async function loadCompareClientCurves(runs) {
+  const cache = state.compareClientCurves || (state.compareClientCurves = {});
+  await Promise.all(runs.map(async (run) => {
+    if (cache[run.entry.path]) return;
+    try { cache[run.entry.path] = await api(`/api/curves?path=${q(run.entry.path)}`); }
+    catch (error) { cache[run.entry.path] = { available: false, reason: String(error) }; }
+  }));
+}
+
+const CLIENT_DASHES = ["solid", "dot", "dash", "longdash", "dashdot", "longdashdot"];
+
+function compareCurves(runs, labels, pending) {
+  const c = state.controls.compare || (state.controls.compare = {});
+  if (!c.view) c.view = "mean";
+  const datasets = [...new Set(runs.flatMap((r) => Object.keys(r.curves)))].sort();
+  const curveKeys = [...new Set(runs.flatMap((r) => Object.values(r.curves).flatMap((d) => Object.keys(d))))].sort();
+  if (!curveKeys.includes(c.metric)) c.metric = defaultMetric(curveKeys);
+  const viewControl = el("span", { class: "segmented" }, [["mean", "média por dataset"], ["clients", "cada cliente"]].map(([v, text]) => el("button", {
+    class: c.view === v ? "active" : undefined,
+    onclick: async () => {
+      c.view = v;
+      if (v === "clients") await loadCompareClientCurves(runs);
+      renderCompare();
+    },
+  }, text)));
+  const charts = el("div", { class: "charts" });
+  const cache = state.compareClientCurves || {};
+  const perClient = c.view === "clients" && runs.every((r) => cache[r.entry.path]);
+  const [split, ...rest] = (c.metric || "").split("/");
+  const seriesKey = rest.join("/");
+  for (const dataset of datasets) {
+    let traces;
+    if (perClient) {
+      traces = runs.flatMap((run, i) => {
+        const payload = cache[run.entry.path];
+        if (!payload || !payload.available) return [];
+        const folds = new Set(payload.series.map((s) => String(s.fold)));
+        return payload.series.filter((s) => s.dataset === dataset && s[split] && s[split][seriesKey]).map((s, j) => ({
+          x: s[split][seriesKey].x, y: s[split][seriesKey].y, mode: "lines", type: "scatter",
+          name: `${s.client_id}${folds.size > 1 ? ` f${s.fold}` : ""}`, legendgroup: labels[i],
+          legendgrouptitle: { text: labels[i], font: { size: 11 } },
+          line: { color: seriesColor(i), width: 1.2, dash: CLIENT_DASHES[j % CLIENT_DASHES.length] } }));
+      });
+    } else {
+      traces = runs.map((run, i) => {
+        const xy = (run.curves[dataset] || {})[c.metric];
+        return xy ? { x: xy.x, y: xy.y, name: labels[i], mode: "lines", line: { color: seriesColor(i), width: 1.8 } } : null;
+      }).filter(Boolean);
+    }
+    if (!traces.length) continue;
+    const node = el("div", { class: "chart" });
+    charts.append(node);
+    pending.push(() => plot(node, traces, { title: { text: `${dataset} — ${curveKeyLabel(c.metric)}`, font: { size: 13 } },
+      xaxis: { title: perClient ? "" : "rodada / época" },
+      ...(perClient ? { height: 560, hovermode: "closest", margin: { l: 52, r: 12, t: 34, b: 30 },
+        legend: { orientation: "h", x: 0, y: -0.1, yanchor: "top", font: { size: 10 }, groupclick: "togglegroup" } } : {}) }));
+  }
+  const note = perClient
+    ? "Cada linha é um cliente (eixo x: rodada ou época): a cor identifica o run e o traço, o cliente. Clique no nome de um run na legenda para ocultar ou mostrar todos os seus clientes."
+    : "Cada linha é a média entre os clientes (e folds) do dataset, por run.";
+  return card("Curvas de treino",
+    el("div", { class: "controls" },
+      curveKeys.length ? select(curveKeys.map((k) => [k, curveKeyLabel(k)]), c.metric, (v) => { c.metric = v; renderCompare(); }, "métrica") : null,
+      viewControl),
+    charts.children.length ? charts : el("p", { class: "note" }, "Sem curvas para essa métrica."),
+    el("p", { class: "note" }, note));
+}
+
+function compareFinals(runs, labels) {
   const keys = new Map();
   runs.forEach((run) => run.final.forEach((row) => keys.set(`${row.dataset}|${row.task}|${row.metric}`, row)));
   const rows = [...keys.keys()].sort().map((key) => {
@@ -895,29 +1105,8 @@ function renderCompare() {
       return (d > 0) !== lowerIsBetter(r.metric) ? "pos" : "neg";
     } });
   });
-  const finals = card("Métricas finais lado a lado (média ± dp entre cliente × fold)",
+  return card("Métricas finais lado a lado (média ± dp entre cliente × fold)",
     rows.length ? table(columns, rows) : el("p", { class: "note" }, "Nenhum run selecionado tem métricas finais."));
-
-  const datasets = [...new Set(runs.flatMap((r) => Object.keys(r.curves)))].sort();
-  const curveKeys = [...new Set(runs.flatMap((r) => Object.values(r.curves).flatMap((d) => Object.keys(d))))].sort();
-  const c = state.controls.compare || (state.controls.compare = {});
-  if (!curveKeys.includes(c.metric)) c.metric = defaultMetric(curveKeys);
-  const charts = el("div", { class: "charts" });
-  const curves = card("Curvas médias por dataset (média entre clientes × folds)",
-    el("div", { class: "controls" }, curveKeys.length ? select(curveKeys.map((k) => [k, curveKeyLabel(k)]), c.metric, (v) => { c.metric = v; renderCompare(); }, "métrica") : null),
-    charts);
-  main.replaceChildren(header, finals, curves);
-  for (const dataset of datasets) {
-    const traces = runs.map((run, i) => {
-      const xy = (run.curves[dataset] || {})[c.metric];
-      return xy ? { x: xy.x, y: xy.y, name: labels[i], mode: "lines", line: { color: seriesColor(i), width: 1.8 } } : null;
-    }).filter(Boolean);
-    if (!traces.length) continue;
-    const node = el("div", { class: "chart" });
-    charts.append(node);
-    plot(node, traces, { title: { text: `${dataset} — ${curveKeyLabel(c.metric)}`, font: { size: 13 } }, xaxis: { title: "rodada / época" } });
-  }
-  if (!charts.children.length) charts.replaceWith(el("p", { class: "note" }, "Sem curvas para essa métrica."));
 }
 
 // ---- boot -----------------------------------------------------------------------------------

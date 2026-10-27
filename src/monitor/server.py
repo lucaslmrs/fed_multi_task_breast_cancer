@@ -160,7 +160,8 @@ class Handler(BaseHTTPRequestHandler):
             run_dirs = [app.run_dir(p) for p in paths]
             return self._json(compare.compare(run_dirs, [app.entry(d) for d in run_dirs]))
         readers_by_name = {"aggregation": readers.aggregation, "conflict": readers.conflict,
-                           "resources": readers.resources, "diagnostics": readers.diagnostics}
+                           "resources": readers.resources, "diagnostics": readers.diagnostics,
+                           "confusion": readers.confusion}
         if name == "curves":
             fold = (query.get("fold") or [None])[0]
             return self._json(readers.curves(app.run_dir(first), fold or None))

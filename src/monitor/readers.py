@@ -194,6 +194,64 @@ def final_metrics(run_dir):
             "clients": clean(clients.to_dict("records")), "metrics": metrics}
 
 
+# ---- confusion matrices -------------------------------------------------------------------
+
+def _class_names(group):
+    """Class names in index order from the ``class_name_<k>`` columns of a prediction slice."""
+    names = {}
+    for column in group.columns:
+        if column.startswith("class_name_"):
+            values = group[column].dropna()
+            if not values.empty:
+                names[int(column.rsplit("_", 1)[1])] = str(values.iloc[0])
+    labels = pd.to_numeric(pd.concat([group["ground_truth"], group["predicted"]]),
+                           errors="coerce").dropna().astype(int)
+    size = max([*names.keys(), *labels.tolist(), -1]) + 1
+    return [names.get(i, str(i)) for i in range(size)]
+
+
+def _counts(group, size):
+    matrix = np.zeros((size, size), dtype=int)
+    truth = pd.to_numeric(group["ground_truth"], errors="coerce")
+    predicted = pd.to_numeric(group["predicted"], errors="coerce")
+    for t, p in zip(truth, predicted):
+        if pd.notna(t) and pd.notna(p) and 0 <= int(t) < size and 0 <= int(p) < size:
+            matrix[int(t), int(p)] += 1
+    return matrix.tolist()
+
+
+def confusion(run_dir):
+    """Test confusion matrices per dataset (rows = true class, columns = predicted), pooled over
+    clients x folds and per client, from ``<kind>_cls_predictions.csv``."""
+    run_dir = Path(run_dir)
+    kind = td.run_kind(run_dir)
+    path = run_dir / f"{kind}_cls_predictions.csv" if kind else None
+    if path is None or not path.exists():
+        return unavailable("no classification predictions yet (run in progress or no cls task)")
+
+    def load():
+        frame = td._read_csv(path)
+        if frame is None or frame.empty or not {"dataset", "ground_truth", "predicted"} <= set(frame):
+            return unavailable("classification predictions without ground_truth/predicted")
+        datasets = []
+        for dataset, group in frame.groupby("dataset", sort=True):
+            classes = _class_names(group)
+            clients = []
+            if "client_id" in group:
+                keys = ["client_id"] + (["fold"] if "fold" in group else [])
+                for key, part in group.groupby(keys, sort=True):
+                    key = key if isinstance(key, tuple) else (key,)
+                    clients.append({"client_id": str(key[0]),
+                                    "fold": str(key[1]) if len(key) > 1 else None,
+                                    "counts": _counts(part, len(classes))})
+            datasets.append({"dataset": str(dataset), "classes": classes,
+                             "counts": _counts(group, len(classes)), "n": int(len(group)),
+                             "clients": clients})
+        return {"available": True, "kind": kind, "datasets": datasets}
+
+    return cached("confusion", [path], load)
+
+
 # ---- aggregation --------------------------------------------------------------------------
 
 def _aggregation_fold(history):
