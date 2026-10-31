@@ -42,6 +42,8 @@ OpenCV reads the file's channel order reversed and `imwrite` reverses it again, 
 preserves the original per-channel semantics.
 
 Run with:  python -m src.dataset.TCGA_LGG_preprocessing
+           (needs `data.dataset: TCGA_LGG` in config.yaml), or, for a NEW variant without editing
+           config.yaml:  python -m src.dataset.TCGA_LGG_preprocessing --variant processed_256 --image-size 256
 """
 
 from pathlib import Path
@@ -50,11 +52,11 @@ from typing import Dict, List
 import cv2
 import numpy as np
 import pandas as pd
-import yaml
 
 from src.dataset import paths
 from src.dataset.preprocessing_utils import (add_image_metadata, assert_target_dataset,
-                                             assert_variant_resolution, resize_image, resize_mask)
+                                             assert_variant_resolution, preprocessing_data_config,
+                                             resize_image, resize_mask)
 
 # =======================
 # User-Configurable Settings
@@ -233,9 +235,10 @@ def summarize(df: pd.DataFrame, rows: List[dict], config_data: dict) -> None:
 # =======================
 # Main
 # =======================
-def main():
-    with open(CONFIG_FILE) as cf:
-        config_data = yaml.load(cf, Loader=yaml.FullLoader)["data"]
+def main(argv=None):
+    # Without flags: config.yaml's data block, as before. With --variant/--image-size: a NEW variant
+    # of this dataset, without editing config.yaml (see preprocessing_data_config).
+    config_data = preprocessing_data_config(DATASET, argv, CONFIG_FILE)
 
     assert_target_dataset(config_data, DATASET)
     assert_variant_resolution(paths.mapping_file(config_data), config_data["image_size"])

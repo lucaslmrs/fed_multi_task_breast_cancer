@@ -34,6 +34,7 @@ silenciosamente — o custo de um diagnóstico errado aqui é alto.
 | `FileNotFoundError` em `mapping.csv` / `federated_mapping.csv` | dataset não pré-processado, ou `data.dataset`/`data.variant` apontando para outro lugar. `paths.require_*` falha de propósito em vez de regenerar silenciosamente |
 | `[ABORT] This script preprocesses ...` | `data.dataset` no `config.yaml` não bate com o script executado — proteção contra sobrescrever a variante de outro dataset |
 | `[ABORT] ... already holds images of size ...` | tentativa de escrever outra resolução dentro de uma variante existente |
+| `[ABORT] Variant folder ... already exists ...` | `--variant` na linha de comando apontando para uma pasta que já tem `mapping.csv` ou arquivos (variante pronta ou run parcial). Variante se escreve uma vez: escolha outro `--variant` ou apague a pasta à mão para refazer |
 | Shape mismatch de canais (1 vs 3) | `federated.share_stem: True` num run misto BUSI+ISIC. O stem precisa ser pessoal |
 | `NaN` inesperado nas colunas de máscara | linha do ISIC com `task: cls` — não tem máscara, e `NaN` ali é intencional, não bug |
 | Erro de ABI em pandas/monai | `numpy` subiu para `>=2` |

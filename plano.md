@@ -32,9 +32,9 @@ Criado em 2026-10-04.
 | E2 | App local de monitoramento e comparação | ✅ | `feat/monitor-app` | 2026-10-16 |
 | E5 | Validação das fontes (consolidação) | ✅ | `docs/sources` | 2026-10-16 |
 | E3 | Ablação: loss fed multitask multi-dataset | ✅ | `exp/loss-ablation` | 2026-10-18 |
-| E4 | Ablação: pré-processamento de imagens | ⬜ | `exp/preprocessing-ablation` | — |
-| E6 | Compartilhamento ampliado (decoder federado) | ⬜ | `exp/wider-sharing` | — |
-| E7 | Transfer learning (ResNet-34 ImageNet) | ⬜ | `exp/transfer-learning` | — |
+| E4 | Ablação: pré-processamento de imagens | ⏳ | `exp/preprocessing-ablation` | 2026-10-18 |
+| E6 | Compartilhamento ampliado (decoder federado) | ⏳ | `exp/wider-sharing` | 2026-10-18 |
+| E7 | Transfer learning (ResNet-34 ImageNet) | ⏳ | `exp/transfer-learning` | 2026-10-18 |
 
 Ordem de execução: **E0 → E1 → E2 → E5 → E3 → (E4 ∥ E6) → E7**.
 - E0 foi incluída em 2026-10-08 a pedido do usuário. A métrica atual de conflito dá ≈ 0 para todos
@@ -1969,7 +1969,10 @@ manifest da Fase B; (d) registro no `plano.md` depois de cada fase.
 
 ## E4 — Ablação: pré-processamento de imagens
 
-**Objetivo.** Medir o efeito de escolhas de pré-processamento no desempenho.
+**Objetivo.** Medir o efeito de escolhas de pré-processamento no desempenho. Na forma decidida em
+2026-10-18: entender o que cada dataset precisa e usar **uma resolução por dataset** (TCGA-LGG e
+SIIM-ACR a 256 px; BUSI e ISIC a 128 px). Os stems pessoais e o MTnnUNet totalmente convolucional
+permitem misturar resoluções no mesmo run.
 
 **Situação atual.**
 - **Interpolação:** BUSI usa `INTER_NEAREST` (congelado); ISIC, TCGA-LGG e SIIM-ACR usam `INTER_AREA`.
@@ -1984,6 +1987,8 @@ manifest da Fase B; (d) registro no `plano.md` depois de cada fase.
   exige uma variante de maior resolução, ou um recorte, como braço da E4, com uma nova variante e
   sem tocar em `processed_128`.
 - **Replicação com ≥ 3 seeds**, pelo mesmo motivo de ruído entre runs registrado na E3.
+  *Substituída em 2026-10-18 por decisão do usuário:* 1 seed (1993), 1 run (E4.1). Multi-seed fica
+  pendente (E4.8).
 
 **Restrição central.** Ablações que alteram a imagem gravada exigem uma **nova variante** de dataset,
 sem sobrescrever `processed_128` nem regerar a partição congelada. Por isso a preferência vai para
@@ -1995,15 +2000,239 @@ Antes de criar uma variante gravada, é preciso verificar se a partição pode s
 2. Implementação configurável, com testes.
 3. Manifest, handoff de treino, análise e fontes registradas.
 
-**Treino necessário?** Sim, o estudo completo, executado pelo usuário.
+**Treino necessário?** Sim: 1 run federado solto, seed 1993, 400 rodadas, executado pelo usuário
+(handoff em E4.6).
 
-**Critério de pronto.** Pipeline de pré-processamento escolhido, com evidência descritiva e fonte
-registrada.
+**Critério de pronto.** Run de 400 rodadas lido contra a E3, com a decisão sobre a resolução
+registrada e as ressalvas explícitas: orçamento (não existe controle de 400 rodadas) e raster do GT
+(o Dice a 256 px é medido contra outra máscara; E4.7).
 
-**Detalhamento.** _(a preencher)_
+**Detalhamento.**
+
+#### E4.0 — Fatos (levantados em 2026-10-18)
+
+- **Lesão por dataset a 128 px** (`python -m scripts.preprocessing_needs`; tabela completa em
+  `docs/PREPROCESSING_NEEDS.md`):
+
+  | Dataset | Bruto | Vazias | Lesão mediana | % do quadro | Lado mín. p5 | < 50 px |
+  |---|---|---|---|---|---|---|
+  | BUSI | 512×512 | 14,2% | 1.086 px | 6,6% | 11 | 1 |
+  | ISIC (seg) | variável (ex. 767×576, 3072×2304) | 0% | 2.697 px | 16,5% | 17 | 1 |
+  | TCGA-LGG | 256×256 | 65,1% | 381 px | 2,3% | 8 | 78 |
+  | SIIM-ACR | 1024×1024 | 77,9% | 134 px | 0,82% | 5 | 474 |
+
+- **O MTnnUNet só exige H e W divisíveis por 32.** Um forward a 256 px dá as 4 saídas de seg em
+  256×256 e o logit de cls; a 240 px falha. O trunk compartilhado é convolucional, então os pesos
+  não dependem do tamanho da entrada, e os stems são pessoais.
+- **O master copia cada `mapping.csv`.** Nada em `src` lê `data.image_size` no treino; o loader lê
+  `img_path`/`mask_path` do master. Mudar a variante de um dataset exige, portanto, um master
+  próprio. O `_group_strata` do TCGA usa só `tumor_pixels > 0`, e a ordem dos mappings não depende
+  da resolução: o mesmo gerador, sobre os mappings a 256, deve reproduzir a partição da E3 (E4.3).
+- **TCGA-LGG a 256 é o próprio dado.** O bruto já é 256×256: em 300 fatias sorteadas, imagem e
+  máscara de `processed_256` são idênticas ao TIFF.
+- **Normalização de intensidade fica de fora.** Toda conv do MTnnUNet é sem bias e seguida de
+  `InstanceNorm2d` sem afim, então uma mudança afim por imagem na entrada é quase anulada.
+- **Hardware:** RTX 5070 Ti com 16.303 MiB, ~2,4–2,8 GB ocupados em repouso. O vencedor da E3
+  levou 6.068 s para 200 rodadas (rodada sem M1/M2: mediana 25 s; com M1/M2: ~68 s), com pico de
+  8.310 MiB na telemetria.
+
+#### E4.1 — Decisões (grill com o usuário em 2026-10-18)
+
+1. **Muda só a resolução.** TCGA-LGG e SIIM-ACR a 256 px; BUSI e ISIC a 128 px, com a
+   `processed_128` intocada. Normalização, recorte e augmentation ficam fora.
+2. **Um run solto:** `python -m src.training_federated --config …`, seed 1993, 400 rodadas,
+   `steps_per_round: 10`, sem `study_runner`, sem gêmeo local-only e sem controle de 400 rodadas.
+   A comparação com a E3 fica com o usuário.
+3. **Config base:** o do vencedor da E3 (`init_seed_dataset`, seed 1993). O compartilhamento
+   continua só no trunk; `shared_modules` é da E6.
+4. **Master novo autorizado**, desde que seja o master da E3 seed 1993 lido a 256 px, com
+   verificação de equivalência.
+5. **"≥ 3 seeds" substituída** por decisão do usuário: 1 seed, 1 run.
+6. **512 px descartado:** não cabe com batch 32 em 16 GB.
+
+#### E4.2 — Código
+
+- **C1** `preprocessing_utils.preprocessing_data_config(dataset, argv=None, config_file=…)`.
+  - Sem flags: devolve o bloco `data` do `config.yaml` sem mudança (fluxo histórico, com
+    `assert_target_dataset`).
+  - `--variant processed_<N> --image-size N`, sempre juntos: escolhe o dataset do próprio script,
+    tira as classes de `datasets.<DS>.classes`, exige que o nome soletre o tamanho e chama
+    `assert_new_variant`, que aborta se a pasta tem `mapping.csv` ou qualquer arquivo. Sem flag
+    `--dataset`.
+  - Só `TCGA_LGG_preprocessing.py` e `SIIM_ACR_preprocessing.py` ganham `main(argv=None)`; os
+    scripts do BUSI e do ISIC ficam intocados.
+- **C2** `scripts/partition_equivalence.py`. Exige: mesmas colunas, linhas e ordem; mesmos
+  `dataset, fold, client_id, task, split, id`; linhas de BUSI e ISIC idênticas como texto do CSV; em
+  TCGA e SIIM, `class`, `id`, `lesion_id` e `official_split` iguais, caminhos iguais depois de trocar
+  o prefixo `paths.processed_dir(…processed_128)` pelo de `processed_256`, `dim1 == dim2 == 256`,
+  `tumor_pixels > 0` igual linha a linha e arquivos presentes; e o sha256 da referência igual ao do
+  seu metadata. Qualquer problema sai com status 1. `--write-metadata STUDY_ID SEED --config …`
+  grava `<candidato>_metadata.yaml` no esquema do `_ensure_partition`, mais o caminho do relatório,
+  e nunca sobrescreve.
+- **C3** `scripts/preprocessing_needs.py`: só leitura, caminhos por `paths.mapping_file`; fração
+  vazia, área da lesão (mediana, p5, % do quadro), p5 do lado menor e lesões < `--small-px`.
+- **C4** `studies/e4_preprocessing/resolution_256.yaml`, gerado com `safe_load`/`safe_dump` a partir
+  do config resolvido da E3. Difere só em: `datasets.{TCGA_LGG,SIIM_ACR}.variant: processed_256`,
+  `federated.partition_file` (master da E4), `federated.rounds: 400`, bloco `experiment`
+  (`e4_preprocessing` / `resolution_256`) e `runtime.federated.client_resources.num_gpus: 1.0`
+  (probe, E4.5; fora do hash).
+- Nenhuma chave nova no `src/config.yaml`.
+
+#### E4.3 — Dados e equivalência
+
+- **Variantes** (logs em `runs/validation/e4_preprocessing/{tcga,siim}.log`; nenhum `became empty`):
+
+  | Variante | Linhas | Positivas | Disco | sha256 do `mapping.csv` |
+  |---|---|---|---|---|
+  | `data/TCGA_LGG/processed_256` | 3.929 | 1.373 | 337 MB | `5a8a93b1…a98024` |
+  | `data/SIIM_ACR/processed_256` | 12.044 | 2.667 | 461 MB | `66b647dd…a050e` |
+
+  - O SIIM-ACR repete o tratamento de duplicatas da 128 (3 imagens removidas; o par com máscaras
+    diferentes sai inteiro). As `processed_128` continuam com os mesmos sha256 (`cdce37bb…` e
+    `68d9a714…`).
+- **Controle de determinismo:** o master da E3 regerado a 128 em
+  `runs/validation/e4_partition_control/` tem sha256 `389116b5…bd3b`, igual ao original.
+- **Master da E4:** `data/federated_studies/e4_preprocessing/seed_1993/federated_mapping.csv`,
+  46.555 linhas, sha256 `a3d7d98423b56c4e074f8b460224edc3c1708e64e63fe39a6442868eb74a82d2`. Gerado
+  por `python -m src.dataset.federated_partition --config studies/e4_preprocessing/resolution_256.yaml`.
+- **Equivalência** (`federated_mapping_equivalence.yaml`, status `ok`): BUSI 900 e ISIC 13.709
+  linhas idênticas; TCGA 7.858 e SIIM 24.088 linhas com 0 trocas de classe, id, `lesion_id` ou
+  `official_split`, 0 caminhos fora do prefixo esperado, 0 arquivos ausentes e 0 viradas de
+  `tumor_pixels > 0`. Positivas: TCGA 1.373 / SIIM 2.667, iguais à referência. O metadata
+  (`federated_mapping_metadata.yaml`) traz a assinatura `48ffae03…` e o sha256 do CSV.
+- **Loader:** um batch de treino de `TCGA_LGG_mt_0` sai (2, 3, 256, 256) e um de `SIIM_ACR_mt_0`,
+  (2, 1, 256, 256); BUSI e ISIC continuam a 128.
+
+#### E4.4 — Testes
+
+- `tests/test_preprocessing_cli.py` (12): flags juntas, nome que soletra o tamanho, classes do
+  registro, abort com `mapping.csv` e com pasta não vazia, pasta vazia aceita, fluxo sem flags
+  intacto, e um TCGA sintético de ponta a ponta a 256 sem tocar no `config.yaml`.
+- `tests/test_partition_equivalence.py` (16): cópia reescalada equivalente; troca de classe, lesão
+  sumida, linha do BUSI alterada, ordem/split/cliente trocados, caminho em outra variante, tamanho
+  errado, esquema e contagem, dataset desconhecido e arquivos ausentes são problemas; metadata no
+  esquema do `study_runner`, gravado uma vez e nunca com problema ou com config errado.
+- `tests/test_preprocessing_needs.py` (5) e `tests/test_e4_run_config.py` (3: diff exato contra o
+  vencedor da E3 e master igual ao seu metadata; pulam sem `runs/` ou `data/`).
+
+#### E4.5 — Validação
+
+- Suíte completa e `sync_agent_assets --check` (números no **Registro**).
+- **Smoke de CPU** (`scripts.smoke_federated --config studies/e4_preprocessing/resolution_256.yaml
+  --conflict-diagnostics`): `SMOKE_OK`, 5 clientes (um por dataset/tarefa), M1/M2 nas 2 rodadas.
+  Movido para `runs/validation/e4_smoke/`.
+- **Probe de memória na GPU** (2 rodadas, só SIIM + TCGA, os 6 clientes a 256 px; GPU sem outros
+  processos). Pico = máximo de `memory_used_mb` em `gpu_telemetry.csv`, que inclui os ~2,4 GB de
+  repouso:
+
+  | `num_gpus` | Pico (telemetria) | Pico (`nvidia-smi`, 1 s) | Pico reservado por cliente | Rodada 1 | Rodada 2 | OOM |
+  |---|---|---|---|---|---|---|
+  | 0.5 | **15.588 MiB** | 15.248 MiB | 5.906 MiB | 111 s | 55 s | não |
+  | 1.0 | 9.072 MiB | 8.765 MiB | 5.866 MiB | 107 s | 71 s | não |
+
+  - Regra: sem OOM e pico ≤ 14.500 MiB → 0.5. Com 0.5 o pico passou (15.588, na rodada 1, com
+    M1/M2; ~14,1–14,4 GB sustentados no resto), então o run usa **1.0**, e o re-probe com 1.0
+    passou com folga.
+  - As duas rodadas do probe têm M1/M2 (a 1ª e a última sempre têm). Com 1.0, os 6 clientes a 256
+    custam só ~1,3× o tempo de 0.5 (71 s contra 55 s na rodada 2): com 0.5, os dois clientes
+    simultâneos disputam a mesma GPU.
+  - O pico com 0.5 se explica pelos próprios processos do probe: 2 × 5.906 MiB reservados, mais os
+    contextos CUDA dos 2 workers e do driver, mais os ~2,4 GB de repouso. Com 1.0 a mesma conta dá
+    os 9.072 MiB medidos. Mesmo descontando um contexto alheio (~0,5 GB), 0.5 passaria do limite.
+  - **Ressalva de tempo:** um smoke de CPU da E6 (sessão Ray de 22:55:59 a 22:58:25) rodou junto
+    com as rodadas 1 e 2 do probe de 0.5. Ele não usa a GPU, mas disputa a CPU, então os tempos com
+    0.5 podem estar pessimistas e o ~1,3× entre 1.0 e 0.5 pode estar subestimado. O probe com 1.0
+    (23:02:56 em diante) rodou sem sobreposição.
+  - Execução: `runs/validation/e4_gpu_probe/` (`config_probe.yaml`, `config_probe_num_gpus_1.yaml`,
+    `run/`, `run_num_gpus_1/`). RAM máxima do driver: 2,9 GB.
+- **Estimativa de tempo (400 rodadas, `num_gpus` 1.0).** Não medida diretamente: o probe só tem
+  rodadas com M1/M2 e só 6 clientes. Supondo que a passagem de 0.5 para 1.0 custe à E3 o mesmo
+  ~1,3× medido no probe, as rodadas da E3 ficariam em ~32 s (sem M1/M2) e ~88 s (com). Trocando a
+  parcela dos 6 clientes SIIM/TCGA (~45% a 128 px) pela medida a 256: rodada com M1/M2 ≈
+  0,55 × 88 + 71 ≈ 120 s; sem M1/M2 ≈ 44–58 s. Com 41 rodadas amostradas e 359 sem amostragem:
+  **~6–7 h** (faixa 5,5–8 h), mais ~10 min de teste final e relatórios. A estimativa do plano
+  (9–11 h) supunha que 1.0 dobraria o tempo; no probe, foi ~1,3×.
+
+#### E4.6 — Handoff de treino
+
+1. **O que alterar:** nada no `src/config.yaml`. O config é
+   `studies/e4_preprocessing/resolution_256.yaml` (versionado).
+2. **Pré-voo:**
+   - `sha256sum /home/lucas/fed_multi_task_breast_cancer/data/federated_studies/e4_preprocessing/seed_1993/federated_mapping.csv`
+     = `a3d7d98423b56c4e074f8b460224edc3c1708e64e63fe39a6442868eb74a82d2`;
+   - `nvidia-smi --query-compute-apps=pid --format=csv,noheader` não imprime nada;
+   - nenhum outro run de treino ativo. **Este run nunca roda em paralelo com outro** (E6, E7 ou
+     qualquer smoke na GPU): com 1.0 ele usa a GPU inteira em sequência.
+3. **Comando:**
+
+   ```bash
+   cd /home/lucas/fed_e4_preproc && .venv/bin/python -m src.training_federated --config studies/e4_preprocessing/resolution_256.yaml
+   ```
+
+4. **Retomada:** `run(cfg, run_path=…, resume=True)` reaproveita só folds completos. Com CV=1, uma
+   interrupção recomeça da rodada 1.
+5. **Tempo:** ~6–7 h (faixa 5,5–8 h). Conferir no `execution.log`, depois de ~20 rodadas, ~45–60 s
+   por rodada sem M1/M2 e ~2 min nas amostradas (1, 11, 21, …, 400).
+6. **Disco:** ~3,5–4 GB do run (E3: 2,9 GB a 200 rodadas, com `conflict/` dobrando para ~0,7 GB). Os
+   dados a 256 (0,8 GB) já estão gravados.
+7. **Artefatos:** `runs/<ts>_FEDERATED_MTnnUNet_Curated_BUSI-ISIC_2018-SIIM_ACR-TCGA_LGG/`
+   (`federated_test_results.csv`, `federated_cls_predictions.csv`, `fold_0/`, `gpu_telemetry.csv`,
+   `conflict_*.csv`, `negative_transfer_*.csv`, `diagnostics/`, `run_report.html`).
+8. **Sucesso:**
+   - 24 linhas em `federated_test_results.csv` (BUSI 2×2, ISIC 8, TCGA 2×2, SIIM 4×2);
+   - nenhum OOM e o pico de memória registrado em `gpu_telemetry.csv`;
+   - 41 diretórios `fold_0/conflict/round_*`, cada um com 16 `*_m1.npz` e 16 `*_m2.csv`
+     (`for d in …/fold_0/conflict/round_*; do echo $d $(ls $d/*_m1.npz|wc -l) $(ls $d/*_m2.csv|wc -l); done`);
+   - nenhum D1 no diagnóstico.
+
+#### E4.7 — Defeitos registrados, não corrigidos
+
+- **Máscara do BUSI com valor 254.** `benign_id_181_mask.png` tem 1 pixel 254 (além de 1.323 pixels
+  255). `BUSI_dataset.py::_load_mask` só mapeia 255 → 1, então esse pixel chega à loss como 254; e
+  `tumor_pixels` só conta 255. É a única máscara não binária do BUSI.
+- **`transforms.rotation` é ignorado.** `client.py::_default_transforms` aplica sempre
+  `RandomRotation(degrees=360)`, qualquer que seja o valor da chave.
+- **`assert_variant_resolution` não guarda aspecto nem interpolação**, só o tamanho. Variantes novas
+  pela CLI ficam protegidas por `assert_new_variant`.
+- **ISIC achatado:** `PRESERVE_ASPECT = False`; Task 1 (aspectos variados) e Task 3 (4:3) são
+  esticadas para o quadrado.
+- **O Dice a 256 é medido sobre outro raster de GT.** No TCGA e no SIIM, o Dice de teste da E4 usa a
+  máscara a 256 px, e o da E3 a de 128 px: alvos diferentes da mesma lesão, sobretudo nas pequenas.
+  Comparar os dois mistura modelo e alvo. É ressalva de leitura, não defeito de código.
+
+#### E4.8 — Pendências
+
+- Multi-seed (a E4 tem 1 seed).
+- ISIC a 256 px.
+- Recorte de pulmão no SIIM-ACR.
+- Augmentation anatômica por dataset (a rotação de 360° é implausível em tórax e em RM axial).
+- Normalização de intensidade (fora da E4).
+- Não existe controle de 400 rodadas a 128 px: o run confunde orçamento e resolução.
+- Avaliar o Dice no mesmo raster da E3 (por exemplo, reduzir a predição a 128 px) para isolar o
+  efeito do modelo.
 
 **Registro.**
 - 2026-10-04 — etapa planejada (macro).
+- 2026-10-18 — **detalhamento (E4.0–E4.8) escrito a partir do grill e implementado; a E4 aguarda o
+  run (⏳).** Branch `exp/preprocessing-ablation`, worktree `/home/lucas/fed_e4_preproc`.
+  - Commits: C1 `2d7618f` (CLI de variante), C2 `62e59a1` (`partition_equivalence`), C3 `16eec5f`
+    (`preprocessing_needs`), C4 `bb5b216` (config do run) e `f07cbd9` (teste do config), C5
+    `c6e2f54` (docs: `docs/PREPROCESSING_NEEDS.md`, `.rclone-filter` com `data/*/processed_*/**`,
+    `AGENTS.md`, skills `dataset-preprocessing`, `drive-sync` e a linha `[ABORT]` nova da
+    `error-investigator`, notas da E4 em D22/D23), C6 este registro.
+  - Dados: `processed_256` do TCGA-LGG e do SIIM-ACR gerados pela CLI, sem nenhuma lesão sumida.
+    Controle de determinismo OK (`389116b5…bd3b`). Master da E4 gerado e equivalente ao da E3:
+    46.555 linhas, positivas TCGA 1.373 / SIIM 2.667, sha256 `a3d7d984…82d2` (E4.3).
+  - Validação: suíte com 278 testes OK (3 pulados: CUDA indisponível com
+    `CUDA_VISIBLE_DEVICES=`); `sync_agent_assets --check` OK; smoke de CPU `SMOKE_OK`
+    (`runs/validation/e4_smoke/`); probe de GPU: 0.5 passou de 14.500 MiB (15.588), 1.0 ficou em
+    9.072 MiB, então `num_gpus: 1.0` (E4.5).
+  - **Achado fora da E4:** `src/monitor/static/index.html` não está versionado (o `*.html` do
+    `.gitignore` o ignora), então `tests.test_monitor.ServerTests.test_api_and_page` falha com 404
+    num clone ou worktree novo. Nesta worktree, o arquivo foi ligado ao da checkout principal por um
+    link simbólico (ignorado pelo git). A correção (versionar o arquivo com uma exceção no
+    `.gitignore`) fica pendente.
+  - **Próximo passo do usuário:** rodar o handoff da E4.6 (~6–7 h), um run por vez na GPU.
 
 ---
 
@@ -2034,10 +2263,263 @@ registrada.
 **Critério de pronto.** Run de 400 rodadas lido contra a E3, com a decisão sobre o compartilhamento
 registrada e a ressalva de orçamento explícita (não existe controle de 400 rodadas).
 
-**Detalhamento.** _(a preencher)_
+**Detalhamento.**
+
+#### E6.0 — Fatos (levantados em 2026-10-18)
+
+- **Tamanhos** (MTnnUNet: 53 chaves, sem buffers). Os tamanhos compartilhados (10/4 663 296 e
+  32/10 135 840) são iguais com 1 e 3 canais e com 2, 3 e 7 classes, porque stem, saídas e
+  classificador ficam fora do conjunto compartilhado. O total 15 819 799 e as frações abaixo são do
+  modelo de referência (BUSI, 1 canal/3 classes); no ISIC (3 canais/7 classes, total 15 821 403) a
+  fração ampla é 64.06%.
+
+  | Conjunto | Blocos | Chaves | Valores | Fração |
+  |---|---|---|---|---|
+  | Trunk (hoje) | 5 | 10 | 4 663 296 | 29.48% |
+  | Amplo (E6) | 17 | 32 | 10 135 840 | 64.07% |
+
+- **A regra legada é por prefixo** (`startswith`), não por nome:
+  - no Multi_BTSUNet, ela captura também o `bottleneck2` (11/9 chaves com/sem stem, contra 10/8
+    por nome exato). Por isso, o caminho legado mantém o `startswith`;
+  - o MTUNetPlusPlus não casa nenhuma chave nas duas regras. Federado, ele não compartilhava nada,
+    e sem erro.
+- **O M1 tinha dois bugs**, e o `observational()` engolia os dois (o smoke passava assim mesmo):
+  - as chaves vinham do `state_dict`, então um buffer compartilhado (os FrozenBN da E7) dava
+    `KeyError`;
+  - com o conjunto amplo, um cliente `single_task` do ISIC tem `grad None` nos blocos que o seu
+    objetivo não alcança, e o `.detach()` dava `AttributeError`. Medido: o cliente só-cls deixa
+    `decoder1–4` e `upsample1–4` sem gradiente; o só-seg deixa `process_encoder_5` e
+    `process_decoder_5`.
+- Os logs dos workers do Ray não chegam ao `execution.log` (o run da E3 tem 0 linhas
+  `local_training=steps`). A prova de cada cliente são os arquivos que ele grava.
+- **Diluição no ISIC.** Dentro do ISIC, os clientes seg têm 80% da massa e os cls 20%
+  (`task_weights` 4:1, 4 clientes de cada). O Adam não mexe em parâmetro com `grad None`, então o
+  cliente devolve esses blocos iguais ao global (delta zero). A atualização do ISIC sai diluída em
+  20% em `decoder1–4`/`upsample1–4` e em 80% em `process_*`.
+- **Inicialização.**
+  - O trunk inicial da E6 é **idêntico** ao da E3. Conferido: os 10 arrays do trunk saem iguais
+    de `_initial_shared_parameters` com os dois configs (mesma seed `__global__`, mesmo modelo de
+    referência).
+  - O decoder deixa de ser pessoal. Na E3, ele vinha da seed pessoal (por dataset, no vencedor).
+    Na E6, ele parte do parâmetro inicial global, igual para os 16 clientes.
+  - O estado inicial global depende dos canais de `federated.datasets[0]`: o `encoder1` consome o
+    RNG antes dos módulos compartilhados. Com 1 ou 3 canais, `encoder2`, decoder e `process_*`
+    saem diferentes; com 2 ou 3 classes, iguais. É comportamento antigo, que agora alcança o
+    decoder.
+- **Referência de custo** (vencedor da E3, seed 1993, 200 rodadas): ~1h41 de treino (6068 s;
+  1h43 de parede no `run_index.csv`) e 2.9 GB em disco. Desses, os clientes ocupam de 119 a 168 MB
+  cada, `conflict/` 341 MB (21 rodadas amostradas) e o `aggregation_history.json` 14 MB.
+
+#### E6.1 — Decisões (grill com o usuário em 2026-10-18)
+
+1. **Um run federado solto**, `python -m src.training_federated --config …`, seed 1993. Sem
+   `study_runner`, sem gêmeo local-only e sem controle extra. A comparação com os runs anteriores
+   fica com o usuário.
+2. **Orçamento:** 400 rodadas com `steps_per_round: 10`, o dobro da E3 (o D15 disparou nos 18 runs).
+3. **Config base:** `runs/studies/e3_loss_ablation/resolved/seed_1993/init_seed_dataset.yaml`, do
+   vencedor da E3. Muda só `rounds`, a intervenção e o bloco `experiment`. O master é o da E3 seed
+   1993.
+4. **Agregação hierárquica inalterada.** A diluição do ISIC fica como pendência (E6.8).
+
+#### E6.2 — Chave `federated.shared_modules` (C1)
+
+- **Ausente ou null:** `shared_modules(config)` devolve `bool(share_stem)`, o spec legado. O
+  `model_split` aplica o `startswith` de sempre, byte a byte.
+- **Presente:** devolve uma tupla de nomes de topo, com casamento **exato** do primeiro componente
+  da chave (`name.split(".", 1)[0]`): `enc` não captura `enc2`.
+- **Validação da lista** em `src/federated/config.py::shared_modules`. Ela roda em toda resolução,
+  não só em `validate_federated_config`, então nenhum chamador recebe uma lista inválida. Recusa:
+  - lista vazia, valor que não é lista, duplicatas;
+  - nome vazio, com espaço nas bordas ou com ponto;
+  - `task_log_vars`, que é pessoal (Kendall);
+  - `encoder1` incoerente com `share_stem`. Ausente, o `share_stem` vale `true`, então uma lista
+    sem `encoder1` exige `share_stem: false` (o config da E3 já tem).
+
+  Uma string como spec dá `TypeError`.
+- **`model_split.validate_sharing(model, sharing)`**, chamado em `_initial_shared_parameters` sobre
+  o modelo de referência e sobre cada candidato, inclusive no standalone. Exige:
+  - conjunto compartilhado não vazio. O MTUNetPlusPlus passa a falhar alto, federado ou local-only;
+  - tensores só de ponto flutuante;
+  - na lista explícita, todo nome é filho de topo dono de algum tensor (recusa `decoder6` e
+    `downsample`).
+- **Registro do que foi compartilhado:**
+  - `resolved_shared_modules` vai para o `metadata.yaml` de cada cliente (`shared_modules`);
+  - uma linha `[sharing] modules=… tensors=32 params=10135840 (64.07% of 15819799)` no
+    `execution.log`, uma vez por run (em `run()`). A contagem é sobre tensores do `state_dict`,
+    então na E7 inclui os buffers FrozenBN.
+- **Call sites:** `client.py`, `training_federated.py`, `conflict_diagnostics.py`,
+  `scripts/gradient_conflict_{controls,methods}.py` (inclusive o keyword em controls), a mensagem
+  do `server.py` e os testes da E3. Gate: `grep -rn "share_stem=" src scripts tests` não acha
+  nenhuma chamada ao `model_split`.
+- **Hash:** a chave não entra no `src/config.yaml` (`StudyHashGuardTests` em
+  `tests/test_e6_sharing.py`).
+
+#### E6.3 — Correção do M1 (C2)
+
+- `trunk_gradient_halves` usa só as chaves de `named_parameters()` e pula `grad is None`.
+- O bloco que o objetivo do cliente não alcança fica **no npz, com zeros**, porque o `m1_pairs`
+  indexa todos os blocos do outro cliente. O cosseno desse bloco sai NaN, e o `shared_total` fica
+  finito. Com o trunk, a saída é bit a bit igual à de antes.
+- `scripts/smoke_federated.py::_verify_m1_coverage`, chamado com `--conflict-diagnostics`. Toda
+  `fold_0/conflict/round_*` amostrada precisa ter o npz de todos os clientes do metadata, com o
+  mesmo conjunto de blocos, igual aos blocos das chaves de `global_shared.pt`. Imprime
+  `M1_COVERAGE_OK rounds=… clients=… blocks=…`.
+- Reaplicar o loop antigo em memória faz os testes novos falharem com os erros originais
+  (`AttributeError` e `KeyError`).
+
+#### E6.4 — Testes (`tests/test_e6_sharing.py`, 29 testes)
+
+- `ResolverTests` e `ValidationTests`: resolução e todas as recusas da E6.2.
+- `LegacyEquivalenceTests`: sem a chave, as chaves são as da regra de prefixo escrita à parte.
+  - MTnnUNet: 1 canal/3 classes e 3 canais/7 classes, com e sem stem, com e sem Kendall.
+  - Multi_BTSUNet mantém o `bottleneck2`.
+  - MTUNetPlusPlus: conjunto vazio, e o `validate_sharing` levanta erro.
+- `ExactMatchTests`: `("enc",)` não captura `enc2.*`.
+- `WideSetTests`:
+  - 32 chaves e 10 135 840 valores, com shapes iguais em gray e rgb;
+  - o pessoal é exatamente `{encoder1, output1–4, classifier}`, mais `task_log_vars` com Kendall;
+  - ida e volta do estado, e a linha `[sharing]`.
+- `InitialSharedTests`: o config de 4 datasets com a lista dá 32 arrays; sem a lista, 10; com o
+  MTUNetPlusPlus, erro antes do Flower.
+- `M1ProbeTests`:
+  - trunk bit a bit igual ao loop antigo;
+  - zeros nos blocos não alcançados (só-cls e só-seg);
+  - buffer compartilhado sem `KeyError`;
+  - clientes mistos passam por `m1_pairs` e `summarize`.
+- `SmokeCoverageTests`: o `_verify_m1_coverage` aceita probes completos e recusa probe faltando ou
+  com outros blocos.
+- `RunConfigTests` (C3): o config versionado tem a lista ampla, `share_stem: false`, 400 rodadas, o
+  bloco `experiment` e o master da E3, e passa no `validate_federated_config`. Com `skipUnless` no
+  config resolvido da E3 em `runs/`: só `federated.rounds`, `federated.shared_modules` e
+  `experiment.{study_id,arm_id,method_id}` diferem dele.
+- `StudyHashGuardTests`: a chave fora do `src/config.yaml`.
+
+#### E6.5 — Config (C3): `studies/e6_sharing/wide_sharing.yaml`
+
+- Gerado com `yaml.safe_load` do config base, as mudanças e `yaml.safe_dump(sort_keys=False)`, mais
+  um cabeçalho no padrão de `studies/e3_loss/phase_a/*.yaml`. A lista entra logo depois de
+  `share_stem`.
+- Diferenças, conferidas por flatten-and-diff (161 → 162 folhas) e por `diff` textual:
+  - `federated.rounds`: 200 → 400;
+  - `federated.shared_modules` (ausente → 17): `encoder2–5`, `bottleneck`, `decoder1–5`,
+    `upsample1–5`, `process_encoder_5`, `process_decoder_5` (no arquivo, em ordem decrescente:
+    `decoder5` … `decoder1`, `upsample5` … `upsample1`);
+  - `experiment`: `study_id: e6_wider_sharing`, `arm_id`/`method_id: wide_sharing`; `seed` 1993 e
+    `setup: federated` já eram iguais.
+- Fica igual à E3: Adam 1e-4, batch 32, BF16, DiceBCE 0.5/0.5 com Batch Dice, λ e agregação 4:1,
+  seed pessoal `dataset`, M1+M2 a cada 10 rodadas (`sketch_dim` 65536), `num_gpus` 0.5 e o master
+  `data/federated_studies/e3_loss_ablation/seed_1993/federated_mapping.csv`.
+
+#### E6.6 — Validação (2026-10-18, CPU, `CUDA_VISIBLE_DEVICES=` vazio)
+
+- **Suíte:** 271 testes, 1 erro e 3 skips (CUDA). O erro é antigo e não vem da E6: o
+  `.gitignore:116` (`*.html`) ignora `src/monitor/static/index.html`, então a worktree não tem a
+  página e o `tests.test_monitor.ServerTests.test_api_and_page` recebe 404.
+- `scripts.sync_agent_assets --check`: OK.
+- **Smoke com o config versionado:**
+  `.venv/bin/python -m scripts.smoke_federated --config studies/e6_sharing/wide_sharing.yaml --conflict-diagnostics`.
+  - `M1_COVERAGE_OK rounds=[1, 2] clients=5 blocks=17` e `SMOKE_OK setup=federated`.
+  - `global_shared.pt` com 32 chaves; o `metadata.yaml` dos 5 clientes lista os 17 módulos.
+  - `ISIC_2018_seg_0` e `ISIC_2018_cls_0` gravaram o npz nas 2 rodadas, cada um com 17 blocos.
+    Nenhum aviso `failed; training continues`; nenhum D1 no diagnóstico.
+  - O `execution.log` tem a linha `[sharing] … tensors=32 params=10135840 (64.07% of 15819799)`.
+  - Movido para `runs/validation/e6_smoke/c3_wide_sharing_20261018_225558_…`, com o stdout e o
+    config de entrada. Ao lado está o smoke do C2, feito antes do C3 com um config temporário (o
+    da E3 mais a lista), com o mesmo resultado.
+- O sha256 do master da E3 seed 1993 continua `389116b5…bd3b`.
+
+#### E6.7 — Handoff de treino
+
+1. **O que alterar:** nada no `src/config.yaml`. O config é o `studies/e6_sharing/wide_sharing.yaml`
+   (diff exato na E6.5).
+2. **Pré-voo:**
+   - `sha256sum /home/lucas/fed_multi_task_breast_cancer/data/federated_studies/e3_loss_ablation/seed_1993/federated_mapping.csv`
+     dá `389116b572254ba492d0f11212079d23c2d32dc8855b4028682951d4d207bd3b`;
+   - `nvidia-smi --query-compute-apps=pid --format=csv,noheader` sai vazio;
+   - um run por vez na GPU. Ordem sugerida: E6 → E7 → E4.
+3. **Comando:**
+   `cd /home/lucas/fed_e6_sharing && .venv/bin/python -m src.training_federated --config studies/e6_sharing/wide_sharing.yaml`
+4. **Tempo e recursos:** ~3h20–3h45 (o braço da E3 levou 1h41 com 200 rodadas). Disco: ~3.5 GB.
+   `num_gpus` 0.5. Cada rodada amostrada pelo M2 grava deltas transitórios de ~690 MB. Depois de
+   ~20 rodadas, conferir os segundos por rodada no `execution.log`.
+5. **Artefatos:** `runs/<ts>_FEDERATED_MTnnUNet_Curated_BUSI-ISIC_2018-SIIM_ACR-TCGA_LGG/`. O
+   `runs/` da worktree é link para o da checkout principal, então o diretório fica fisicamente lá.
+   A análise usa `federated_test_results.csv`, `conflict_*.csv`, `negative_transfer_*.csv`,
+   `diagnostics/` e o app (E2).
+6. **Sucesso:**
+   - 24 linhas de teste;
+   - `global_shared.pt` da rodada 400 com 32 chaves;
+   - 41 diretórios `fold_0/conflict/round_*` (1, 11, …, 391 e 400), cada um com 16 `*_m1.npz` e 16
+     `*_m2.csv`;
+   - nenhum D1.
+
+   ```bash
+   R=runs/<ts>_FEDERATED_MTnnUNet_Curated_BUSI-ISIC_2018-SIIM_ACR-TCGA_LGG
+   .venv/bin/python -c "import pandas as pd; print(len(pd.read_csv('$R/federated_test_results.csv')))"  # 24
+   .venv/bin/python -c "import torch; s=torch.load('$R/fold_0/global_shared.pt', weights_only=False); print(s['round'], len(s['keys']))"  # 400 32
+   ls -d $R/fold_0/conflict/round_* | wc -l  # 41
+   for d in $R/fold_0/conflict/round_*; do echo $d $(ls $d/*_m1.npz | wc -l) $(ls $d/*_m2.csv | wc -l); done  # 16 16
+   .venv/bin/python -c "import pandas as pd; f=pd.read_csv('$R/diagnostics/findings.csv'); print((f.check_id == 'D1').sum())"  # 0
+   grep '\[sharing\]' $R/execution.log  # tensors=32 params=10135840 (64.07% of 15819799)
+   ```
+
+7. **Retomada:** `run(cfg, run_path=…, resume=True)` reaproveita só folds completos. Com CV=1 há um
+   fold só, então uma interrupção recomeça da rodada 1.
+
+#### E6.8 — Pendências
+
+- **Diluição do ISIC** (E6.0): 20% no decoder e 80% em `process_*`, porque os clientes
+  `single_task` devolvem blocos que não treinaram. Decisão do usuário: "revisitar no futuro".
+- **Inicialização do decoder:** na E6, ele parte do estado global, igual para todos os clientes; na
+  E3, vinha da seed pessoal. A comparação com a E3 muda o compartilhamento e a inicialização do
+  decoder juntos. O estado global depende dos canais de `federated.datasets[0]` (E6.0).
+- **Sketch do M1 por bloco ~2.2× menor:** o `sketch_dim` (65536) é repartido pelo tamanho dos
+  blocos, e o total compartilhado passa de 4.66 M para 10.14 M. O cosseno por bloco do trunk fica
+  mais ruidoso que na E3.
+- **Números de mecanismo não comparáveis com a E3:** as linhas `pair_class`/`dataset_pair` do
+  `conflict_summary` (bloco `shared_total`) e o cancelamento `negative_transfer_*`
+  (overall/intra/inter, do Gram de todo o conjunto compartilhado) passam a cobrir os 17 blocos, não
+  os 5 do trunk. Os registros da E3 (M1 `intra_same_tasks` 0.098 ± 0.006, cancelamento −0.017) são
+  sobre o trunk. Além disso, os dois clientes `single_task` do ISIC têm suporte não nulo disjunto em
+  `decoder1–4`/`upsample1–4`/`process_*`, o que puxa o cosseno seg×cls do ISIC para 0 (e o D9 para
+  "sem interação"). Uma leitura do M1 equivalente à E3 tem de ser recalculada sobre os 5 blocos do
+  trunk a partir dos `*_m1.npz` por bloco (normas exatas + sketches) ou de `conflict_m1_pairs.csv`.
+  O cancelamento só do trunk passou a ser gravado (decisão do usuário, 2026-10-19): quando há
+  mais que o trunk compartilhado, o servidor grava também `negative_transfer_trunk` por rodada
+  (Gram só de `encoder2–5` + `bottleneck`, com os pesos reais da agregação), e o relatório escreve
+  `negative_transfer_trunk_{rounds,summary}.csv`. É esse o número comparável com o −0.017 da E3.
+  O `negative_transfer.html` e o log ainda chamam a grandeza total de "trunk compartilhado".
+- O `aggregation_history.json` pode chegar a ~85 MB: 400 rodadas e 17 blocos, contra 14 MB na E3.
+- **Sem controle a 400 rodadas** (nem `primary` nem `local_only`): orçamento e intervenção ficam
+  confundidos.
+- `src/experiments/executive_report.py` descreve o compartilhamento em HTML fixo (só o trunk). Não
+  foi alterado.
+- O MTUNetPlusPlus federado, ou local-only, agora falha alto (conjunto compartilhado vazio).
+- Ficam intocados por serem históricos: `docs/RESEARCH_NOTES.md:45` e o inventário da E5 neste
+  arquivo.
+
+#### E6.9 — Commits
+
+- C1 `332b518` feat(federated): `federated.shared_modules` seleciona os módulos do FedAvg.
+- C2 `7e46ba8` fix(conflict): o M1 pula parâmetros que o objetivo do cliente não alcança, e buffers.
+- C3 `bda85d3` exp(e6): config `studies/e6_sharing/wide_sharing.yaml` e `RunConfigTests`.
+- C4 `3305e50` docs: `AGENTS.md` (pipeline e tabela de chaves) e nota da E6 no D02.
+- C5 docs(plano): este detalhamento e o registro.
 
 **Registro.**
 - 2026-10-18 — etapa planejada (macro).
+- 2026-10-18 — **Detalhamento escrito e implementação concluída; a E6 aguarda o treino (⏳).**
+  - C1–C4 na `exp/wider-sharing` (worktree `/home/lucas/fed_e6_sharing`, a partir do `e6ced0e`).
+    Sem a chave, o compartilhamento é o de sempre; com a lista, 17 módulos, 32 chaves e 64.07%
+    dos valores.
+  - O M1 com o conjunto amplo quebrava em silêncio nos clientes `single_task` do ISIC (e
+    quebraria com os buffers FrozenBN da E7). Está corrigido, e o smoke agora confere a cobertura.
+  - Validação: `tests/test_e6_sharing.py` com 29 testes; suíte com 271 testes, só o erro antigo
+    do monitor (E6.6); sync OK; dois smokes CPU (C2 e C3) em `runs/validation/e6_smoke/`.
+  - Nenhum treino rodado e a GPU não foi usada. `src/config.yaml`, guard-rails,
+    `Curated_BUSI_preprocessing.py`, `processed_128` e os masters estão intactos.
+  - **Próximo passo do usuário:** rodar o handoff da E6.7 (~3h20–3h45) e trazer o run de volta para
+    a leitura contra a E3.
 
 ---
 
@@ -2067,7 +2549,224 @@ pré-treinado registrada.
 
 **Riscos/dependências.** Depende do mecanismo `shared_modules` da E6.
 
-**Detalhamento.** _(a preencher)_
+**Detalhamento.**
+
+#### E7.0 — Fatos (levantados em 2026-10-18)
+
+- **Modelo.** O `MTResNet34UNet` tem 27.927.639 valores de estado (1 canal, 3 classes), contra
+  15.819.799 do MTnnUNet. No compartilhamento amplo da E6 viajam 202 tensores e 23.914.976 valores:
+  **85,6%** do modelo, contra 64,1% no MTnnUNet. Ficam pessoais `encoder1`, `output1–4` e
+  `classifier`, e as formas compartilhadas são iguais com 1 e 3 canais.
+- **Parte pré-treinada.** 180 tensores e 21.301.696 valores: 36 convoluções e os 144 buffers das 36
+  camadas `FrozenBatchNorm2d`. Os buffers estão no `state_dict`, mas não em `parameters()`.
+- **Loader.** As imagens chegam em float 0–255, sem normalização. As de 3 canais já vêm em RGB
+  (`BUSI_dataset.py` converte o BGR do OpenCV). O TCGA entra com os 3 canais de RM
+  (pré-contraste, FLAIR, pós-contraste) tratados como RGB.
+- **Pesos.** `~/.cache/torch/hub/checkpoints/resnet34-b627a593.pth` (87.319.819 bytes; sha256
+  `b627a593…0590f`), o `ResNet34_Weights.IMAGENET1K_V1` do torchvision 0.22. Esse checkpoint não
+  traz `num_batches_tracked`.
+- **Base.** O E6-C2 (`7e46ba8`) trouxe `federated.shared_modules` e o M1 só sobre parâmetros, pulando
+  `grad is None`. Sem ele, os buffers FrozenBN dariam KeyError no M1, e o `observational()` engoliria
+  o erro.
+- **Master.** `data/federated_studies/e3_loss_ablation/seed_1993/federated_mapping.csv`, sha256
+  `389116b5…bd3b` (conferido em 2026-10-18).
+
+#### E7.1 — Decisões (grill de 2026-10-18)
+
+1. Um run federado solto: seed 1993, 400 rodadas, `steps` 10, sem `study_runner`, sem gêmeo
+   local-only e sem controle. A comparação com a E6 fica com o usuário.
+2. Config base: a do vencedor da E3 (`init_seed_dataset`, seed 1993). Mudam só a arquitetura,
+   `shared_modules`, `rounds` e o bloco `experiment`. O master é o mesmo da E3.
+3. BN **totalmente congelada** (estatísticas, γ e β). As alternativas viram próximos passos (E7.9).
+4. Compartilhamento amplo da E6 (17 módulos), com o stem `encoder1` pessoal. A agregação
+   hierárquica não muda.
+
+#### E7.2 — Arquitetura (`src/models/multitask/MTResNet34UNet.py`)
+
+Os nomes de módulo e a geometria são os do MTnnUNet, então split, `validate_sharing` e servidor
+funcionam sem mudança.
+
+| Módulo | Conteúdo | Canais | px @128 | Compartilhado | Pré-treinado |
+|---|---|---|---|---|---|
+| `encoder1` | `LevelBlock(C,32,32)` sobre x cru (0–255) | C→32 | 128 | não | não |
+| `encoder2` | `conv1`, `bn1`, `relu` sobre a entrada normalizada | 3→64 | 64 | sim | sim |
+| `encoder3` | `maxpool`, `layer1` | 64→64 | 32 | sim | sim |
+| `encoder4` / `encoder5` / `bottleneck` | `layer2` / `layer3` / `layer4` | →128 / →256 / →512 | 16 / 8 / 4 | sim | sim |
+| `upsample5–1`, `decoder5–1` | ConvT + `LevelBlock`, larguras 512→256→128→64→32→16 | | 8→128 | sim | não |
+| `process_encoder_5` / `process_decoder_5` | `ConvInNormLeReLU` 256→256 / 128→256 | | 8 | sim | não |
+| `output1–4` | supervisão profunda em resolução cheia, como no MTnnUNet | →1 | 128 | não | não |
+| `classifier` | `ConvInNormLeReLU` 768→512, GAP, FC 512→256→n′ (n′ = 1 no binário) | | | não | não |
+
+- O backbone é uma variável local (`resnet34(weights=None, norm_layer=FrozenBatchNorm2d)`), nunca
+  atribuída a `self`. Assim, `fc` e `avgpool` não entram no `state_dict` e nenhuma chave se repete.
+- A entrada do caminho pré-treinado é calculada no modelo: `x/255`, repetição de 1 para 3 canais e
+  normalização pela média e desvio do ImageNet, guardados em buffers `persistent=False` (fora do
+  estado).
+- `ValueError` se `sequences ∉ {1,3}`, se os canais da entrada não batem ou se H/W não são múltiplos
+  de 32.
+- O `forward` devolve `([cls], [out4, out3, out2, out1])` em logits crus, sem sigmoid. `width` e
+  `deep_supervision` são ignorados.
+- Init Kaiming (leaky ReLU, bias zero) nas `Conv2d` de `encoder1`, `decoder1–5` e `output1–4`; o resto
+  do que não é pré-treinado fica com a init padrão do PyTorch.
+
+#### E7.3 — Pesos e BN
+
+- `imagenet_checkpoint_path()` = `torch.hub.get_dir()/checkpoints/resnet34-b627a593.pth` (respeita
+  `TORCH_HOME`).
+- `map_imagenet_state()`: `conv1.`→`encoder2.conv1.`, `bn1.`→`encoder2.bn1.`,
+  `layer1.`→`encoder3.layer1.`, `layer2.`→`encoder4.`, `layer3.`→`encoder5.`,
+  `layer4.`→`bottleneck.`. Descarta `fc.*` e `num_batches_tracked` e levanta erro em qualquer outra
+  chave.
+- `load_imagenet_encoder()`:
+  - guarda offline: `FileNotFoundError` com o caminho e o comando de download, sem nunca chamar
+    `load_state_dict_from_url`;
+  - prefixo do sha256 `b627a593` e `torch.load(weights_only=True, map_location="cpu")`;
+  - o conjunto de chaves mapeadas é exatamente o dos `pretrained_modules`, e `missing`/`unexpected`
+    são conferidos;
+  - uma linha `[pretrained] … loaded` no `execution.log`.
+- **FrozenBN.** Os buffers float32 viajam no estado compartilhado. Todo cliente devolve os mesmos
+  valores, e a média ponderada de arrays idênticos é a identidade bit a bit (`_weighted_arrays`,
+  testado). O servidor não muda. Fonte e alternativas no D27 de `docs/DECISION_SOURCES.md`.
+
+#### E7.4 — Integração
+
+- **`init_multitask_model(..., pretrained=None)`**, com import preguiçoso:
+  - `MTResNet34UNet` exige `pretrained` explícito. Isso protege baseline, centralized e
+    `load_multitask_experiment_artefacts`, que não foram portados.
+  - `pretrained=True` em outra arquitetura levanta erro.
+  - Nome desconhecido levanta `ValueError`; antes devolvia um `nn.Module()` vazio em silêncio.
+- **`training_federated.py`:** `_build_model(..., pretrained=False)`. Só o modelo de referência de
+  `_initial_shared_parameters` é construído com `pretrained=True`, e só para arquiteturas em
+  `PRETRAINED_ARCHITECTURES`; em seguida vêm `assert_pretrained_shared` e `validate_sharing`.
+  Candidatos, `_test_client` e a sonda do log `[sharing]` usam `pretrained=False`.
+- **`client.py`** constrói com `pretrained=False`. Os pesos chegam aos clientes só pelos parâmetros
+  iniciais globais, nos dois braços: o local-only também os recebe na rodada 1.
+- **`model_split.assert_pretrained_shared(model, sharing)`** levanta erro se algum módulo de
+  `pretrained_modules` ficar pessoal, porque ele começaria aleatório em todo cliente.
+- **M1** usa só parâmetros (E6-C2), então os buffers ficam fora das sondas. No **M2**, os deltas dos
+  buffers são zeros.
+- **Smoke:** `_verify_frozen_pretrained(run_path, max_conv1_drift=0.05)` roda para arquiteturas
+  pré-treinadas.
+  - Exige os buffers FrozenBN de `global_shared.pt` (no local-only, os do `state.pt` de cada cliente)
+    **iguais** aos do ImageNet.
+  - Exige distância L2 relativa de `encoder2.conv1.weight` ao ImageNet < 0,05; uma init aleatória
+    fica perto de 1,4.
+  - Com `max_conv1_drift=None`, confere só os buffers e imprime a distância: é a checagem pós-treino.
+
+#### E7.5 — Testes (`tests/test_e7_resnet34.py`: 35 testes, 1 pulado sem CUDA)
+
+- **Forward:** C=1 e 3, n=2 e 7, a 128 e a 256. As saídas de seg ficam em resolução cheia, e os
+  tensores devolvidos são exatamente as saídas das cabeças (logits crus). Contrato de entrada.
+- **`state_dict`:** módulos de topo exatos (sem `backbone`/`fc`), sem `num_batches_tracked`, tudo em
+  ponto flutuante, sem mean/std; 144 buffers FrozenBN fora de `parameters()`.
+- **Split amplo:** 202 tensores e 23.914.976 valores; formas iguais entre gray e rgb; o pessoal é
+  exatamente `{encoder1, output1–4, classifier}`. Compartilhado + pessoal reproduzem o forward bit a
+  bit.
+- **Carregamento**, com um checkpoint falso numa pasta temporária e o prefixo do sha trocado: mapa
+  exato, chave não mapeada recusada, `pretrained=True` carrega só o encoder, sha divergente recusado e
+  guarda offline com as funções de download trocadas por falhas (nunca chamadas). O checkpoint real
+  é conferido quando está no cache.
+- **Demais:** dispatch; freeze (um passo do Adam não muda buffer algum); `assert_pretrained_shared`;
+  `_weighted_arrays` como identidade bit a bit; M1 sem KeyError, com os blocos não alcançados zerados
+  como na E6; `_initial_shared_parameters` devolvendo os valores do ImageNet;
+  `_verify_frozen_pretrained` (passa; falha com um buffer movido; falha só no drift com `conv1`
+  aleatória); config do run.
+- **BF16 CUDA** (`skipUnless`): forward/backward sob `PrecisionPolicy("bf16","cuda")`, loss e
+  gradientes finitos, buffers intactos. Roda uma vez pelo orquestrador, com a GPU livre; os agentes
+  rodam tudo com `CUDA_VISIBLE_DEVICES=`.
+
+#### E7.6 — Config (`studies/e7_transfer/resnet34_imagenet.yaml`)
+
+Gerado com `yaml.safe_load` do config base, as mudanças e `safe_dump(sort_keys=False)`, mais o
+cabeçalho. O flatten-and-diff contra a base (também coberto por teste) dá só:
+- `model.architecture`: `MTnnUNet` → `MTResNet34UNet`;
+- `federated.shared_modules`: ausente → os 17 módulos da E6;
+- `federated.rounds`: 200 → 400;
+- `experiment`: `{study_id: e7_transfer_learning, arm_id: resnet34_imagenet, method_id:
+  resnet34_imagenet, seed: 1993, setup: federated}`.
+
+O resto fica igual: Adam 1e-4, batch 32, BF16, M1+M2 a cada 10 rodadas, `num_gpus` 0,5 e o master da
+E3 seed 1993.
+
+#### E7.7 — Validação (2026-10-18, CPU, `CUDA_VISIBLE_DEVICES=`)
+
+- Suíte completa: `Ran 304 tests … OK (skipped=4)`. `scripts.sync_agent_assets --check`: OK.
+- Smoke `scripts.smoke_federated --config studies/e7_transfer/resnet34_imagenet.yaml
+  --conflict-diagnostics` (161 s):
+  - `SMOKE_OK`;
+  - `M1_COVERAGE_OK rounds=[1, 2] clients=5 blocks=17`, incluindo `ISIC_2018_seg_0` e
+    `ISIC_2018_cls_0`;
+  - `FROZEN_PRETRAINED_OK fold_0 round 2 buffers=144 conv1_rel_l2=0.000848`;
+  - `global_shared.pt` com 202 chaves; no log, `[sharing] … tensors=202 params=23914976 (85.63% of
+    27927639)` e `[pretrained] … 180 tensors, 21301696 values`.
+  - Movido para `runs/validation/e7_smoke/`, com a saída em `smoke_stdout.log`.
+- Pendente: o teste BF16 CUDA, rodado uma vez pelo orquestrador.
+
+#### E7.8 — Handoff de treino
+
+1. *O que alterar:* nada no `src/config.yaml`. O config `studies/e7_transfer/resnet34_imagenet.yaml`
+   está versionado.
+2. *Pré-voo:*
+   - checkpoint presente: `sha256sum ~/.cache/torch/hub/checkpoints/resnet34-b627a593.pth` começa com
+     `b627a593`. Se faltar, baixar uma vez (~83 MB; o treino nunca baixa):
+     `.venv/bin/python -c "from torchvision.models import resnet34, ResNet34_Weights; resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)"`;
+   - `sha256sum /home/lucas/fed_multi_task_breast_cancer/data/federated_studies/e3_loss_ablation/seed_1993/federated_mapping.csv`
+     = `389116b5…bd3b`;
+   - `nvidia-smi --query-compute-apps=pid --format=csv,noheader` vazio; um run por vez na GPU.
+3. *Comando:*
+
+   ```bash
+   cd /home/lucas/fed_e7_transfer && .venv/bin/python -m src.training_federated --config studies/e7_transfer/resnet34_imagenet.yaml
+   ```
+
+4. *Retomada:* como na E6. `run(cfg, run_path=…, resume=True)` só reaproveita folds completos; com
+   CV=1, uma interrupção recomeça da rodada 1.
+5. *Tempo e recursos:*
+   - ~3h30–4h30 (~0,9–1,1× o custo por rodada da E3, com o modelo reconstruído a cada rodada);
+   - disco: ~5 GB, mais ~1,6 GB transitórios (`deltas.npz`) por rodada amostrada pelo M2, apagados no
+     fim da rodada;
+   - RAM de pico: ~3,5 GB por cliente mais ~3 GB no driver; `num_gpus` 0,5.
+6. *Artefatos:* `runs/<ts>_FEDERATED_MTResNet34UNet_Curated_BUSI-ISIC_2018-SIIM_ACR-TCGA_LGG/`.
+7. *Sucesso:*
+   - os critérios da E6: 24 linhas de teste; 41 diretórios `fold_0/conflict/round_*`, cada um com 16
+     `*_m1.npz` e 16 `*_m2.csv`; nenhum D1;
+   - `global_shared.pt` da rodada 400 com **202** chaves (o MTnnUNet amplo tem 32);
+   - a linha `[pretrained] ImageNet ResNet-34 loaded … 180 tensors` no `execution.log`;
+   - buffers FrozenBN da rodada 400 iguais aos do ImageNet:
+     `.venv/bin/python -c "from scripts.smoke_federated import _verify_frozen_pretrained as v; v('runs/<run>', max_conv1_drift=None)"`
+     imprime `FROZEN_PRETRAINED_OK fold_0 round 400 buffers=144 …` (o `conv1_rel_l2` é só
+     informativo).
+
+#### E7.9 — Pendências (próximos passos)
+
+- **(a)** Estatísticas congeladas com γ/β treináveis e compartilhados.
+- **(b)** FedBN (`li2021fedbn`): BN pessoal por cliente.
+- LR discriminativo: hoje o encoder pré-treinado e o decoder do zero usam o mesmo Adam 1e-4.
+- Entrada de 224 px: o ImageNet foi treinado a 224; a 128, o `bottleneck` fica em 4×4.
+- Estatísticas do ImageNet aplicadas aos canais de RM do TCGA.
+- O `encoder1` agora só alimenta o skip do `decoder1` (no MTnnUNet, alimentava o encoder inteiro): o
+  stem pessoal deixa de adaptar a modalidade ao trunk.
+- Baseline e centralized ficam protegidos (`pretrained` obrigatório), mas não portados: a E7 não tem
+  referência não federada.
+- E7 contra E6 muda arquitetura **e** pré-treino ao mesmo tempo. Separar os dois exigiria um braço
+  `MTResNet34UNet` sem pré-treino.
+- Herdadas da E6: a diluição do ISIC no decoder e em `process_*`, e a falta de controle a 400
+  rodadas (orçamento confundido com intervenção).
+- Logs do Ray maiores: `init_multitask_model` registra o modelo inteiro a cada construção.
 
 **Registro.**
 - 2026-10-18 — etapa planejada (macro).
+- 2026-10-18 — **implementação concluída; aguarda o treino (⏳).** Detalhamento E7.0–E7.9 escrito a
+  partir do plano aprovado.
+  - Commits na `exp/transfer-learning`, a partir do E6-C2 (`7e46ba8`): `99e5dfc` (modelo, dispatch e
+    guarda de nome desconhecido), `ec58230` (carregamento do ImageNet, integração,
+    `assert_pretrained_shared` e checagem do smoke), `5036d32` (config do run), `64d7d52`
+    (`AGENTS.md` e D27), mais este registro. A branch vai ser rebaseada sobre a E6 final.
+  - Desvios do desenho: (1) o modelo de referência usa `pretrained=True` só para arquiteturas
+    pré-treinadas, porque no MTnnUNet `pretrained=True` levanta erro; (2) `_verify_frozen_pretrained`
+    ganhou `max_conv1_drift` (`None` confere só os buffers, para o run de 400 rodadas) e o caminho
+    local-only.
+  - Suíte, sync check e smoke OK (E7.7). O teste BF16 CUDA fica para o orquestrador.
+  - Observação: o `*.html` do `.gitignore` também ignora `src/monitor/static/index.html`. Numa
+    worktree nova, o `test_monitor` dá 404 até o arquivo ser linkado da checkout principal; foi
+    linkado aqui, sem mudar nada versionado.

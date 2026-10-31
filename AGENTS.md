@@ -56,7 +56,14 @@ edits inside an existing canonical skill are visible immediately through both li
 # another dataset's variant), so set that first.
 python -m src.dataset.Curated_BUSI_preprocessing   # data.dataset: Curated_BUSI
 python -m src.dataset.ISIC_2018_preprocessing      # data.dataset: ISIC_2018
+python -m src.dataset.TCGA_LGG_preprocessing       # data.dataset: TCGA_LGG
 python -m src.dataset.SIIM_ACR_preprocessing       # data.dataset: SIIM_ACR
+# TCGA-LGG and SIIM-ACR can also write a NEW variant without editing config.yaml (both flags
+# together; classes from datasets.<DS>.classes; an existing non-empty variant folder aborts):
+python -m src.dataset.TCGA_LGG_preprocessing --variant processed_256 --image-size 256
+python -m src.dataset.SIIM_ACR_preprocessing --variant processed_256 --image-size 256
+python -m scripts.preprocessing_needs           # read-only: lesion size and empty share per variant
+python -m scripts.partition_equivalence --help  # is a master rebuilt at another resolution the same?
 
 # Train (CV=1 selects deterministic holdout; CV>=2 selects cross-validation)
 python -m src.training_multitask      # segmentation + classification
@@ -109,10 +116,13 @@ data/<dataset>/
 ```
 
 Currently present: `data/Curated_BUSI/`, `data/ISIC_2018/`, `data/TCGA_LGG/` and `data/SIIM_ACR/`,
-all with a
-`processed_128` variant.
-The variant's resolution comes from `data.image_size`; the preprocessing refuses to write a
-different size into an existing variant.
+all with a `processed_128` variant; `data/TCGA_LGG/` and `data/SIIM_ACR/` also have a
+`processed_256` variant (E4, per-dataset resolution; see `docs/PREPROCESSING_NEEDS.md`). The
+multi-dataset pipeline reads each dataset's variant from `datasets.<name>.variant`, so one run can
+mix resolutions: the stems are personalized and MTnnUNet only needs H and W divisible by 32.
+The variant's resolution comes from `data.image_size` (or `--image-size`); the preprocessing refuses
+to write a different size into an existing variant, and a `--variant` given on the command line
+refuses any existing non-empty folder.
 
 **All dataset paths are derived in `src/dataset/paths.py` from `data.root`/`data.dataset`/`data.variant`.**
 Never rebuild these paths by hand — call `paths.processed_dir()`, `paths.mapping_file()`,
@@ -163,9 +173,9 @@ Models live under `src/models/` in three sub-packages:
 |---|---|
 | `segmentation/` | BTSUNet, nnUNet, ResidualUNet (custom); UNet, AttentionUNet, UnetPlusPlus, SwinUNETR, SegResNet (MONAI) |
 | `classification/` | BTSUNetClassifier, UNetPlusPlusClassifier, nnUNetClassifier |
-| `multitask/` | **MTnnUNet** (default), MTUNetPlusPlus, Multi_BTSUNet, Multi_FSB_BTS_UNet, AdityanNetwork |
+| `multitask/` | **MTnnUNet** (default), MTResNet34UNet (ImageNet encoder, E7), MTUNetPlusPlus, Multi_BTSUNet, Multi_FSB_BTS_UNet, AdityanNetwork |
 
-`experiment_init.py` dispatches architecture names to constructors and wires up the optimizer, loss criteria, and LR scheduler from config values.
+`experiment_init.py` dispatches architecture names to constructors and wires up the optimizer, loss criteria, and LR scheduler from config values. An unknown multi-task name raises (it used to return an empty module).
 
 ### MTnnUNet (default multi-task model)
 
@@ -173,6 +183,32 @@ Models live under `src/models/` in three sub-packages:
 - **Deep supervision**: 4 segmentation outputs at different scales; losses are inversely weighted (`1/(n+1)`) if `loss.inversely_weighted=True`.
 - **Classification head**: fuses `encoder5`, `upsample(bottleneck)`, and `process_decoder5` features via concatenation → `ConvInNormLeReLU` → `AdaptiveAvgPool2d` → two FC layers.
 - `forward()` returns `([cls_logits], [seg4, seg3, seg2, seg1])`.
+
+### MTResNet34UNet (ImageNet transfer, E7)
+
+`src/models/multitask/MTResNet34UNet.py`, run by `studies/e7_transfer/resnet34_imagenet.yaml`.
+- **Same module names and geometry as MTnnUNet**, so `model_split` and the server work unchanged:
+  `encoder2` = ResNet-34 `conv1+bn1+relu` (H/2), `encoder3` = `maxpool+layer1` (H/4), `encoder4..5`
+  = `layer2..3`, `bottleneck` = `layer4` (H/32), all with ImageNet weights. `encoder1` is a
+  personalized `LevelBlock(C, 32, 32)` on the raw input that now feeds only `decoder1`'s skip.
+  Decoders, upsamples and `process_*` use ResNet widths and train from scratch; outputs and
+  classifier are MTnnUNet's. 1 or 3 input channels; H and W must be multiples of 32.
+- **BatchNorm is `FrozenBatchNorm2d`**: statistics, scale and shift are float32 buffers, never
+  trained (`docs/DECISION_SOURCES.md`, D27). They travel in the shared state, and FedAvg of
+  identical arrays returns them unchanged.
+- **The input contract lives in the model**: `x/255`, grayscale repeated to 3 channels, ImageNet
+  mean/std. The loader already delivers RGB (`BUSI_dataset.py` converts OpenCV's BGR) — do not swap
+  channels again.
+- **Every pretrained module must be shared.** Only the reference model of
+  `_initial_shared_parameters` loads the checkpoint; clients (both arms), candidates and final
+  evaluation build random weights and receive the encoder as the initial global parameters.
+  `model_split.assert_pretrained_shared` refuses a `federated.shared_modules` that leaves one
+  personalized.
+- **Weights are never downloaded during training.** Cache them once (torchvision verifies the hash;
+  the loader re-checks the `b627a593` sha256 prefix):
+  `python -c "from torchvision.models import resnet34, ResNet34_Weights; resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)"`
+- `init_multitask_model` requires an explicit `pretrained=` for it, which keeps the baseline and
+  centralized paths (guarded, not ported) from training it from scratch by accident.
 
 ### Loss and training loop
 
@@ -239,8 +275,10 @@ client keeps a **personalized head** that is never aggregated.
 ### Pipeline
 
 The default federated configuration is multi-dataset: Curated BUSI (1-channel ultrasound) and
-ISIC 2018 (3-channel dermoscopy). `encoder1` is a personalized modality stem; the shared trunk is
-`encoder2..5 + bottleneck`. Set `share_stem: True` only for compatible single-dataset experiments.
+ISIC 2018 (3-channel dermoscopy). `encoder1` is a personalized modality stem; by default the shared
+trunk is `encoder2..5 + bottleneck`. Set `share_stem: True` only for compatible single-dataset
+experiments. An explicit `federated.shared_modules` list replaces that default (E6 federates the
+decoder too); wherever this section says "trunk", read "the shared set".
 
 1. `src/dataset/federated_partition.py` — builds a separate multi-dataset master. BUSI uses the
    historical image-level stratified folds, or a stratified 70/30 holdout when `CV=1`. ISIC
@@ -255,9 +293,28 @@ ISIC 2018 (3-channel dermoscopy). `encoder1` is a personalized modality stem; th
    carved per client for early stopping.
 2. `src/dataset/federated_dataloader.py` — filters the master CSV into the lazy, channel-aware
    `BUSI` compatibility dataset, applies per-task oversampling, and resolves fold/local class weights.
-3. `src/federated/model_split.py` — splits MTnnUNet into the shared trunk (`encoder2..5` +
-   `bottleneck`) vs personalized stem/decoders/outputs/classifier. Legacy `share_stem=True` also
-   federates `encoder1`.
+3. `src/federated/model_split.py` — splits the model into a shared and a personalized state, from the
+   `sharing` spec that `src/federated/config.py::shared_modules(config)` resolves:
+   - **`federated.shared_modules` absent (or null)** — the legacy rule, byte for byte: state_dict
+     keys matched by **prefix** on `encoder2..5` + `bottleneck`, plus `encoder1` when `share_stem`
+     is true. Every historical run used it; on Multi_BTSUNet the prefix also captures `bottleneck2`.
+   - **An explicit list** of top-level module names — a key is shared iff its first component is
+     **exactly** one of them. The list must agree with `share_stem` about `encoder1`; `share_stem`
+     defaults to true, so a list without `encoder1` needs `share_stem: false` set.
+   - `validate_sharing` checks the built model before Flower starts: it refuses an empty shared
+     set (MTUNetPlusPlus matches nothing, so federating it now fails loudly), non-float shared
+     tensors, and listed names that own no tensor (`decoder6`, `downsample`).
+   - The E6 wide set (`studies/e6_sharing/wide_sharing.yaml`) lists 17 modules: the trunk,
+     `decoder1..5`, `upsample1..5`, `process_encoder_5` and `process_decoder_5`. That is 32
+     tensors, 64.07% of the BUSI reference MTnnUNet's values against 29.48% for the trunk. `encoder1`, `output1..4`,
+     `classifier` and Kendall's `task_log_vars` stay personalized. A shared module starts from the
+     global initial parameters in both arms, so `personalized_init_seed` only reaches the
+     personalized remainder.
+   - Each client's `metadata.yaml` records its `shared_modules`; `execution.log` has one
+     `[sharing] modules=… tensors=… params=… (…% of …)` line per run.
+   - The M1 conflict probes use shared **parameters** only. A shared block that a client's objective
+     never reaches (the decoder on a cls-only client, `process_*` on a seg-only client) is stored as
+     zeros, so its per-block cosine is NaN while `shared_total` stays finite.
 4. `src/federated/local_trainer.py` — per-task local train/eval using the configured segmentation or classification criterion.
 5. `src/federated/client.py` — Flower `NumPyClient`; persists the latest personalized state +
    optimizer **to disk per client** (simulation clients are ephemeral). Stable worker seeds pair
@@ -311,6 +368,7 @@ the budget, not the federation.
 | `datasets` / `n_clients.<dataset>` | Active datasets and clients per dataset/task |
 | `datasets.<name>.client_topology` | `single_task` (default) or `multi_task` (one client, several tasks, same images) |
 | `share_stem` | Federate the input stem; must be false for mixed 1ch/3ch runs |
+| `shared_modules` | Optional. Top-level modules to federate, matched exactly (the E6 wide set lists 17). Absent = legacy trunk (`encoder2..5` + `bottleneck`, plus `encoder1` with `share_stem`). Must agree with `share_stem` on `encoder1`. Lives in run configs/manifests, never in `src/config.yaml` (study hash; `StudyHashGuardTests`) |
 | `personalized_init_seed` | `dataset` (working default since E3): every client of a dataset starts from the same stem/heads; `client` draws one per client and is the fallback when the key is absent, so historical configs keep resolving unchanged. Local-only reads the same key, so the pair stays matched |
 | `local_training.mode` | `steps` (fixed `steps_per_round`) or `epochs` (`local_epochs` passes) |
 | `aggregation.mode` | `hierarchical` (main) or `flat` (FedAvg-style ablation) |

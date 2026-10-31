@@ -8,14 +8,25 @@ because the raw layouts have nothing in common, but they all must produce the sa
 What is genuinely common -- mask statistics, the mapping metadata columns, and the guards that stop
 a script from writing into the wrong folder -- lives here. See ``src/dataset/paths.py`` for how the
 paths themselves are resolved from config.
+
+The scripts that accept a command line (``TCGA_LGG_preprocessing``, ``SIIM_ACR_preprocessing``) read
+their settings through :func:`preprocessing_data_config`, which can write a NEW variant at another
+resolution without editing ``src/config.yaml``:
+
+    python -m src.dataset.TCGA_LGG_preprocessing --variant processed_256 --image-size 256
 """
 
+import argparse
+import re
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
 import pandas as pd
+import yaml
+
+from src.dataset import paths
 
 # Columns of mapping.csv derived from a segmentation mask. They are NaN for rows that have no mask
 # (e.g. ISIC's classification-only images) -- NaN meaning "not applicable", as opposed to 0, which
@@ -145,3 +156,75 @@ def assert_variant_resolution(mapping_path: Path, image_size: int) -> None:
             f"[ABORT] '{mapping_path.parent}' already holds images of size {sorted(sizes)}, but "
             f"data.image_size is {image_size}.\nUse a different `data.variant` for a different "
             f"resolution, or delete that folder to rebuild it.")
+
+
+def assert_new_variant(variant_dir: Path) -> None:
+    """Refuse to write a variant requested on the command line into a folder that holds anything.
+
+    A variant named on the command line is a new artefact: other studies may already read an
+    existing one, and a partial earlier run would leave files the new mapping does not describe.
+    An existing EMPTY folder is accepted; anything else must be removed by hand, never resumed.
+    """
+    variant_dir = Path(variant_dir)
+    if not variant_dir.exists():
+        return
+    if not variant_dir.is_dir():
+        raise SystemExit(f"[ABORT] Variant path '{variant_dir}' already exists and is not a folder.")
+    has_mapping = (variant_dir / paths.MAPPING_FILENAME).exists()
+    if has_mapping or any(variant_dir.iterdir()):
+        detail = f"it has a {paths.MAPPING_FILENAME}" if has_mapping else "it is not empty"
+        raise SystemExit(
+            f"[ABORT] Variant folder '{variant_dir}' already exists ({detail}).\nA variant is "
+            f"written once: choose another --variant, or delete that folder by hand to rebuild it "
+            f"(a partial run is never resumed).")
+
+
+_VARIANT_NAME = re.compile(r"^processed_(\d+)$")
+
+
+def preprocessing_data_config(dataset: str, argv: Optional[Sequence[str]] = None,
+                              config_file: str = "./src/config.yaml") -> dict:
+    """The ``data`` settings a preprocessing script runs with.
+
+    Without flags this is exactly the ``data`` block of ``config_file``, so the historical
+    workflow (edit ``data.dataset``/``data.variant`` first) is unchanged and still guarded by
+    :func:`assert_target_dataset`.
+
+    ``--variant processed_<N> --image-size N`` (always together) selects ``dataset`` and a NEW
+    variant instead: ``classes`` then come from the ``datasets.<dataset>`` registry entry, the
+    variant name must spell the size, and :func:`assert_new_variant` refuses an existing folder.
+    There is deliberately no ``--dataset`` flag: each script knows the one dataset it handles.
+    """
+    parser = argparse.ArgumentParser(
+        description=f"Preprocess {dataset} into {paths.MAPPING_FILENAME} + images/ + masks/ of one "
+                    f"variant. Without flags, src/config.yaml's data block is used as is.")
+    parser.add_argument("--variant", help="new variant folder, processed_<N> (needs --image-size)")
+    parser.add_argument("--image-size", type=int,
+                        help="side N of the square output (needs --variant processed_<N>)")
+    args = parser.parse_args(argv)
+
+    with open(config_file, encoding="utf-8") as cf:
+        config = yaml.load(cf, Loader=yaml.FullLoader)
+    config_data = dict(config["data"])
+    if args.variant is None and args.image_size is None:
+        return config_data
+
+    if args.variant is None or args.image_size is None:
+        parser.error("--variant and --image-size must be given together")
+    if args.image_size < 1:
+        parser.error(f"--image-size must be a positive integer, got {args.image_size}")
+    match = _VARIANT_NAME.match(args.variant)
+    if match is None or int(match.group(1)) != args.image_size:
+        parser.error(f"--variant must be processed_{args.image_size} for --image-size "
+                     f"{args.image_size}, got '{args.variant}'")
+
+    entry = (config.get("datasets") or {}).get(dataset) or {}
+    classes = entry.get("classes")
+    if not classes:
+        raise SystemExit(f"[ABORT] '{config_file}' has no datasets.{dataset}.classes; the command-line "
+                         f"variant takes the class list from the datasets registry.")
+
+    config_data.update(dataset=dataset, variant=args.variant, image_size=args.image_size,
+                       classes=list(classes))
+    assert_new_variant(paths.processed_dir(config_data))
+    return config_data

@@ -48,7 +48,7 @@ def _client(directory, client_id="BUSI_mt_0", seed=0, config=None):
     state_dir.mkdir(parents=True, exist_ok=True)
     return SimpleNamespace(
         client_id=client_id, model=MTnnUNet(sequences=1, regions=1, n_classes=3),
-        share_stem=False, tasks=("seg", "cls"), task="seg+cls",
+        share_stem=False, sharing=False, tasks=("seg", "cls"), task="seg+cls",
         task_lambdas={"seg": 0.8, "cls": 0.2}, precision=PrecisionPolicy("fp32", "cpu"),
         device="cpu", num_classes=3, inversely_weighted=True,
         seg_criterion=init_criterion_segmentation("DiceBCE"),

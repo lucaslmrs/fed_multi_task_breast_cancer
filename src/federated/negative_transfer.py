@@ -27,6 +27,11 @@ METRICS = ("overall", "intra", "inter")
 REFERENCE = "orthogonal_reference"
 ROUNDS_FILE = "negative_transfer_rounds.csv"
 SUMMARY_FILE = "negative_transfer_summary.csv"
+# Trunk-only cancellation (encoder2..5 + bottleneck), recorded only when more than the trunk is
+# shared (E6), so a wider-sharing run stays comparable with trunk-only runs.
+TRUNK_FIELD = "negative_transfer_trunk"
+TRUNK_ROUNDS_FILE = "negative_transfer_trunk_rounds.csv"
+TRUNK_SUMMARY_FILE = "negative_transfer_trunk_summary.csv"
 MISSING_STATUS = "n/a: history without negative_transfer"
 
 
@@ -77,15 +82,19 @@ def _history_paths(run_path):
             yield int(fold), path
 
 
-def summarize_run(run_path):
-    """Per-round values and a per-fold / all-folds summary for one run directory."""
+def summarize_run(run_path, field="negative_transfer"):
+    """Per-round values and a per-fold / all-folds summary for one run directory.
+
+    ``field`` selects the history entry: ``negative_transfer`` (whole shared set) or
+    ``negative_transfer_trunk`` (historical trunk only).
+    """
     round_rows, summary_rows = [], []
     for fold, path in _history_paths(run_path):
         history = json.loads(path.read_text(encoding="utf-8"))
         fold_rows = [
-            {"fold": fold, "round": int(event["round"]), **event["negative_transfer"]}
+            {"fold": fold, "round": int(event["round"]), **event[field]}
             for event in history
-            if event.get("stage") == "fit" and event.get("negative_transfer")
+            if event.get("stage") == "fit" and event.get(field)
         ]
         if not fold_rows:
             summary_rows.append({"fold": fold, "n_rounds": 0, "status": MISSING_STATUS})
@@ -156,6 +165,23 @@ def report_run(run_path):
         )
     logging.info("\n".join(lines))
     build_html(run_path, rounds, summary)
+    _report_trunk(run_path)
+    return summary
+
+
+def _report_trunk(run_path):
+    """Trunk-only CSVs and log line, when the run shared more than the trunk."""
+    run_path = Path(run_path)
+    rounds, summary = summarize_run(run_path, field=TRUNK_FIELD)
+    if summary.empty or rounds.empty:
+        return None
+    rounds.to_csv(run_path / TRUNK_ROUNDS_FILE, index=False)
+    summary.to_csv(run_path / TRUNK_SUMMARY_FILE, index=False)
+    total = summary.iloc[-1]
+    logging.info(
+        "[negative transfer] trunk only (encoder2..5 + bottleneck) | "
+        + "  ".join(f"{metric}={_fmt(total.get(f'{metric}_mean'))}" for metric in METRICS)
+    )
     return summary
 
 

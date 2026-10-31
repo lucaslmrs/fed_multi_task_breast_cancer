@@ -29,20 +29,28 @@ from src.federated.config import (
     aggregation_config,
     dataset_config,
     partition_file,
+    shared_modules,
     validate_federated_config,
 )
 from src.federated.model_split import (
+    assert_pretrained_shared,
     get_shared_state,
+    resolved_shared_modules,
     set_personalized_state,
     set_shared_state,
     shared_keys,
+    validate_sharing,
 )
 from src.experiments.run_examples import client_examples, write_fold_candidates
 from src.experiments.run_report import build_run_report
 from src.experiments.training_diagnostics import run_training_diagnostics
 from src.federated.negative_transfer import report_run
 from src.federated.server import FedPerStrategy
-from src.utils.experiment_init import device_setup, init_multitask_model
+from src.utils.experiment_init import (
+    PRETRAINED_ARCHITECTURES,
+    device_setup,
+    init_multitask_model,
+)
 from src.utils.miscellany import init_log, seed_everything
 from src.utils.supervision import attach_saved_task_uncertainty
 from src.utils.training_runtime import (
@@ -77,7 +85,12 @@ def _resolve_orchestrator_device(requested):
     return requested
 
 
-def _build_model(config, dataset, device):
+def _build_model(config, dataset, device, pretrained=False):
+    """``pretrained=True`` only for the reference model of the initial global parameters.
+
+    Every other model -- clients, candidates, final evaluation -- is built with random weights and
+    receives the pretrained ones (if any) through the shared state.
+    """
     data_cfg = dataset_config(config, dataset)
     n_aug = sum(bool(value) for value in data_cfg.get("augmentation", {}).values())
     return init_multitask_model(
@@ -88,11 +101,17 @@ def _build_model(config, dataset, device):
         width=config["model"]["width"],
         deep_supervision=config["model"]["deep_supervision"],
         save_folder=None,
+        pretrained=pretrained,
     ).to(device)
 
 
 def _initial_shared_parameters(config, datasets, device, fold):
-    """Build one model per dataset and fail before Flower if shared contracts diverge."""
+    """Build one model per dataset and fail before Flower if shared contracts diverge.
+
+    For a pretrained architecture the reference model loads the ImageNet encoder here, and this is
+    the only place it is loaded: the clients of both arms receive it as the initial global
+    parameters, which is why every pretrained module must be shared.
+    """
     # Reset independently for every fold and arm. Orchestrator-side evaluation/model construction
     # after an earlier fold must not perturb the paired initial trunk of the next fold.
     seed_everything(
@@ -101,23 +120,39 @@ def _initial_shared_parameters(config, datasets, device, fold):
         ),
         cuda_benchmark=config["training"].get("cuda_benchmark", False),
     )
-    share_stem = config["federated"].get("share_stem", True)
-    reference_model = _build_model(config, datasets[0], device)
-    reference_keys = shared_keys(reference_model, share_stem)
-    reference_arrays = get_shared_state(reference_model, share_stem)
+    sharing = shared_modules(config)
+    pretrained = config["model"]["architecture"] in PRETRAINED_ARCHITECTURES
+    reference_model = _build_model(config, datasets[0], device, pretrained=pretrained)
+    assert_pretrained_shared(reference_model, sharing)
+    reference_keys = validate_sharing(reference_model, sharing)
+    reference_arrays = get_shared_state(reference_model, sharing)
     reference_shapes = [array.shape for array in reference_arrays]
 
     for dataset in datasets[1:]:
         candidate = _build_model(config, dataset, device)
-        candidate_keys = shared_keys(candidate, share_stem)
-        candidate_shapes = [array.shape for array in get_shared_state(candidate, share_stem)]
+        candidate_keys = validate_sharing(candidate, sharing)
+        candidate_shapes = [array.shape for array in get_shared_state(candidate, sharing)]
         if candidate_keys != reference_keys or candidate_shapes != reference_shapes:
             raise ValueError(
-                f"Dataset '{dataset}' has an incompatible shared state. "
-                "Use share_stem=false for heterogeneous channel counts."
+                f"Dataset '{dataset}' has an incompatible shared state; check "
+                "federated.shared_modules/share_stem. Heterogeneous channel counts need a "
+                "personalized stem (share_stem: false, encoder1 not shared)."
             )
         del candidate
     return ndarrays_to_parameters(reference_arrays)
+
+
+def _log_sharing(model, sharing):
+    """Log once per run what FedAvg actually averages, so a run's split is visible in its log."""
+    state = model.state_dict()
+    keys = shared_keys(model, sharing)
+    shared = sum(state[key].numel() for key in keys)
+    total = sum(tensor.numel() for tensor in state.values())
+    logging.info(
+        "[sharing] modules=%s tensors=%d params=%d (%.2f%% of %d)",
+        ",".join(resolved_shared_modules(model, sharing)), len(keys), shared,
+        100.0 * shared / total if total else 0.0, total,
+    )
 
 
 def _round_config(server_round):
@@ -158,16 +193,9 @@ def _test_client(
     if setup == "federated":
         if shared_arrays is None:
             raise ValueError("Federated final evaluation requires the final global shared trunk")
-        set_personalized_state(
-            model,
-            state["personalized"],
-            share_stem=config["federated"].get("share_stem", True),
-        )
-        set_shared_state(
-            model,
-            shared_arrays,
-            share_stem=config["federated"].get("share_stem", True),
-        )
+        sharing = shared_modules(config)
+        set_personalized_state(model, state["personalized"], sharing=sharing)
+        set_shared_state(model, shared_arrays, sharing=sharing)
     else:
         model.load_state_dict(state["model"])
 
@@ -379,9 +407,11 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
         client_resources["num_gpus"] = 0.0
 
     # Labels the per-block gradient-conflict matrices; also reused when persisting the trunk.
-    shared_key_names = shared_keys(
-        _build_model(config, datasets[0], "cpu"), fed.get("share_stem", True)
-    )
+    sharing = shared_modules(config)
+    sharing_probe = _build_model(config, datasets[0], "cpu")
+    shared_key_names = shared_keys(sharing_probe, sharing)
+    _log_sharing(sharing_probe, sharing)
+    del sharing_probe
 
     fold_count = train_cfg["CV"]
     if fed.get("max_folds") is not None:

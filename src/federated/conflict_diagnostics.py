@@ -16,6 +16,12 @@ clients are comparable). Offline this yields, per pair and block:
     ceiling_i       cos(g_A, g_B), Spearman-Brown corrected to the full average: 2r / (1 + r)
     cos_normalized  cos_ij / sqrt(ceiling_i * ceiling_j), the cosine between the noise-free parts
 
+Only shared PARAMETERS are probed: shared buffers carry no gradient. Under wide sharing a client's
+objective may not reach every shared block (a cls-only client never reaches decoder1-4/upsample1-4,
+a seg-only client never reaches ``process_*``); such a block is still written, as zeros, so every
+probe of a run has the same block set. Its norm is 0, so its per-block cosines are NaN while
+``shared_total`` stays finite.
+
 M2 (TAG's lookahead affinity with the real round update). After aggregation the server persists
 the sent trunk and every client's real round update; in the evaluate phase client j scores
 
@@ -131,13 +137,18 @@ class BatchList(list):
 
 
 def trunk_gradient_halves(client, batches):
-    """Mean trunk gradient of the client's local objective over two halves of ``batches``."""
+    """Mean shared-block gradient of the client's local objective over two halves of ``batches``.
+
+    The keys are the shared PARAMETERS only: a shared buffer (e.g. frozen BatchNorm statistics)
+    has no gradient. A parameter the objective does not reach keeps ``grad is None`` after
+    ``backward`` and contributes zeros, so its block stays in the probe with zero norm.
+    """
     from src.federated.local_trainer import local_objective
     from src.utils.supervision import resolve_task_lambdas
 
     model = client.model
-    keys = shared_keys(model, client.share_stem)
     params = dict(model.named_parameters())
+    keys = [key for key in shared_keys(model, client.sharing) if key in params]
     lambdas = resolve_task_lambdas(client.tasks, client.task_lambdas)
     half = len(batches) // 2
     sums = [{key: torch.zeros_like(params[key], dtype=torch.float32) for key in keys}
@@ -155,7 +166,9 @@ def trunk_gradient_halves(client, batches):
         loss.backward()
         target = sums[0 if position < half else 1]
         for key in keys:
-            target[key] += params[key].grad.detach().float()
+            grad = params[key].grad
+            if grad is not None:  # unreached by this client's objective: stays zero
+                target[key] += grad.detach().float()
     model.zero_grad(set_to_none=True)
     counts = (half, len(batches) - half)
     return keys, [{key: value / count for key, value in group.items()}
@@ -168,7 +181,7 @@ def collect_fit_probes(client, server_round):
     directory = round_dir(client.state_dir.parent, server_round)
     directory.mkdir(parents=True, exist_ok=True)
     if lookahead_enabled(client.config):
-        torch.save(get_personalized_state(client.model, client.share_stem),
+        torch.save(get_personalized_state(client.model, client.sharing),
                    directory / f"{client.client_id}_pre.pt")
     # In steps mode the round yields ``steps_per_round`` batches, which caps the probe count.
     batches = list(itertools.islice(iter(client.train_loader), settings["probe_batches"]))
@@ -220,8 +233,8 @@ def cleanup_round(directory):
 def _loss(client, personalized, trunk, batches):
     from src.federated import local_trainer
 
-    set_personalized_state(client.model, personalized, share_stem=client.share_stem)
-    set_shared_state(client.model, trunk, share_stem=client.share_stem)
+    set_personalized_state(client.model, personalized, sharing=client.sharing)
+    set_shared_state(client.model, trunk, sharing=client.sharing)
     result = local_trainer.evaluate_local(
         client.model, batches, client.task, client.device, client.num_classes,
         client.seg_criterion, client.cls_criterion, client.inversely_weighted,
