@@ -531,3 +531,684 @@ Mitigation stage 2 (Eq. 6, soft-margin/SVM-like QP): min_{d,ξ} ½||d − Δθ_�
 (2) FedCALM names "insufficient average update magnitude" as one source of loss increase. Their analysis ties it to conflict, though. The project's finding (little inter-dataset excess cancellation but a ~10x smaller aggregated step) is the case their Eq. 4 treats as harmless (G ≈ 0, near-orthogonal high-dimensional updates). This is a gap the project can articulate: magnitude loss from averaging near-orthogonal updates (step dilution) is distinct from directional conflict, and conflict-centric methods like FedCALM do not diagnose it. Because d* can be larger than the FedAvg step, FedCALM's gains may partly be a dilution remedy, so a server-LR or FedExP-style control is needed when comparing.
 (3) The setting matches closely. Their objective (Eq. 1) is FedRep/FedPer (shared body, personal heads), and they argue deeper shared bodies increase conflict, which is relevant to how far up the project's shared trunk goes (E6 wide sharing).
 (4) The paper's evidence comes from label-skew classification on natural images. Its conclusions do not transfer automatically to the project's cross-domain (ultrasound / dermoscopy / MRI / X-ray), multi-task seg+cls FedPer. Treat it as a definitional and methodological reference and a candidate aggregation baseline (CALM as a plug-in), not as evidence about medical cross-domain FL.
+
+# Segunda passada (2026-10-31)
+
+Artigos cortados na primeira passada e trabalhos 2023–2026 encontrados por um agente de busca.
+
+## Orthogonal Gradient Descent for Continual Learning (2020)
+
+- **Autores:** Mehrdad Farajtabar, Navid Azizan, Alex Mott, Ang Li (DeepMind / Caltech)
+- **Venue:** AISTATS 2020 (PMLR 108); arXiv 1910.07104
+- **URL:** https://arxiv.org/abs/1910.07104
+- **Acesso:** full_text · **confiança:** high · **candidato a SOTA:** False
+
+**Termo usado.** catastrophic forgetting; "interference" / "interfering with gradients produced on previous tasks". The paper does not use the words "cancellation", "negative transfer" or "conflict".
+
+**Definição (literal).** Sec. 1 (Introduction): "A typical neural network training procedure over a sequence of different tasks usually results in degraded performance on previously trained tasks if the model could not revisit the data of previous tasks. This phenomenon is called catastrophic forgetting (McCloskey and Cohen, 1989; Ratcliff, 1990; French, 1999)." Also Sec. 1: "In this paper, we present a system where the gradients produced on a training minibatch can avoid interfering with gradients produced on previous tasks." Sec. 3: "Catastrophic forgetting happens in neural networks when the gradient updates with respect to a new task are applied to the model without considering previous tasks." Sec. 3: "moving locally along the direction of ±∇f_j(x;w) leads to the biggest change in model prediction f_j(x;w) given any sample x, while moving orthogonal to ∇f_j(x;w) leads to the least change (or no change, locally) to the prediction of x."
+
+**Local.** Sec. 1 Introduction (para. 2 and 3); Sec. 3 opening paragraphs; Eqs. (7)-(9); Lemma 3.1
+
+**Formulação.** There is no scalar definition of interference. It is operational and first-order in function space. An update on task B interferes with task A when it has a component along the span of task A's model-output (logit) gradients, S = span{∇f_k(x; w*_A) : (x,y) in T_A, y_k = 1} (OGD-GTL variant). Taking a non-interfering update means requiring g̃ ⊥ ∇f_j(x; w*_A) for every x in T_A and every j (Eq. 8). This is enforced by projection, g̃ = g − Σ_i proj_{v_i}(g) with proj_v(u) = <u,v>/<v,v> v (Eq. 9), where {v_i} is a Gram-Schmidt basis of S. Lemma 3.1: <−g̃, g> = −||g̃||² ≤ 0, so −g̃ is still a descent direction. The approximation ∇f(x;w) ≈ ∇f(x;w*_A) rests on overparameterization and on the update staying local. The paper stresses Eq. (4), ∇L = ∇f · ℓ', to separate model gradients from loss gradients: loss gradients vanish on well-fitted examples, so they are a poor record of what has to be preserved.
+
+**Métrica.** Forgetting is measured only downstream: test accuracy on each earlier task after training on the whole sequence (Tables 1-3, 5 tasks), plus task-1 accuracy curves during training (Fig. 2) and task-1 accuracy as a function of rotation angle (Fig. 3). No gradient-alignment or cancellation statistic is reported. The paper never reports cosine values, projection norms or how much of g the projection removes.
+
+**Método.** Continual learning on sequential tasks. After task A converges, store the gradients of the ground-truth logit at w*_A for a subset of examples (200 for MNIST) and orthonormalize them with Gram-Schmidt. While training later tasks, project each SGD gradient onto the orthogonal complement of the stored span (Algorithm 1), then append the new task's orthogonalized logit gradients to the basis. Variants: OGD-ALL (every logit), OGD-AVE (the mean logit), OGD-GTL (the ground-truth logit; it is used in all experiments, and AVE and GTL both cut storage by a factor of c). The method stores no raw data, which the authors note is relevant to privacy and federated learning (Sec. 5).
+
+**Resultados.** Setup: 3-layer MLP (100-100 hidden units), SGD, lr 1e-3, batch 10, 5 epochs per task, memory of 200 for both OGD and A-GEM. Runs: 10 seeds for 2-3 tasks, 5 seeds for 5 tasks. Permuted MNIST, 5 tasks (Table 1): OGD reaches 79.5/88.9/89.6/91.8/92.4% on tasks 1-5, against A-GEM 85.5/87.0/89.6/91.2/93.9, EWC 64.5/..., SGD 60.6/... and MTL 93.2/... So OGD is on par with A-GEM. Rotated MNIST, 0-40 degrees (Table 2): OGD 75.6/86.6/91.7 on the oldest tasks, against A-GEM 72.6/84.4/91.0 and SGD 62.9/76.5/88.6, with OGD best at 10, 20 and 30 degrees. Split MNIST, multi-head, 5 tasks (Table 3): OGD 98.6/99.5/98.0/98.8/99.2, against A-GEM 92.9/96.3/86.5/92.3/99.3, close to MTL. Sec. 6 reports that every method, OGD included, "fail[s] considerably when the tasks are dissimilar (for example rotations larger than 90 degrees)".
+
+**Limitações.** The authors list these (Sec. 3, Sec. 4 Setup, Sec. 6): (1) the method holds only to first order and locally, so large learning rates break the approximation ∇f(x;w) ≈ ∇f(x;w*_A) and OGD "is sensitive to the learning rate"; (2) storage grows with the number of tasks, and storing a subset of gradients leaves some forgetting; (3) every method fails when the tasks are dissimilar; (4) it is defined for plain SGD only, with Adam and Adagrad left to future work. Further limitations from this review: (5) the experiments are toy-scale (an MLP on MNIST variants, no CNNs, no segmentation); (6) the setting is sequential, not simultaneous, aggregation, so the interference concerns old-task predictions and not the vector sum of concurrent updates; (7) interference is never quantified directly, only through accuracy; (8) a hard projection can shrink the step, since ||g̃|| ≤ ||g||, and the paper does not measure that.
+
+**Relevância para o projeto.** Conceptual and indirect. OGD is a continual-learning paper, so it gives no definition or measure of aggregation-time "cancellation" and should not be cited as the source of the project's 1 − N/E metric (that is Nagura et al. / FedNNNN). It is useful in three ways. (a) It is the canonical source for the geometric view that orthogonality means non-interference: a step orthogonal to another task's output gradients leaves that task's predictions unchanged to first order. This supports the project's orthogonal_reference reasoning, under which near-orthogonal client deltas mean low conflict, not harm. (b) It warns that orthogonality is measured locally and to first order. The project's trunk deltas are multi-step local updates (epochs or steps per round), far from the small-step regime OGD assumes, so low cosine or low cancellation between datasets does not by itself prove the absence of functional interference, because the per-sample output-gradient spans could still overlap. (c) Its distinction between model-output gradients and loss gradients (Eq. 4) applies to the project. The project's deltas are loss-driven parameter differences, so the pairwise cosine of deltas is a loss-gradient-type measure that weakens as clients fit their data well. A stronger probe of cross-dataset interference would look at the logit/feature Jacobian subspaces of the shared trunk (for example, principal angles between gradient subspaces of BUSI and ISIC). OGD-style projection methods also show the trade-off the project already sees: removing interfering components protects old or other tasks but shortens the step, which ties to the observed ~10x step dilution. Finally, OGD's finding that all methods fail on dissimilar tasks parallels the cross-domain (ultrasound / dermoscopy / MRI / X-ray) setting.
+
+## Gradient Masked Averaging for Federated Learning (2022)
+
+- **Autores:** Irene Tenison, Sai Aravind Sreeramadas, Vaikkunth Mugunthan, Edouard Oyallon, Irina Rish, Eugene Belilovsky
+- **Venue:** arXiv 2201.11986 (v1 Jan 2022; v2 Nov 2023). The v2 header reads "Reviewed on OpenReview" (forum REAyrhRYAo), which is the TMLR template, so it was probably published in TMLR in 2023. The paper never names TMLR, so treat the venue as an inference.
+- **URL:** https://arxiv.org/abs/2201.11986
+- **Acesso:** full_text · **confiança:** high · **candidato a SOTA:** False
+
+**Termo usado.** The paper never uses "cancel", "conflict" or "interfere" (I checked for these words in the v2 HTML). Its terms are: "information loss" from averaging, "the bias induced by dominant client gradients", "inconsistent components of the gradient", and "agreement of direction among the gradients across clients", meaning sign agreement for each coordinate.
+
+**Definição (literal).** Abstract: "averaging can result in information loss" ... "the bias induced by dominant client gradients". Sec. 3.1: "naive averaging of parameters fails to capture the consistencies in the loss landscapes". Sec. 1: lower importance is given to "the inconsistent components of the gradient". Sec. 3.2: the mask "controls the parameter update based on the agreement of direction among the gradients across clients"; "We define an agreement score, A_j ∈ (0,1], given as a function of all client updates"; "the magnitude is adjusted to be proportional to the agreement across clients".
+
+**Local.** Abstract; Sec. 1 (Introduction); Sec. 3.1; Sec. 3.2, Eq. 3 (agreement score and soft mask); Sec. 4 (Assumption 4.5, Proposition 4.8)
+
+**Formulação.** Client update (Eq. 2): Δ_t^n is the local learning rate times the sum of K local gradients. Agreement score for coordinate j (Eq. 3): A_j = | (1/|N|) Σ_{n≤N} sign(Δ_j^n) |, which lies in (0,1]. A value of 1 means every client has the same sign on that coordinate; a value near 0 means the signs are split evenly. Soft mask: m̃_{τ,j} = 1 if A_j ≥ τ, otherwise A_j. Server update: w_t = w_{t-1} + η_g (m_t ⊙ Δ_t), where Δ_t is the usual weighted average of client updates. The paper uses τ = 0.4 throughout, chosen from a grid of 0.1 to 0.9. The method adapts the AND-mask of Parascandolo et al. (OOD generalization; Sec. 3.2: "an analog of the logical AND operation"). The original AND-mask sets sign-inconsistent components to zero; GMA uses a soft version at the level of client updates. Here "cancellation" is implicit: it means sign disagreement across clients on each coordinate, not the norm ratio.
+
+**Métrica.** The diagnostic is the per-coordinate sign-agreement score A_j. It measures direction only (signs), ignores magnitudes, and is counted per parameter. The paper does not report any norm-based measure of cancellation or negative transfer, and no pairwise cosine. Evaluation is test accuracy (%), averaged over 4 runs. A convergence bound (Prop. 4.8) gives an average squared gradient norm of O(1/sqrt(α²T) + 1/(α²T)) under the random-mask assumption 4.5.
+
+**Método.** GMA can replace server-side averaging in any FL optimizer. The server computes the per-coordinate sign agreement A_j across the participating clients' updates. Each coordinate of the averaged update is then scaled by m̃_j: kept whole if A_j ≥ τ, otherwise shrunk to A_j. Coordinates the clients disagree on are damped, and coordinates they agree on keep full size. It was tested with FedAvg, FedProx, FedAdam and FedYogi. Setup: clients use SGD with momentum 0.9 and cross-entropy loss; models are LeNet and ResNet18 with GroupNorm.
+
+**Resultados.** Gains are small but consistent, about 1 to 3 accuracy points. Test accuracy (%), standard averaging vs GMA:
+- CIFAR-10, label skew, 500 clients, FedAvg: 73.38 vs 74.44
+- CIFAR-100, label skew, 500 clients, FedAvg: 42.68 vs 44.04
+- FEMNIST, 3000 clients, 30 sampled per round, FedAdam: 90.28 vs 93.02
+- FedCMNIST, feature plus label skew, FedAvg: 84.48 vs 86.22
+- CIFAR-10, quantity skew (Dirichlet 0.5), 100 clients: 79.36 vs 80.61
+The gain is larger when heterogeneity is higher. Training accuracy is equal or lower while test accuracy is higher, so the authors present GMA as a regularizer that helps generalization. There is also a small membership-inference experiment.
+
+**Limitações.** - No dedicated limitations section.
+- The random-mask assumption 4.5 "may not always hold in practice", and the authors say the theory is only a sanity check that does not explain the gains.
+- Sensitive to τ: a low τ underfits and a high τ overfits.
+- With low participation (2 of 10 clients) it only updates where both clients agree on the sign. Most parameters then rarely move, and accuracy on participating clients is below AVG.
+- Sign-only agreement ignores magnitude; the authors list magnitude-aware masks as future work.
+- Tested only on image classification with a single global model and single-domain benchmarks: no multi-task, no personalization, no cross-modality.
+- By construction it shrinks the aggregated step further.
+
+**Relevância para o projeto.** Definitions: GMA gives a second way to operationalize "cancellation", alongside 1 − N/E. It is per-coordinate sign disagreement, A_j = |mean sign(Δ_j^n)|, rather than a loss of vector norm. The project could log the distribution of A_j over the trunk, split intra vs inter dataset, next to the cancellation ratio and cosine. That would show whether the small inter-dataset cancellation hides coordinate-level sign conflict. Note that a low A_j for near-orthogonal high-dimensional updates is the sign-level counterpart of the orthogonal reference.
+
+Two caveats:
+- The paper avoids the words cancellation, conflict and interference. It frames the problem as averaging "information loss" and "bias induced by dominant client gradients", so the thesis should cite it as a sign-agreement / AND-mask approach, not as a source for the term.
+- As a remedy, GMA damps disagreeing coordinates and so makes the aggregated step smaller. The project's main cost looks like step dilution (about 10x smaller step), so GMA would likely make that worse. It is not a fix for federated underperforming local-only; it is useful as a diagnostic and as related work. It is not SOTA for cross-domain FedPer MTL; it is an early (2022) baseline for sign-based robust aggregation.
+
+## Merging Models with Fisher-Weighted Averaging (2022)
+
+- **Autores:** Michael Matena, Colin Raffel
+- **Venue:** NeurIPS 2022
+- **URL:** https://arxiv.org/abs/2111.09832
+- **Acesso:** full_text · **confiança:** high · **candidato a SOTA:** False
+
+**Termo usado.** The paper never says "cancellation", "interference", "conflict" or "negative transfer". It frames the failure of plain averaging as a crude posterior approximation ("isotropic merging"). It calls the fix "Fisher merging" and says it may break down when "parameters are far apart in parameter space".
+
+**Definição (literal).** Sec. 2.3 (Laplace approximation): "simple parameter averaging is implicitly using an isotropic Gaussian posterior approximation." ... "Such an approximation may be overly simplistic and lead to degraded performance." Sec. 2.4: "Fisher merging might be less performant when applied to models whose parameters are far apart in parameter space." ... "We therefore limit our focus to models that were trained from the same initialization." Sec. 1: "Merging is the core component of the FedAvg algorithm used in Federated Learning".
+
+**Local.** Section 2.3 (Eq. 3 objective), Section 2.4 (Eq. 4 closed form, same-initialization restriction, heads left unmerged), Section 1 and Section 4 (link to FedAvg)
+
+**Formulação.** Merging is framed as maximizing a weighted joint log-posterior: theta* = argmax_theta sum_i lambda_i log p(theta | theta_i, F_i) (Eq. 3). Each model's posterior is given a Laplace approximation, a Gaussian centred at theta_i with precision equal to the diagonal Fisher F_i. Fisher F is defined in Eq. 1 and estimated in Eq. 2 as the mean over N examples of squared gradients of log p(y|x), with y sampled from the model. The closed form (Eq. 4) is, per parameter j: theta*(j) = sum_i lambda_i F_i(j) theta_i(j) / sum_i lambda_i F_i(j). Isotropic merging, plain weighted averaging as in FedAvg, is the special case F_i = I. When the Fisher is close to zero for a parameter in every model, the authors flag numerical problems and fall back to the target model's value. The paper gives no formal definition of interference or cancellation. Conflict appears only implicitly: averaging is degraded where models disagree on parameters that are important (high Fisher) to one model but not the other.
+
+**Métrica.** There is no interference or cancellation metric. Merges are judged only by downstream task performance: GLUE validation scores (lambda grid-searched on the first 2048 validation examples), ImageNet IID versus average OOD accuracy for robust fine-tuning, and F1 for domain-adaptive pretraining. Compute cost is compared with gradient-based transfer.
+
+**Método.** Fisher merging is a post-hoc, one-shot, per-parameter weighted average of models fine-tuned from a common pretrained initialization. Weights are the diagonal Fisher information times a scalar lambda_i per model. Only the shared body is merged; task-specific classification heads stay unmerged (Sec. 2.4), which is structurally FedPer-like. The paper tests 4 settings: ensembling (merging checkpoints from different fine-tuning runs), robust fine-tuning (the WiSE-FT setting of merging a zero-shot and a fine-tuned model), intermediate-task transfer on GLUE with BERT and RoBERTa, and domain-adaptive pretraining.
+
+**Resultados.** Ensembling: "Fisher merging significantly outperforms isotropic merging in all cases" and comes close to prediction ensembling at lower inference cost (Sec. 3.1). Robust fine-tuning: "a significantly better trade-off between IID and OOD accuracy" than isotropic averaging (Sec. 3.2). Intermediate-task GLUE: "performing gradient-based intermediate-task training hurts on some datasets, whereas merging always helps" (Sec. 3.3). Using MNLI as the donor, merging was worse than gradient-based training. Stacked on top of intermediate training, Fisher merging gave a boost on every task. The largest RoBERTa-large gain was 2.2 points on RTE. Domain-adaptive pretraining: merging outperformed fine-tuning on Acl-Arc (Sec. 3.4). Cost: about 6x cheaper than fine-tuning on RTE, and isotropic merging about 275x cheaper. The Fisher is computed once and reused.
+
+**Limitações.** The Fisher is diagonal only; other estimators are left to future work. It requires the same initialization and a single merge step close to that initialization, since the Fisher is local and may fail when parameters are far apart. Experiments mostly merge pairs of models ("we mostly explored merging pairs of models"). Unmerged heads see shifted body features ("may lead to a distribution shift in the classification head inputs"). There is no iterative or multi-round analysis. Interference is never defined or measured as a quantity. The Fisher is numerically unstable where it is near zero. The domain-adaptive pretraining gains were smaller than originally reported.
+
+**Relevância para o projeto.** This is a conceptual anchor, not a source of a cancellation definition. The paper makes 3 points the project can use.
+(1) FedAvg is the "isotropic merging" special case (F_i = I). The paper explicitly calls merging the core of FedAvg, so the project's aggregation is plain isotropic averaging of trunk deltas.
+(2) Its explanation for failure is not sign cancellation. It is that averaging ignores per-parameter importance: one client's important coordinates get diluted by clients for which they are unimportant. This is a parameter-importance view of the project's "step dilution". Your N/E cancellation ratio can be low (updates near-orthogonal, little cancellation) while the aggregated step is still about 10x smaller and diluted on each client's important coordinates. Fisher-style weighting would preserve those coordinates.
+(3) Its setup mirrors FedPer: only the shared body is merged and heads are left unmerged, and the paper names the resulting distribution shift at the head inputs. That is a plausible mechanism for federated underperforming local-only.
+A concrete diagnostic or ablation follows: replace the uniform/hierarchical weights with per-parameter diagonal-Fisher weights in the server (the FedAvg -> Fisher-merge analogue, related to later FL work such as FedFish), or measure Fisher-weighted overlap between clients.
+Caveat: the paper's one-shot, same-initialization assumptions are closest to a single FL round. It gives no per-round theory and no cancellation metric, so cite Nagura et al. and TIES/gradient-conflict papers for the definition itself.
+
+## Model soups: averaging weights of multiple fine-tuned models improves accuracy without increasing inference time (2022)
+
+- **Autores:** Mitchell Wortsman, Gabriel Ilharco, Samir Yitzhak Gadre, Rebecca Roelofs, Raphael Gontijo-Lopes, Ari S. Morcos, Hongseok Namkoong, Ali Farhadi, Yair Carmon, Simon Kornblith, Ludwig Schmidt
+- **Venue:** ICML 2022 (PMLR 162)
+- **URL:** https://arxiv.org/abs/2203.05482
+- **Acesso:** full_text · **confiança:** high · **candidato a SOTA:** False
+
+**Termo usado.** The paper never uses "cancellation", "interference", "conflict" or "negative transfer" (checked by full-text search of the arXiv v3 TeX source; the only related word is "orthogonal", line 437). It describes the phenomenon in loss-landscape terms instead: an "error barrier" between fine-tuned models, models lying "in a different basin of the error landscape", and, on the positive side, the "interpolation advantage" and the angle phi between the update vectors theta_i - theta_0.
+
+**Definição (literal).** Sec. 3.2 (Intuition and motivation), interpolation advantage: "For each pair $\theta_1,\theta_2$, we compare the accuracy of their average with the average of their accuracies, $\mathsf{Acc}\left(\frac{1}{2}\theta_1 + \frac{1}{2} \theta_2\right) - \frac{1}{2} \left( \mathsf{Acc}\left(\theta_1\right) + \mathsf{Acc}\left(\theta_2\right) \right)$, which we refer to as the interpolation advantage. Figure~\ref{fig:angles} illustrates the results, in which we observe that the interpolation advantage is correlated with the angle $\phi$ and that varying the learning rate, seed, or data augmentation can produce solutions which are more orthogonal." Fig. 2 caption, the angle: "The angle $\phi$ between between solutions refers to the angle between $\theta_1 - \theta_0$ and $\theta_2 - \theta_0$ (i.e., the initialization is treated as the origin)." Sec. 3.2: "more uncorrelated solutions---models that form an angle closer to 90 degrees---may lead to higher accuracy on the linear interpolation path." Failure mode, Sec. 3.3: "unlike the examples in Figure~\ref{fig:error}, there can be an error barrier between fine-tuned models. We mainly observe this when fine-tuning with high learning rates". Sec. 1: "Greedy soups avoid adding in models which may lie in a different basin of the error landscape, which could happen if, for example, models are fine-tuned with high learning rates."
+
+**Local.** Sec. 2 (Method, Table 1, Recipe 1); Sec. 3.2 (Intuition and motivation: interpolation advantage, angle phi, Fig. 1 error-landscape plane, Fig. 2); Sec. 3.3 (error barrier at high LR); Sec. 4, Eq. 1 (soup vs ensemble approximation); App. D (cross-dataset soups); App. J.1 (error barrier at a 10x larger LR, how the angle is computed); Sec. 5 (limitations)
+
+**Formulação.** Soup: theta_S = (1/|S|) sum_{i in S} theta_i, with theta_i = FineTune(theta_0, h_i) all starting from the same pre-trained theta_0 (Sec. 2). The uniform soup uses S = all models. The greedy soup (Recipe 1) takes models in decreasing order of validation accuracy and adds each one only if ValAcc(average(ingredients ∪ {theta_i})) >= ValAcc(average(ingredients)). The learned soup (App. I) solves argmin_{alpha,beta} sum_j loss(beta * f(x_j, sum_i alpha_i theta_i), y_j), with alpha a softmax (optionally one alpha per layer).
+
+Two diagnostics:
+- Interpolation advantage: Acc(theta_1/2 + theta_2/2) - (Acc(theta_1) + Acc(theta_2))/2.
+- Update angle: phi = angle(theta_1 - theta_0, theta_2 - theta_0), computed on the repeated weights and ignoring gain terms (App. J.1).
+
+Theory (Sec. 4, Eq. 1), for theta_alpha = (1-alpha) theta_0 + alpha theta_1:
+L^soup_alpha - L^ens_alpha ≈ alpha(1-alpha)/2 * ( -d²L^soup_alpha/dalpha² + beta² E_x Var_{Y~softmax(beta f(x;theta_alpha))}[Δf_Y(x)] ), where Δf = f(x;theta_1) - f(x;theta_0).
+The curvature term favours the soup when the loss is convex along the path. The variance term always favours the ensemble, and it shrinks when the endpoints are similar or the soup's predictions are confident.
+
+**Métrica.** Top-1 accuracy on ImageNet and average accuracy over 5 distribution shifts (IN-V2, IN-R, IN-Sketch, ObjectNet, IN-A); ReaL and multilabel accuracy; GLUE metrics (MRPC F1/acc, RTE acc, CoLA MCC, SST-2 acc). Diagnostics: the interpolation advantage, the update angle phi, 2D loss/error landscape slices over the plane through theta_0, theta_1 and theta_2, and the soup-minus-ensemble loss/error difference compared against the Eq. 1 approximation. Calibration metrics follow Roelofs et al.
+
+**Método.** The paper fine-tunes many models end to end from one shared pre-trained initialization with varied hyperparameters (learning rate, weight decay, epochs, label smoothing, augmentation, mixup, seed), then averages their weights in one shot, after training. It never averages iteratively during training. There are three recipes: uniform, greedy (selected on a held-out validation set of about 2% of ImageNet train) and learned (mixing coefficients optimized on that validation set). Models: CLIP ViT-B/32 (72 models), ALIGN (12), ViT-G/14 from JFT-3B (58), BASIC, BERT/T5 on GLUE, and CLIP ViT-L on WILDS/CIFAR-10. Cross-dataset soup (App. D): CLIP backbones fine-tuned on 6 different datasets with the head frozen, so only the backbone is averaged. The soup is then evaluated zero-shot on CIFAR-100.
+
+**Resultados.** - ViT-G/14 greedy soup (14 of 58 models): 90.94% ImageNet top-1, against 90.72% for the best model on held-out val and 90.88% for the previous state of the art (CoAtNet-7). Average over the shifts: 85.02 vs 84.38.
+- CLIP ViT-B/32 (Table 3), ImageNet / shifts: best individual model 80.38/47.83, uniform soup 79.97/51.45, greedy soup 81.03/50.75, learned soup by layer 81.37/50.87, ensemble 81.19/50.77.
+- The greedy soup beats the best model by +0.7 pp (CLIP) and +0.5 pp (ALIGN). On GLUE the gains are 0 to +0.8.
+- The interpolation advantage correlates with the angle phi: closer to orthogonal updates average better.
+- A uniform soup beats the best model only when every ingredient is accurate. With high-LR fine-tuning there is an error barrier and accuracy drops along the interpolation path.
+- Cross-dataset backbone soup: +6.4 pp zero-shot accuracy on CIFAR-100 over CLIP. Which datasets are included matters substantially: some ingredients reduce accuracy (Fig. 8 right).
+- Ensembles do slightly better in distribution, soups do better under distribution shift. Eq. 1 correlates strongly with the true soup/ensemble difference when the LR=1e-4 models are excluded.
+
+**Limitações.** - Sec. 5 names two limitations: gains are smaller for less heterogeneous pre-training (an ImageNet-22k ViT-B), and soups do not improve calibration the way ensembles do.
+- Everything assumes a strong shared pre-trained initialization and small or moderate fine-tuning steps. At high learning rates the solutions leave the shared basin and averaging hurts.
+- Averaging is one-shot over fully converged models, not repeated over rounds.
+- Almost all ingredients share the same task and data (cross-dataset only in App. D, classification backbones only, heads frozen).
+- No measure of update magnitude, norm shrinkage or cancellation. The "interference" between ingredients is only inferred from the accuracy of the average and from the angle.
+- The theory covers two models, assumes near-linear logits, and does not hold for far-apart (high-LR) models.
+- The learned soup must hold all models in memory.
+- The greedy soup needs a held-out validation set at the merge point.
+
+**Relevância para o projeto.** Relevance is moderate and mostly conceptual. This is not an FL or MTL paper, and it gives no definition of "cancellation" or "negative transfer".
+
+What it does give is the parameter-space picture behind FedAvg-style averaging of trunk updates from a shared start:
+1. It measures the same quantity as the project's pairwise cosine: the angle between theta_i - theta_0 vectors, with the shared init as origin. It interprets near-orthogonality as GOOD for averaging (more diverse solutions, larger interpolation advantage) as long as all endpoints stay in one basin. This supports the project's reading that near-orthogonal client deltas in high dimensions are not evidence of conflict. It also explains why the orthogonal reference is the right baseline.
+2. The soup equation (theta_S = mean of theta_i) is literally theta_0 + mean(Delta_i). With orthogonal Deltas of equal norm, the averaged step norm is ||Delta||/sqrt(k), so ~10x step dilution follows mechanically from near-orthogonality with ~100 effective clients, or from fewer clients with partly opposing updates. The paper shows this shrunken step can still be a better point when the endpoints share a basin. So dilution is not by itself harmful; harm comes from an error barrier or from losing each client's specialization. That is the project's case: federated is below local-only, where the personalized "endpoint" is the target, not the average.
+3. The failure mode it names (an error barrier when updates are large, here high LR) maps onto local-budget effects (steps vs epochs, small clients taking ~26x more epochs). The project could add an interpolation-advantage or linear-path-error diagnostic between client trunks or between the global trunk and each local trunk.
+4. App. D (cross-dataset backbone soups with frozen heads) is the closest analogue to FedPer across domains. Adding some datasets' models hurts, which supports per-dataset weighting or greedy/learned dataset weights.
+5. The learned soup by layer suggests layer-wise aggregation weights as a mitigation.
+
+Cite it for the basin/angle characterization and the interpolation advantage. Do not cite it as a definition of cancellation; use Nagura et al. 2020 for N/E.
+
+## Revisiting Weighted Aggregation in Federated Learning with Neural Networks (FedLAW) (2023)
+
+- **Autores:** Zexi Li, Tao Lin, Xinyi Shang, Chao Wu
+- **Venue:** ICML 2023 (PMLR 202)
+- **URL:** https://arxiv.org/abs/2302.10911
+- **Acesso:** full_text · **confiança:** high · **candidato a SOTA:** False
+
+**Termo usado.** "local gradient coherence" / "client coherence" (cosine similarity of client updates; low or negative coherence means updates diverge or point in opposite directions). Also "heterogeneity coherence" and "global weight shrinking" (GWS). The paper never says "cancellation", "interference" or "negative transfer". The only "conflict" it names is between the decaying optimization pseudo-gradient and the non-decaying GWS regularization term, not between clients.
+
+**Definição (literal).** Sec. 5.1, Definition 5.1: "The local gradient coherence of two clients i and j at round t is defined by the cosine similarity of their local updates sent to the server, as c(i,j)^t = cos(g_i^t, g_j^t). The overall local gradient coherence of a cohort of clients at round t is defined by the weighted cosine similarity of all clients' local updates sent to the server, as coh^t = (1/m) Σ_{i,j,i≠j} λ_i λ_j cos(g_i^t, g_j^t)." Context, Sec. 5.1: "FL assumes multiple local epochs in each client, and clients usually have heterogeneous data. In this case, the local gradients of clients are usually almost orthogonal, which means that they have low coherence." Also: "The cosine similarity among gradients indicates the coherence: if the gradients have larger cosine similarity, it will have larger descent in the loss and improve the global generalization." Sec. 5.2: "The critical point is the round that the coherence is near zero. After the critical point, the test accuracy gain is marginal, and the coherence is kept negative but close to zero." Footnote 5: "the clients' gradients in IID settings are more coherent, but the ones in the NonIID usually diverge."
+
+**Local.** Sec. 3 (Eq. 3); Sec. 4.2 (Eqs. 4-5); Sec. 5.1 (Eq. 6, Definitions 5.1 and 5.2); Sec. 5.2 (critical point, Figs. 5-6); Sec. 6.1 (Eq. 8); Appendix B.2 (contrast with gradient diversity)
+
+**Formulação.** Aggregation (Sec. 3, Eq. 3): w_g^{t+1} = γ Σ_i λ_i w_i^t, with γ>0, λ_i≥0, ||λ||_1 = 1. γ = ||μ||_1 is the sum of the unnormalized weights; γ<1 is the "shrinking factor". Eq. 4 rewrites the server step as an optimization term γ η_g g_g^t (the global averaged pseudo-gradient) plus a regularization term (1−γ) w_g^t, i.e. weight decay applied at the server. Eq. 6 is a first-order Taylor expansion of the loss change over one round: ΔL^t ≈ −η ⟨g^t, g^t⟩ = −η (Σ_i λ_i² ||g_i^t||² + Σ_{i≠j} λ_i λ_j cos(g_i^t, g_j^t) ||g_i^t|| ||g_j^t||). The descent is the squared norm of the weighted aggregate update, broken into a self term and a pairwise cosine term. Definition 5.1 gives the coherence metric above. Definition 5.2 defines heterogeneity coherence as sim(D_cohort, D), the similarity between the sampled cohort's data distribution and the global one. Eq. 5 (adaptive GWS): γ* = argmin_γ L_proxy(γ Σ_i (|D_i|/|D|) w_i^t). Eq. 7 (attentive LAW): λ* = argmin over the simplex. Eq. 8 (FedLAW): learns (γ*, λ*) jointly on a server proxy dataset.
+
+**Métrica.** (1) Pairwise cosine between client updates, c(i,j) = cos(g_i, g_j). (2) Cohort coherence: the λ-weighted mean pairwise cosine, tracked every round. (3) The norm of the global pseudo-gradient against the norm of the GWS regularization pseudo-gradient, and their ratio r (about 19 under adaptive GWS, Fig. 3). (4) The learned γ (about 0.947-0.956 on CIFAR-10, Table 2). (5) Test accuracy of the global model.
+
+**Método.** FedLAW learns the aggregation weights at the server. Each round, the shrinking factor γ (the weight sum, allowed to differ from 1) and the relative weights λ (on the simplex) are optimized by gradient descent on a small proxy dataset held at the server. The objective is the proxy loss of the aggregated model γ Σ λ_i w_i. Two ablations isolate the parts: adaptive GWS learns only γ, with data-size λ; attentive LAW learns only λ, with γ=1. The analysis tracks per-round client cosine coherence to explain the training dynamics.
+
+**Resultados.** (a) Setting the weight sum below 1 (γ<1) acts as server-side weight decay and improves generalization. Adaptive GWS on CIFAR-10 SimpleCNN with E=2, IID: 66.43 to 71.47 over FedAvg (Table 2), with learned γ≈0.95. The optimal γ is smaller (stronger shrinking) with more local epochs, more IID data, and early in training, because the global pseudo-gradient norm is larger then. A small fixed γ hurts late training, which the paper attributes to the "conflicts of decaying global pseudo gradient and non-decaying regularization pseudo gradient". (b) Cohort cosine coherence is high and positive in the first rounds, where most accuracy gains happen. It then crosses a "critical point" near zero and stays slightly negative, and gains after that are marginal. Balanced clients are more coherent with each other, and attentive LAW gives them nearly all the weight early on. With adaptive GWS, coherence stays positive after the critical point. (c) FedLAW beats FedAvg, FedProx, FedDF, FedBE, Server-FT and others on FashionMNIST, CIFAR-10 and CIFAR-100 with MLP/LeNet/CNN/ResNet/WRN/DenseNet. Example: CIFAR-10 ResNet20, E=3, IID: 68.04 to 78.88 (Table 4). Gains are small on FashionMNIST and under extreme non-IID data (α=0.1, App. B.1).
+
+**Limitações.** Every method needs a labelled proxy dataset at the server, which a cross-silo medical setting usually lacks and which raises privacy concerns. The paper concedes some proxy settings are "for understanding only". Experiments are single-domain, single-task image classification on toy benchmarks (FMNIST, CIFAR) with Dirichlet label skew only. There is no feature or domain shift, no multi-task heads, and no partial-model sharing or personalization. Coherence is a first-order Taylor argument over a whole round of multi-epoch local training, and the paper reports no direct cancellation ratio. The benefit shrinks under extreme non-IID data. Learned γ stayed just below 1 in every reported case, so the paper never studies γ>1 (amplifying the aggregate) even though the constraint γ>0 allows it. There is no dedicated limitations section.
+
+**Relevância para o projeto.** High for definitions, moderate as a method. (1) Eq. 6 is the same algebra as the project's metric. ||Σ λ_i g_i||² = Σ λ_i²||g_i||² + Σ_{i≠j} λ_iλ_j cos_ij ||g_i|| ||g_j||, so N = ||Σ w_i Δ_i|| is driven by the weighted pairwise cosines, and 1 − N/E is the norm-level summary of FedLAW's coherence. This lets the student cite FedLAW to tie the project's pairwise-cosine matrix and its cancellation ratio into one formula, and to justify the orthogonal reference: FedLAW states that multi-epoch heterogeneous client updates are "usually almost orthogonal". (2) FedLAW's critical-point finding predicts near-zero or slightly negative coherence after the first rounds. That matches the project's finding of little excess cancellation between datasets beyond the orthogonal reference. In FedLAW's framing, the loss of aggregated step size with orthogonal updates is a coherence effect, not an opposing-direction effect. This is the project's "step dilution": with M near-orthogonal clients of equal weight, the step norm scales roughly as 1/sqrt(M). (3) FedLAW makes the weight sum γ an explicit, learnable server step scale. The project's diagnosis (aggregated step about 10x smaller, federated below local-only) suggests testing γ>1 or a server learning rate, i.e. a FedOpt-style step. FedLAW itself only found γ<1 helpful, but in an IID-leaning, single-task, full-model setting. (4) Caveats: FedLAW needs a server proxy set (unrealistic for BUSI/ISIC/TCGA/SIIM), does not address cross-domain shift or FedPer partial sharing, and calls none of this "negative transfer". It should be cited as the source for "client/local gradient coherence", not for cancellation or negative-transfer definitions, which come from Nagura et al. (N/E) and the MTL literature.
+
+## Git Re-Basin: Merging Models modulo Permutation Symmetries (2023)
+
+- **Autores:** Samuel K. Ainsworth, Jonathan Hayase, Siddhartha Srinivasa
+- **Venue:** ICLR 2023 (arXiv:2209.04836, v6 1 Mar 2023)
+- **URL:** https://arxiv.org/abs/2209.04836
+- **Acesso:** full_text · **confiança:** high · **candidato a SOTA:** False
+
+**Termo usado.** loss barrier / linear mode connectivity (LMC); permutation symmetry of hidden units; 'naive interpolation' degradation. The paper never says "cancellation", "interference", "conflict" or "negative transfer".
+
+**Definição (literal).** Sec. 2: "Given two points ΘA,ΘB such that ℒ(ΘA)≈ℒ(ΘB), the loss barrier is defined as [max_{λ∈[0,1]} ℒ((1−λ)ΘA+λΘB) − ½(ℒ(ΘA)+ℒ(ΘB))] ... Loss barriers are non-negative, with zero indicating an interpolation of flat or positive curvature." Sec. 1: "We refer to such solutions as being linearly mode connected (LMC)." Sec. 5.1: "Naïve interpolation (π(ΘB)=ΘB) substantially degrades performance when interpolating." Sec. 5.4 calls naive averaging "the status quo for model combination in federated learning and distributed training." (The equation is rendered from the paper's math, not copied character for character.)
+
+**Local.** Sec. 1 (LMC), Sec. 2 (loss barrier equation), Sec. 3.1 Eq. 1 (activation matching), Sec. 3.2 and Lemma 1 (weight matching / SOBLAP), Sec. 4 (counterexample), Sec. 5.1 (naive interpolation), Sec. 5.4 (disjoint-data merging), Sec. 6 ("Federated learning and model merging"), Sec. 7 and App. A.1 (limitations and failure modes)
+
+**Formulação.** Loss barrier B(ΘA,ΘB) = max_{λ∈[0,1]} L((1−λ)ΘA + λΘB) − ½[L(ΘA)+L(ΘB)], always ≥ 0. ΘA and ΘB are LMC when B ≈ 0. Merging means finding a permutation π of hidden units, which leaves the function unchanged, so that B(ΘA, π(ΘB)) ≈ 0, and then averaging. Weight matching (Sec. 3.2): π* = argmax_π vec(ΘA)·vec(π(ΘB)) = argmax Σ_ℓ ⟨W_ℓ^A, P_ℓ W_ℓ^B P_{ℓ−1}^T⟩_F. This is a 'sum of bilinear assignments problem' (SOBLAP), NP-hard for L>2 (Lemma 1), and is solved by coordinate descent over linear assignment problems. Activation matching (Sec. 3.1, Eq. 1): P_ℓ = argmin_P Σ_i ||Z^A_{:,i} − P Z^B_{:,i}||², i.e. least squares restricted to permutation matrices. Third method: a straight-through estimator that learns π by minimising the loss at the midpoint. Conjecture 1: SGD solutions sit, modulo permutations, in roughly one basin.
+
+**Métrica.** Loss barrier and accuracy barrier along the linear path between two models, measured on train and test loss and accuracy at λ∈[0,1], compared with naive (unpermuted) interpolation and with ensembling of logits.
+
+**Método.** Two models are trained independently from different seeds, with no shared initialisation and no communication. The hidden units of model B are permuted to match model A by one of three methods: activation matching, weight matching or straight-through estimator matching. The weights are then linearly interpolated or averaged. Weight matching needs no data and "runs in mere seconds"; STE "produces the best solutions" but costs the most, and the gap between them is small.
+
+**Resultados.** - MNIST MLP: zero-barrier LMC with all three methods.
+- CIFAR-10: ResNet20 reaches zero barrier as width grows ("larger width models decreased loss barriers all the way to zero"). The abstract calls this the first zero-barrier LMC between independently trained ResNets. 1x-width models show no LMC, and 8x VGG-16 ran out of GPU memory.
+- ImageNet: a 67% drop in barrier relative to naive interpolation, but not zero.
+- LMC is "an emergent property of training": it is absent early in training.
+- Sec. 5.4, CIFAR-100 split into two skewed disjoint subsets (A: 20% of classes 0-49 and 80% of classes 50-99; B the reverse), ResNet20: the permuted merge "outperforms both input models in terms of test loss" (but not accuracy), at half the memory and compute of ensembling. It does not match a model trained on the full data. Naive averaging degrades sharply.
+
+**Limitações.** - Only one form of averaging failure is treated: the misalignment of hidden units (permutation) between models trained independently from different initialisations. Gradient conflict between tasks or domains is not addressed, nor are cosine or norm diagnostics of updates.
+- LMC between thin models "remains elusive", and failures include low width, early training, VGG on MNIST and ConvNeXt (App. A.1).
+- "permutation symmetries are a necessary piece, though not a complete picture."
+- Adversarial non-SGD solutions break LMC (Sec. 4).
+- ImageNet keeps a non-zero barrier.
+- Merging is one-shot between two models of the same architecture on the same task and label space. Multi-task heads, multi-domain inputs and repeated FedAvg rounds are not studied.
+- Federated learning appears only as a motivation and in related work (Sec. 5.4, 6, 7, App. A.2), with no FL experiments.
+
+**Relevância para o projeto.** Mostly a framing and contrast reference, not a direct definition of 'cancelamento de pesos'.
+- What the paper measures: the loss barrier is a function-space test of averaging failure. The project's 1 − ||Σw_iΔ_i|| / Σw_i||Δ_i|| is a vector-geometry measure of update cancellation. The two are different and complementary, and neither implies the other.
+- Why permutation misalignment matters little here: the failure mode Git Re-Basin fixes needs independently initialised models. In FedPer, every client starts each round from the same global trunk and takes a limited number of local steps. Clients therefore stay in one basin and share a common unit ordering, which is the regime of Frankle et al.'s shared-initialisation LMC. This fits the project's finding of little inter-dataset cancellation: neither misalignment nor large conflict seems to be the cost.
+- How the student could use it: (a) to argue that the shared trunk does not need alignment such as FedMA or permutation matching, because of the common initialisation and short local training; (b) to borrow the loss barrier as an extra check, by evaluating each client's loss along the line between its local trunk and the aggregated trunk. That check would show whether the ~10x smaller aggregated step (step dilution) lands in a flat region or behind a barrier.
+- The paper offers no measure of cancellation of opposed updates, no intra/inter-domain split and no orthogonal reference. For those, Nagura et al. (FedNNNN) and the gradient-conflict literature (PCGrad, FedMTL) remain the reference definitions.
+
+## Language Models are Super Mario: Absorbing Abilities from Homologous Models as a Free Lunch (DARE) (2024)
+
+- **Autores:** Le Yu, Bowen Yu, Haiyang Yu, Fei Huang, Yongbin Li (Alibaba Group)
+- **Venue:** ICML 2024 (PMLR v235). The arXiv v3 HTML I read (13 Jun 2024) does not name the venue; the venue comes from external knowledge.
+- **URL:** https://arxiv.org/abs/2311.03099
+- **Acesso:** full_text · **confiança:** high · **candidato a SOTA:** False
+
+**Termo usado.** "interference of parameters" / "parameter interference" (merging several fine-tuned models). It also cites TIES-Merging's "task conflicts". The paper never uses "cancellation" and never defines interference formally.
+
+**Definição (literal).** The paper names the phenomenon but never defines it. Sec. 1: "which can potentially mitigate the interference of parameters among multiple models". Sec. 3.2: "we hypothesize that DARE can help address the interference of parameters when merging multiple models"; also "DARE can assist existing model merging methods to better absorb the abilities of two models with less or no parameter interference." Fig. 2 caption: "DARE tackles the parameter interference issue when merging models and yields consistent improvements." Sec. 2: "TIES-Merging tackles the task conflicts in Ilharco et al. (2023) by trimming low-magnitude parameters". Sec. 3: "delta parameters are defined as the difference between parameters of LMs before and after SFT".
+
+**Local.** Sec. 1 (Introduction), Sec. 2 (Related Work), Sec. 3 / 3.1 (Eq. 1, the definitions of delta parameters and DARE), Sec. 3.2 (Eq. 3, merging with DARE), Fig. 2 caption
+
+**Formulação.** Interference has no formal definition; the paper only says what it hypothesizes about it. What it does define formally is the delta parameters and the DARE operator (Sec. 3.1, Eq. 1; my notation, not quoted). Delta: δ^t = θ_SFT^t − θ_PRE. Mask: m^t ~ Bernoulli(p) element-wise, where p is the drop rate. Sparsify: δ̃^t = (1 − m^t) ⊙ δ^t. Rescale: δ̂^t = δ̃^t / (1 − p). Result: θ_DARE^t = θ_PRE + δ̂^t. Justification: rescaling by γ = 1/(1−p) keeps the expected layer output, so "By setting γ=1/(1-p), we have E[h_i]=E[ĥ_i], concluding that DARE can approximate the original embeddings." For merging (Sec. 3.2, Eq. 3), DARE is applied to each model's delta first, and the sparsified deltas are then combined with an existing merger. For Task Arithmetic this is θ_M = θ_PRE + λ Σ_t δ̂^t; Average, Fisher, RegMean and TIES-Merging work the same way.
+
+**Métrica.** Interference is never measured directly. Its effect is inferred from downstream task scores of the merged model compared with each single source model: AlpacaEval (instruction following), GSM8K/MATH (math), HumanEval/MBPP (code), the Open LLM Leaderboard average, and GLUE for the encoder models. As a sanity check for the approximation, Sec. 4.4 reports cosine similarity between layer embeddings of the original model and the model after DARE or after DropOnly (dropping without rescaling).
+
+**Método.** DARE (Drop And REscale) is training-free. It randomly drops a fraction p of the SFT delta parameters (often 0.9, up to 0.99) and rescales the survivors by 1/(1−p). Used as a plug-in before any merging method (Task Arithmetic, TIES, Average, Fisher, RegMean), it sparsifies each model's delta to reduce overlap and interference between homologous models fine-tuned from the same backbone, for example WizardLM, WizardMath and WizardCoder on Llama-2-13B.
+
+**Resultados.** (1) Sparsity: "DARE can effortlessly eliminate 90% or even 99% of them [delta parameters]" with limited loss, and "DARE can effectively remove 90% delta parameters without significantly decreasing the performance". Larger models tolerate a higher p. (2) Rescaling is essential (Sec. 4.4): layer-embedding similarity stays above 0.95 at p = 0.9 with DARE. For DropOnly on WizardMath-7B it falls to about 0.85 at p = 0.5 and about 0.68 at p = 0.9. (3) Merging (Sec. 4.3, Table 1): DARE "often yields modestly better results" for Task Arithmetic and TIES. Examples: +3.10% AlpacaEval (LM & Math & Code vs. LM), +3.18% GSM8K (LM & Math vs. Math), +19.57% MBPP (LM & Code vs. Code). However, "the merged model still struggles to surpass the single model in some cases". (4) The merged 7B model supermario_v2 ranked first on the Open LLM Leaderboard as of 28 Jan 2024 (average 75.49, Table 2).
+
+**Limitações.** (a) DARE "can work well when the absolute values of SFT delta parameters are relatively small (e.g., within 0.002)... Otherwise, DARE may fail" (Sec. 4.6). It failed on WizardCoder-Python vs. Llama-2-13b because of Code Llama's extra code training. After continued pre-training, "the delta parameters can rapidly reach around 0.03, making DARE infeasible" (Sec. 1). (b) The claim that DARE reduces interference is a hypothesis backed only by downstream gains. Interference is never defined or measured, and the paper has no analysis of sign conflicts, cosine between deltas, or norm cancellation. (c) The setting is one-shot, post-hoc merging of a few homologous LLMs that share a pretrained backbone, with no iterative rounds and no data heterogeneity. (d) Gains are modest and inconsistent, and merged models sometimes lose to single models. (e) The paper notes that a theoretical bound on p relative to model capacity is left for future work. The text I read does not discuss models trained from scratch.
+
+**Relevância para o projeto.** Low to moderate, and mostly about terminology. (1) Definitions: this paper is a source for the merging-literature term "parameter interference" but gives it no formal definition, so it cannot ground the project's cancellation metric 1 − ||Σ w_i Δ_i|| / Σ w_i ||Δ_i||. For a formal definition, cite Nagura et al. (FedNNNN), TIES-Merging (sign conflicts), or gradient-conflict work such as PCGrad or GradDrop. (2) The project's "step dilution" finding is the opposite failure from what DARE targets. DARE assumes interference among redundant deltas and removes most of them. The project measured low inter-dataset cancellation but a roughly 10x smaller aggregated step. DARE's key ingredient, rescaling by 1/(1−p) to preserve the update's expected magnitude, is a magnitude-preservation idea that is relevant here: magnitude loss, not direction conflict, may be what hurts. A server-side rescale of the aggregate (in the spirit of FedNNNN normalization or a server learning rate > 1) is the federated analogue. (3) In practice, DARE on trunk deltas each round would further shrink or randomize the aggregated step unless rescaled. Its precondition of small delta magnitudes (≤0.002) is plausible for per-round FL deltas, so a round-wise DARE/TIES ablation is a cheap, possible extension, but the paper offers no evidence that it works in iterative FL or across medical domains. (4) It supports the student's framing that the merging literature describes interference qualitatively and judges it by downstream accuracy. The project's direct, decomposed measurement (intra/inter split, orthogonal reference, pairwise cosine) is therefore more rigorous on this point than DARE.
+
+## AdaMerging: Adaptive Model Merging for Multi-Task Learning (2024)
+
+- **Autores:** Enneng Yang, Zhenyi Wang, Li Shen, Shiwei Liu, Guibing Guo, Xingwei Wang, Dacheng Tao
+- **Venue:** ICLR 2024
+- **URL:** https://arxiv.org/abs/2310.02575
+- **Acesso:** full_text · **confiança:** high · **candidato a SOTA:** True
+
+**Termo usado.** "conflicts" among tasks; task vectors whose parameters are "redundant" or whose "signs ... conflict"; task vectors that are "harmful to MTL". The paper does not use "cancellation", "negative transfer" or "parameter interference" as defined terms.
+
+**Definição (literal).** Abstract: the performance drop of merged models arises "due to potential conflicts and intricate correlations among the multiple tasks." Sec. 3.1: "some parameter values in the task vector may be redundant, or the signs of the parameters may conflict, and direct merging will cause performance losses." Sec. 1: "an ill-suited merging coefficient can lead to a situation where the model struggles to effectively perform MTL." Appendix B.2: "these task vectors are almost orthogonal to each other."
+
+**Local.** Abstract; Sec. 1 (Introduction); Sec. 3.1 (task vector, Task Arithmetic and Ties-Merging recap); Appendix B.2 (cosine similarity between task vectors)
+
+**Formulação.** The paper gives no formal definition of interference or cancellation. Its formal objects are these. Task vector: T_k = theta_k - theta_pre. Task Arithmetic: theta_MTL = theta_pre + lambda * sum_k T_k, with one shared lambda (0.3 was best). Ties-Merging: theta_MTL = theta_pre + lambda * sum_k Phi(T_k), where Phi trims redundant parameters and resolves sign conflicts. Task-wise AdaMerging: theta_MTL = theta_pre + sum_k lambda_k T_k. Layer-wise AdaMerging: theta_MTL^l = theta_pre^l + sum_k lambda_k^l T_k^l. The coefficients are learned by minimizing the Shannon entropy of predictions on unlabeled test batches: min_lambda sum_k sum_{x_i in B_k} H(f_theta_MTL(x_i)). Interference shows up only operationally, as the accuracy gap between the merged model and the individual or MTL models. Sign conflict is the parameter-level mechanism the paper inherits from TIES.
+
+**Métrica.** The paper never measures interference directly. It reports average test accuracy over 8 image-classification tasks (SUN397, Cars, RESISC45, EuroSAT, SVHN, GTSRB, MNIST, DTD), compared with individual fine-tuned models and traditional MTL. Diagnostics: pairwise cosine similarity between task vectors (App. B.2, near orthogonal), the Spearman correlation between entropy and loss (about 0.87 on average), and the learned lambda values per task and per layer.
+
+**Método.** This is data-free, one-shot model merging, not federated training. Each task is fine-tuned from the same pretrained CLIP ViT and becomes a task vector. AdaMerging replaces the single hand-tuned lambda of Task Arithmetic with learned coefficients, either one per task or one per layer per task, all initialized to 0.3. It trains them for 500 Adam iterations using test-time entropy minimization on unlabeled test data, as a surrogate for the unavailable labeled loss. AdaMerging++ applies the same scheme on top of Ties-Merging's trimmed and sign-resolved task vectors.
+
+**Resultados.** Average accuracy on 8 tasks, ViT-B/32: Individual 90.5, Traditional MTL 88.9, Task Arithmetic 69.1, Ties-Merging 72.4, task-wise AdaMerging 71.1, task-wise AdaMerging++ 73.7, layer-wise AdaMerging 80.1, layer-wise AdaMerging++ 81.1. ViT-L/14: Individual 94.2, MTL 93.5, Task Arithmetic 84.5, Ties 86.0, AdaMerging 90.8, AdaMerging++ 91.0. Learned task-wise coefficients range from about 0.14 to 0.58 and differ by task. Layer-wise coefficients differ by layer, with shallow layers getting smaller coefficients than deep ones. Task vectors are nearly orthogonal, yet a uniformly scaled merge still loses about 20 points on ViT-B/32. The method helps even with 0.1% of the test data. It generalizes to unseen tasks and is mostly robust to corruptions, with exceptions: EuroSAT under impulse noise scores 30.8 versus 49.1 for Task Arithmetic.
+
+**Limitações.** No explicit limitations section. Inferred: it needs unlabeled test data at merge time (transductive); it adds optimization cost (about 7.5 to 125 minutes); entropy is only a proxy for loss and works for classification heads (it does not transfer directly to segmentation, nor to heterogeneous heads or inputs); experiments cover only CLIP ViT classifiers that share one pretrained initialization; it is a one-shot merge, not iterative FL rounds; interference is never quantified at the parameter level, only through accuracy; some robustness results are mixed.
+
+**Relevância para o projeto.** High for interpretation, indirect for method. (1) Terminology: the merging literature (Task Arithmetic, TIES, AdaMerging) frames the problem as task "conflict" or "interference", meaning redundant parameters and sign conflicts among task vectors. It does not call it "cancellation". The project's 1 - N/E metric is a magnitude-level version of the same idea and should be cited as such, with TIES and AdaMerging as the closest neighbours. (2) A key parallel: AdaMerging (App. B.2) finds task vectors nearly orthogonal, which means little cancellation, yet a uniformly weighted sum still loses about 20 accuracy points. Most of that loss is recovered just by rescaling coefficients per task and per layer. This matches the project's finding of low inter-dataset cancellation but roughly 10x step dilution. It suggests that the scale and weighting of the aggregated update, not opposing directions, is the dominant failure mode. The Task Arithmetic optimum of lambda = 0.3 for 8 tasks also shows that a plain average (lambda = 1/K) shrinks each task's contribution. (3) Actionable idea: learnable aggregation coefficients per client and per layer (or a server-side global learning rate or step rescaling) for the shared trunk, a federated analogue of layer-wise AdaMerging. Entropy minimization would cover only the classification heads, since segmentation would need another surrogate. (4) Caveats: one-shot merging of models fine-tuned from a common pretrained init is not iterative FedPer from scratch, and AdaMerging assumes homogeneous inputs and architectures, so the transfer is conceptual.
+
+## EMR-Merging: Tuning-Free High-Performance Model Merging (2024)
+
+- **Autores:** Chenyu Huang, Peng Ye, Tao Chen, Tong He, Xiangyu Yue, Wanli Ouyang (Fudan University, CUHK, Shanghai AI Laboratory)
+- **Venue:** NeurIPS 2024 (Spotlight); arXiv:2405.17461v2, 27 Sep 2024. The arXiv HTML page does not name the venue, so the NeurIPS Spotlight label comes from the task brief.
+- **URL:** https://arxiv.org/abs/2405.17461
+- **Acesso:** full_text · **confiança:** high · **candidato a SOTA:** True
+
+**Termo usado.** The paper never says "cancellation" or "negative transfer". Its main term is the weight-representation gap: one merged weight vector cannot represent every expert. "Interference" and "sign conflicts" (the TIES-Merging terms) are used for the election step and for analysis. "Distance" between the merged model and each expert is the formal objective.
+
+**Definição (literal).** Abstract: "We discover that using a single model's weights can hardly simulate all the models' performance." Sec. 1: "We argue that using a single model weight to simulate all the model weights is sub-optimal." Sec. 3.1: "a single model can hardly represent all the model weights, thus causing severe performance drops." Sec. 3.3: "Our goal is to merge model weights by minimizing the distance between the merged model" [and each individual model]. On prior work (Intro): "Ties-Merging handles the interference issue and AdaMerging adaptively tunes the merging coefficients." Appendix C, describing TIES: "the conflicts among the task vectors severely effect the merged model's performance."
+
+**Local.** Abstract; Sec. 1 Introduction; Sec. 3.1 (Motivation); Sec. 3.3 (Theoretical analysis, Eqs. 3-5, proofs in Appendix B); Appendix C (on TIES); Appendix F (metric definitions)
+
+**Formulação.** Task vector: tau_i = W_i - W_pre. The phenomenon is defined through the objective Dis = (1/N) sum_i ||W_i - W_uni||^2 = (1/N) sum_i ||tau_i - tau_uni||^2 (Eq. 3). This is the mean squared L2 gap between the shared merged model and each expert. Merging methods are judged by how far they shrink it.
+
+Elect: gamma_uni = sgn(sum_t tau_t), i.e. the sign with the larger total mass per parameter. epsilon_uni = the largest |tau_t| among the tasks whose sign agrees with gamma_uni. tau_uni = gamma_uni ⊙ epsilon_uni.
+
+Mask: M_i = (tau_i ⊙ tau_uni > 0), so 1 where the task's sign agrees with the unified update and 0 elsewhere.
+
+Rescale: lambda_i = sum|tau_i| / sum|M_i ⊙ tau_uni|. Sec. 3.2 prints tau_F in the denominator, apparently a typo. Appendix A uses tau_uni.
+
+Task model: W_t = W_pre + lambda_t · M_t ⊙ tau_uni. The paper proves Dis^M ≤ Dis (Eq. 4) and Dis^{M,lambda} ≤ Dis^M (Eq. 5). lambda is the value at which the derivative of the distance is zero.
+
+Diagnostics (Appendix F): sign conflict is the fraction of elements whose sign disagrees between the merged and the task-specific weights, averaged over experts. L2 distance and cosine similarity are computed on the flattened weights.
+
+**Métrica.** Downstream task performance: average accuracy over 8 vision tasks (CLIP ViT-B/32 and ViT-L/14), GLUE per-task scores (RoBERTa), plus other NLP and multimodal settings. Weight-space diagnostics: sign-conflict ratio, L2 distance and cosine similarity between the merged/modulated weights and each expert (Sec. 3.4, Fig. 5, Appendix F).
+
+**Método.** Tuning-free and data-free model merging under the pretrain-finetune paradigm.
+(1) Elect one unified task vector by per-parameter sign election (sign of the summed task vectors) and magnitude election (largest same-sign magnitude). Unlike TIES there is no trimming and no averaging of magnitudes.
+(2) Each task gets a binary mask equal to the sign agreement between its own vector and the unified vector. This removes the elements where the task's direction conflicts.
+(3) Each task gets one scalar rescaler, which makes the L1 mass (mean absolute value) of the masked unified vector equal to that of the task's own vector. This restores the task's update magnitude.
+At inference each task uses W_pre + lambda_t M_t ⊙ tau_uni. No gradient steps, no validation data, no tuning of merging coefficients.
+
+**Resultados.** 8 vision tasks, average accuracy.
+ViT-B/32 (Table 1): EMR 88.7, against Individual 90.5, Traditional MTL 88.9, Task Arithmetic 70.1, TIES 73.6, AdaMerging 80.1, AdaMerging++ 81.1.
+ViT-L/14 (Table 2): EMR 93.7, against Individual 94.2, Task Arithmetic 84.5, TIES 86.0, AdaMerging 90.8, AdaMerging++ 91.0.
+Sec. 4.1.1 reports gains over the strongest baseline of 7.6 and 2.7 points for the two backbones. AdaMerging needs test-time tuning. EMR needs no tuning.
+GLUE with RoBERTa (Table 4): CoLA 0.3996 vs 0.1878 (Task Arithmetic) and 0.2048 (TIES). RTE 0.7437 vs 0.6209 and 0.4296. AdaMerging is not in this table.
+Sec. 3.4 / Fig. 5: "EMR-Merging significantly reduces sign conflicts and L2 distance and improves the cosine similarity" relative to the merged baselines.
+Ablations (not checked in this read) are reported to show that both the mask and the rescaler contribute.
+
+**Limitações.** Appendix G, verbatim fragments: "EMR-Merging requires a little additional memory to store the light-weight task-specific modulators." It also "cannot be generalized to models trained from-scratch". The method relies on task vectors "based on the pretrain-finetune paradigm."
+
+Further limitations, my own reading:
+- It is one-shot, post-hoc merging of fully fine-tuned experts. There is no iterative aggregation, so it gives no account of how per-round conflict compounds over training.
+- The unified magnitude is a per-element maximum, a heuristic not derived from the distance objective. Only lambda is derived.
+- There is no inferential statistics. Reported numbers are single results.
+- Its "conflict" is sign disagreement between merged and expert weights. It is not a norm-ratio cancellation measure like 1 - ||sum w_i Delta_i|| / sum w_i ||Delta_i||.
+- Experts share one pretrained initialisation and come from mostly natural-image or NLP domains, not heterogeneous medical modalities with personalized stems.
+
+**Relevância para o projeto.** Useful as a related-work anchor rather than as a source for the term. EMR does not define "cancellation". It frames the problem as the gap between one shared vector and each task's vector (mean squared L2, Eq. 3) and as sign conflict. A thesis can cite it for the claim that one averaged parameter vector cannot represent all experts, and pair it with Nagura et al. for the norm-ratio definition.
+
+It suggests two concrete diagnostics and one fix:
+(a) A per-client sign-agreement ratio between each client delta and the aggregated delta (the M_i statistic). This complements the pairwise cosine and the cancellation ratio, and can be split intra/inter-dataset.
+(b) A per-client magnitude ratio sum|Delta_i| / sum|M_i ⊙ Delta_agg|. This is exactly the factor by which the aggregated step is shrunk for that client. The project's ~10x step dilution would show up directly as lambda_i ≈ 10. The project's own metric can call that dilution, not cancellation, if the sign-agreement mask is high.
+
+The project's finding of low inter-dataset cancellation plus about 10x dilution matches EMR's argument in reverse. EMR keeps the per-element maximum magnitude, not the mean, and rescales per task, because averaging shrinks magnitude even when the signs agree.
+
+A federated analogue is a per-client mask plus scalar rescaler on the shared trunk. This extends FedPer, which personalizes only stems and heads, to lightweight per-client modulation of the shared part. The cost is one bit per parameter plus one scalar per client. One caveat: EMR assumes a common pretrained origin and one-shot merging. The project trains its trunk from scratch over many rounds, except E7 with the ImageNet ResNet-34. Appendix G says EMR does not carry over to from-scratch training, so a federated version would have to be validated rather than assumed.
+
+Do not present it as evidence about negative transfer between medical domains. Its experiments are on CLIP and RoBERTa task experts.
+
+## Twin-Merging: Dynamic Integration of Modular Expertise in Model Merging (2024)
+
+- **Autores:** Zhenyi Lu, Chenghao Fan, Wei Wei, Xiaoye Qu, Dangyang Chen, Yu Cheng
+- **Venue:** NeurIPS 2024
+- **URL:** https://arxiv.org/abs/2406.15479
+- **Acesso:** full_text · **confiança:** high · **candidato a SOTA:** True
+
+**Termo usado.** "interference" (split into "parameter interference" and "task interference"); "shared knowledge" vs "exclusive knowledge". The paper never uses "cancellation" or "negative transfer" as a term, and it does not formally define "merging gap". It describes that gap only as merged performance falling short of the fine-tuned experts.
+
+**Definição (literal).** §1 (Intro): "(1) Interference between models. Previous research shows that parameter redundancy and sign discrepancies ..." The same section says the experts' knowledge is mixed, so that "the expertise in one model may be exclusive or detrimental to others." §3.1: parameter interference "refers to the redundancy or sign discrepancies found in parameters located at the same position"; task interference "arises from the inherent differences between tasks." §3.2: "The exclusive nature of task-specific knowledge hinders the effectiveness of merging methods." (Some sentences were cut short by the HTML extraction, so the quotes above are fragments.)
+
+**Local.** §1 Introduction; §3.1 (interference analysis, Table 1); §3.2 (shared vs exclusive knowledge, Figure 3); §3.3 (method, Eqs. 2-3, Algorithm 1)
+
+**Formulação.** There is no closed-form metric for interference. The formal objects are defined through the merge itself:
+- Merging (Eq. 1): theta* = F(theta_0, theta_1..theta_T).
+- Task Arithmetic: theta* = theta_0 + sum_t gamma_t (theta_t - theta_0).
+- Shared expert (Alg. 1, line 5): theta_s = theta_0 + sum_t gamma_t (theta_t - theta_0), i.e. the task-arithmetic merge.
+- Exclusive knowledge: v_t = theta_t - theta*. The text says this "preserves un-merged task-specific information while discarding the shared knowledge." Alg. 1 computes it as SVD_r(theta_t - theta_s) and keeps only the top-r singular values.
+- Dynamic merge (Eq. 3): theta* = theta_s + sum_t w_t SVD_r(theta_t - theta*), with w = softmax(R(Emb(x), phi)). The router R reads the last-layer token embeddings that the shared expert produces for input x.
+- Metric (Eq. 4): normalized score = (1/T) sum_t Score[f(x; theta*)] / Score[f_t(x; theta_t)].
+Interference is defined operationally: it is the loss in normalized score when experts are merged statically.
+
+**Métrica.** Normalized score (Eq. 4): merged-model performance on task t divided by the fine-tuned expert's performance on task t, averaged over tasks. Interference is never measured in parameter space. The paper infers it from performance drops:
+- Table 1: LoRA on non-overlapping modules still drops 3.21 points. Merging the similar tasks XSUM and DailyMail drops 8.42 points.
+- Figure 3: more fine-tuning epochs reduce shared knowledge and hurt the merge. Sparsifying a single merged expert stays stable up to 90% sparsity.
+- Table 6: ablation of the shared expert vs the dynamic exclusive experts.
+- Appendix C, Figure 7: a grid search over Task Arithmetic coefficients shows that the same coefficient helps some tasks and hurts others.
+
+**Método.** Model merging is post-hoc and one-shot. It is not federated or iterative.
+1. Build a shared expert with task arithmetic over the fine-tuned experts.
+2. Take each expert's exclusive residual against the shared expert and compress it with truncated SVD (rank r) to reduce storage.
+3. At inference, a small router chooses softmax weights over the exclusive vectors for each input. It is trained on a small validation set by empirical risk minimization and takes the shared expert's embedding of the input.
+4. The model applied is shared + sum_t w_t * exclusive_t.
+The authors show the same procedure is equivalent when applied to LoRA modules (Appendix A, Eq. 5).
+
+**Resultados.** Discriminative, RoBERTa on 8 GLUE tasks (Table 2), normalized score:
+- Twin-Merging 96.14
+- Twin-Merging at rank 1: 86.00
+- Task Arithmetic 67.80, TIES 63.68, TA w/ DARE 64.66, Weight Avg 52.56, pretrained 41.69
+- The paper reports average gains of +28.34 over Task Arithmetic, +32.46 over TIES and +30.56 over DARE.
+Generative, Qwen-14B on 4 tasks (Table 2): Twin-Merging 102.38, so it beats the fine-tuned experts. Task Arithmetic scores 96.61, TA w/ DARE 98.52 and TIES 92.67.
+Vision, CLIP ViT-B/32 on 8 tasks (Table 3): Twin-Merging 95.33, Surgery 94.04, AdaMerging 88.50, Task Arithmetic 76.50. Twin-Merging uses 5.0 GB of VRAM against 32.4 GB for Surgery.
+Unseen tasks: Twin-Merging scores 55.86 against Task Arithmetic's 53.92. It also scales to 72B models (Table 4).
+Compression: the model keeps 86.4% of its performance at a 99.8% compression rate (§4.6). The intro and §4.6 give slightly inconsistent compression figures.
+Ablation (Table 6), RoBERTa / Qwen normalized score: shared expert only 67.80 / 96.61; dynamic exclusive only 81.47 / 87.77; pretrained + dynamic 85.90 / 95.03; full method 96.14 / 102.38. Both components are needed.
+Cost: inference is slower, about 275 s against 236 s per 1000 items.
+
+**Limitações.** Stated in Appendix F:
+- The method shares the general limitations of merging methods, and the theory behind weight interpolation is not fully understood.
+- Merging only works between models with the same architecture.
+- Suitable fine-tuned experts may be hard to find.
+- Possible "evil knowledge" (useless and distracting) is left unexplored.
+Not stated by the authors:
+- There is no parameter-space measure of interference, such as norm ratios or cosine. Interference is only inferred from performance drops.
+- The method is one-shot merging of independently fine-tuned experts, not iterative FL aggregation. It needs a validation set to train the router and per-input routing at inference.
+- There is a notational inconsistency: the exclusive vector is defined against theta* in the text but against theta_s in Algorithm 1.
+- The setting is NLP and vision benchmarks, with no medical or cross-modality evaluation.
+
+**Relevância para o projeto.** This paper gives a conceptual framing, not a measurement tool, for why one FedPer trunk underperforms local-only training.
+- Its central claim is that averaging task vectors keeps the shared component and dilutes task-exclusive knowledge. That loss happens even when updates do not conflict in sign or direction.
+- This fits the project's finding of low inter-dataset cancellation (1 - N/E near the orthogonal reference) together with a roughly 10x smaller aggregated step. Near-orthogonal client deltas mean that each client's exclusive component is scaled down by about its weight w_i in the average. The paper's static-merge gap (Task Arithmetic at 67.8 against 96.1 once exclusive vectors are restored) is that "averaging away", not destructive sign cancellation.
+- Its definitions separate redundancy and sign conflict (parameter interference) from inherent task differences (task interference). The thesis can use the same distinction: cancellation measures directional conflict, while dilution of exclusive knowledge is a separate cost.
+- It motivates the E6 sharing arm and personalization design. Federate only the shared component, and keep exclusive knowledge personalized or compressed. A low-rank (SVD/LoRA) personalized residual on top of the shared trunk is a direct analogue of FedPer heads extended into the trunk. An input- or domain-conditioned router is analogous to per-dataset stems.
+- Caveats: the setting is one-shot merging, not multi-round FedAvg; there is no FL; and the quantity that interference is defined against is performance, not update geometry. Cite it for the "shared vs exclusive knowledge" concept, not for the cancellation metric. The cancellation metric should be attributed to Nagura et al. 2020 and to gradient-conflict work such as PCGrad.
+
+## Model Merging in LLMs, MLLMs, and Beyond: Methods, Theories, Applications and Opportunities (2024)
+
+- **Autores:** Enneng Yang, Li Shen (corresponding), Guibing Guo, Xingwei Wang, Xiaochun Cao, Jie Zhang, Dacheng Tao
+- **Venue:** arXiv:2408.07666 (v5, 31 Dec 2025); the arXiv page lists JACM as the journal. It is a survey.
+- **URL:** https://arxiv.org/abs/2408.07666
+- **Acesso:** full_text · **confiança:** medium · **candidato a SOTA:** False
+
+**Termo usado.** "task conflict/interference", "parameter sign conflicts", "redundant" parameters and bases, "rank-collapse", "representation bias". "Gradient conflict ... leading to negative transfer" appears only in the auxiliary-task-learning part. The word "cancellation" does not appear in the text that was read.
+
+**Definição (literal).** The survey never gives one formal definition of interference. It describes it through methods and their motivations. All excerpts below come from the arXiv HTML v5. Excerpts were limited to 125 characters, and section numbers come from the HTML headings.
+§2.1: "There are conflicts and interference among multiple models."
+§2 intro: "it resolves task conflict/interference by various strategies, and then performs parameter merging operations."
+§2.3.1: "the performance of basic merging methods is not satisfactory most of the time, especially when the tasks interfere with each other."
+§2.3.3 (TIES-Merging): "proposes to trim each individual model based on parameter magnitudes" ... "It further suggests eliminating parameter sign conflicts to reduce interference."
+§2.3.3 (low-rank methods): "discarding less important components that are more likely to cause conflicts."
+§2.3.3 (HO-GSVD): "observes a rank-collapse phenomenon in the task-vector space during merging."
+§2.3.4 (AWD): "interference between tasks can be minimized when task vectors are mutually orthogonal."
+§3.1(iii), NTK view: when task vectors are "'approximately orthogonal' under the corresponding metric, they do not hinder each other during merging."
+§2.3.6: "merged models suffer from representation bias."
+§5.2.4: "ATL often encounters the issue of gradient conflict, leading to negative transfer."
+
+**Local.** §2.1 (problem setup), §2.3.1 (basic merging), §2.3.3 (subspace-based merging: TIES, DARE, Breadcrumbs, TSV-M, HO-GSVD), §2.3.4 (optimization-based: AWD, WUDI), §2.3.6 (post-calibration), §3.1 (theory: linear mode connectivity, weight disentanglement, NTK), §5.2.4 (auxiliary-task learning), §5.4 (federated learning), §6 (challenges)
+
+**Formulação.** The survey restates these formal objects but defines no interference metric:
+- Task vector: tau_t = Theta^(t) - Theta^(0).
+- Simple averaging: Theta_merge = (1/T) sum_t Theta^(t).
+- Task Arithmetic: Theta_merge = Theta^(0) + lambda * sum_t tau_t. A negated tau_t is used to forget a task.
+- Fisher merging: Theta_merge = sum_t F^(t) Theta^(t) / sum_t F^(t).
+- MetaGPT coefficients: lambda_t* = ||tau_t||^2 / sum_k ||tau_k||^2, derived from local linearization plus task-vector orthogonality.
+- Linear mode connectivity: L(lambda Theta_i + (1 - lambda) Theta_j) ≈ L(Theta_i) ≈ L(Theta_j).
+- Weight disentanglement (§3.1, after Ortiz-Jimenez et al. 2023): "We say that f is weight-disentangled if, for a set of task vectors", the merged function splits into a sum of per-task components plus a task-agnostic term, and each tau_t "contributes only to its own task-specific component".
+Taken together, interference has three operational meanings in this vocabulary:
+1. Coordinate-wise sign disagreement between task vectors (TIES).
+2. Redundant or low-magnitude coordinates and overlapping or collapsed subspaces (DARE, TSV-M, HO-GSVD).
+3. Non-orthogonality of task vectors in weight space or NTK space (AWD, NTK theory).
+Orthogonality is the "no interference" reference.
+
+**Métrica.** No dedicated interference metric is defined. The survey judges interference indirectly, by the per-task accuracy of the merged model against two references: the pretrained model and the individually fine-tuned experts, which act as the upper bound (§3.2, Figure 6). Proxies named for specific methods are sign conflicts (TIES), cosine or orthogonality between task vectors (AWD, NTK), rank collapse of the task-vector space (HO-GSVD), and the gap between merged and independent representations (representation surgery).
+
+**Método.** This is a taxonomy survey, not a new method.
+Pre-merging (§2.2) has three branches:
+- Merger-friendly fine-tuning: linearized or NTK fine-tuning, sparse fine-tuning (TaLoS), mostly-frozen weights.
+- Architecture transformation.
+- Weight alignment / re-basin (permutation alignment): "aligned models experience much less interference after merging".
+During-merging (§2.3) has six branches:
+- Basic merging: averaging, Task Arithmetic.
+- Weighted merging: Fisher, RegMean, MetaGPT, SLERP, AdaMerging.
+- Subspace merging: sparse methods (TIES, DARE, Breadcrumbs) and low-rank methods (TSV-M, SVD-based).
+- Optimization-based merging: AWD, WUDI-Merging.
+- Routing / MoE merging.
+- Post-calibration: representation surgery.
+Theory (§3.1) covers linear mode connectivity, weight disentanglement and the NTK. Applications (§5) include continual learning, multi-task and multi-domain learning, auxiliary-task learning, and federated learning, where FedAvg is framed as merging.
+
+**Resultados.** - §3.2: "all merging methods still fall short of the upper bound given by individual models."
+- §1: the gap to independent experts "becomes significantly larger" as the number of tasks grows.
+- Methods that explicitly handle interference beat plain averaging and Task Arithmetic: sign-conflict resolution, sparsification with rescaling, orthogonalization, and representation calibration.
+- DARE "highlights the importance of further performing rescaling on sparse models". This means the magnitude or scale of the merged update matters on top of conflict resolution.
+- §5.4 on federated learning: "Most FL methods adopt a simple coordinate-wise average to aggregate the local models", and such "direct coordinate-wise merging methods may result in suboptimal global model performance".
+- §3.1 says theory remains incomplete: "a unified theoretical framework for model merging has not yet emerged".
+
+**Limitações.** - The survey offers no single formal definition of interference and no standard metric for it.
+- Most of the cited theory assumes a shared initialization, wide networks or linearization (NTK), and homogeneous tasks. §3.1 says this "limits their ability to account for the effectiveness of merging across heterogeneous tasks and modalities".
+- The setting is mostly one-shot merging of fully fine-tuned experts. Multi-round federated aggregation of small local deltas is covered only briefly (§5.4), with no interference analysis specific to FL.
+- §6 Challenge 2: the methods "are largely empirical and lack sufficient theoretical guarantees".
+- §6 Challenge 5: the field focuses on homogeneous models.
+- Caveat about this reading: I read the arXiv HTML through a tool that capped quotes at 125 characters, so some passages are excerpts rather than full paragraphs. The weight-disentanglement equation was described, not transcribed.
+
+**Relevância para o projeto.** This survey supplies the vocabulary that places the thesis's metric.
+1. Same object. FedPer's per-round client trunk deltas Delta_i are local "task vectors" tau_t relative to the current global trunk. FedAvg is weighted Task Arithmetic with lambda_t = w_i, and §5.4 explicitly frames FedAvg as merging.
+2. Cancellation versus the survey's sign conflicts. The thesis ratio 1 - ||sum w_i Delta_i|| / sum w_i ||Delta_i|| measures the same phenomenon that TIES calls "parameter sign conflicts", but summed at the norm level instead of counted per coordinate. Cancellation near the orthogonal reference matches the survey's "approximately orthogonal ... do not hinder each other" (NTK, AWD). In merging terms, low inter-dataset cancellation means low interference between datasets.
+3. Interference is not the same as dilution. Orthogonality means no interference, yet a weighted mean of n roughly orthogonal deltas still shrinks each client's contribution: about 1/n along that client's direction, and about 1/sqrt(n) in norm for equal norms. This is exactly why Task Arithmetic uses sum_t tau_t with a tuned lambda rather than the mean. It is also why DARE stresses rescaling and MetaGPT derives norm-based coefficients. The survey therefore supports reading the thesis's "step dilution" as a separate failure mode from interference. The literature fixes dilution with scaling, not with conflict-resolution methods.
+4. Possible next diagnostics, all direct transfers from merging methods: count per-coordinate sign conflicts in the trunk deltas (a TIES-style measure); measure overlap or rank collapse of the trunk-delta subspaces; and try a server-side scaling factor lambda greater than 1, or norm-preserving aggregation, as a test of the dilution hypothesis.
+5. Caveat. Most merging theory assumes homogeneous tasks and shared initialization. Cross-modality FedPer (ultrasound, dermoscopy, MRI, X-ray) is outside the regime the survey says theory covers.
+
+## FedLWS: Federated Learning with Adaptive Layer-wise Weight Shrinking (2025)
+
+- **Autores:** Changlong Shi, Jinmeng Li, He Zhao, Dandan Guo, Yi Chang (Jilin University; CSIRO Data61)
+- **Venue:** ICLR 2025 (arXiv 2503.15111v2, 28 Mar 2025)
+- **URL:** https://arxiv.org/abs/2503.15111 (HTML read: https://arxiv.org/html/2503.15111v2; code: https://github.com/ChanglongShi/FedLWS)
+- **Acesso:** full_text · **confiança:** high · **candidato a SOTA:** False
+
+**Termo usado.** The paper never uses "cancellation", "conflict", "interference" or "negative transfer". A full-text search for those words finds only one hit, the unrelated phrase "the two methods are not conflicted". The terms it does use: "global weight shrinking (GWS) effect", taken from FedLAW (Li et al., ICML 2023); "shrinking factor" gamma; "optimization term" vs "regularization term"; "gradient variance of the local models" tau, its proxy for how much clients disagree; and "aggregation bias".
+
+**Definição (literal).** Sec. 3, Eq. 3: "w_g^{t+1} = γ^t (w_g^t − η_g g_g^t) = w_g^t − γ^t η_g g_g^t − (1−γ^t) w_g^t ... We refer to the γ^t η_g g_g^t as the global averaged gradient (optimization term) and (1−γ^t) w_g^t is the pseudo gradient of global weight shrinking (regularization term). Therefore, the value of γ^t determines the strength of regularization, with smaller values of γ^t corresponding to stronger regularization (weight shrinking) and smaller gradient updates."
+
+Sec. 4.1, before Eq. 4: "we introduce an intuitive hypothesis: the balance between the regularization term and the optimization term should be related to the variance of the gradients of local client models. Specifically, if local client models agree less with each other in terms of the gradient updates (i.e., higher variance of their gradients), the global model should be more conservative in terms of updating its weights, meaning that a stronger regularization is needed (i.e., a smaller γ_t)."
+
+**Local.** Sec. 3 (Background), Eqs. 1–3, defines the optimization and regularization terms. Sec. 4.1, Eqs. 4–7, gives the gradient-variance hypothesis and the closed-form γ. Sec. 4.2, Eqs. 8–9, gives the layer-wise extension. Appendix D, Lemma D.1 and Theorem D.2, gives the generalization bound.
+
+**Formulação.** The paper does not formally define cancellation. Its client-disagreement quantity and method are as follows.
+
+Client "gradient" (pseudo-gradient), Sec. 3: g_k^t = w_g^t − w_k^t, the local model delta. Global gradient: g_g^t = Σ_k λ_k g_k^t with ||λ||_1 = 1. In practice η_g g_g^t = ŵ_g^{t+1} − w_g^t.
+
+Eq. 4, disagreement: τ^t = (1/K) Σ_k ||g_k^t − g_mean^t||, where g_mean^t = (1/K) Σ_k g_k^t. This is the unweighted mean L2 distance of the client deltas from their unweighted mean. It is not squared, despite being called a "variance".
+
+Eq. 5, balance ratio: r^t = (1−γ^t)||w_g^t|| / (γ^t ||η_g g_g^t||), assumed proportional to τ^t (β τ^t = r^t, Eq. 6).
+
+Eq. 7, closed form: γ^t = ||w_g^t|| / (β τ^t ||η_g g_g^t|| + ||w_g^t||).
+
+Eq. 8, layer-wise: γ_l^t = ||w_gl^t|| / (β τ_l^t ||η_g g_gl^t|| + ||w_gl^t||), with τ_l computed per layer.
+
+Eq. 9: each layer of the aggregated model is multiplied by its γ_l, so w_gl^{t+1} = γ_l^t ŵ_gl^{t+1}.
+
+App. D: the generalization gap G ≤ C·sqrt(τ/K) (Theorem D.2), obtained from Bernstein plus Lemma D.1, which says client loss variance ∝ E||g_k − g_mean||².
+
+**Métrica.** How disagreement is measured: τ = mean L2 distance of the client deltas from their unweighted mean (Eq. 4), per layer or for the whole model. The authors support it in three ways:
+- Pearson correlation of 0.860 between τ and the "optimal" ratio r, where the optimal γ was found by optimizing on the TEST set purely for demonstration (Fig. 1a, CIFAR-10 CNN; more architectures in App. B.2, Fig. 7).
+- Fig. 5 / App. B.3: distances between local gradients mirror distances between local data distributions (12 clients, extreme partition), so they read τ as a heterogeneity measure.
+- They report γ values over training: mean 1−γ is about 0.05 (App. A.2), γ stays around 0.99 with a pretrained init (App. B.1), and the spread between layers is largest early in training and at the classifier (Fig. 3a, Fig. 9).
+
+How performance is measured: top-1 test accuracy of the single global model on a server-held test set.
+
+They never compute the norm ratio ||Σλ_k g_k|| / Σλ_k||g_k||, a cancellation ratio, or pairwise cosines.
+
+**Método.** A post-aggregation, server-side, plug-in step. After any aggregator (FedAvg, FedDisco, L-DAWA, FedProx, FedDyn) produces ŵ_g^{t+1}, the server:
+1. computes the per-layer pseudo-gradients from the uploaded models;
+2. computes τ_l (Eq. 8) and γ_l (Eq. 8);
+3. multiplies each layer of the aggregated model by γ_l < 1 (Eq. 9).
+
+Higher client disagreement gives a smaller γ, which means stronger shrinkage of the whole weight vector and also a smaller effective step. There is one hyperparameter, β; the recommended safe range is 0.001–0.1. As β→0, γ→1 and the method reduces to the baseline; too large a β causes instability.
+
+Compared with FedLAW: FedLWS needs no proxy dataset and no server-side optimization, it is about 40–200x cheaper per aggregation (Table 3), and it keeps the aggregation weights separate from the shrinking factor.
+
+**Resultados.** All results use single global models on image classification (FashionMNIST, CIFAR-10/100, Tiny-ImageNet) and text classification (AG News, Sogou, Amazon Review feature shift). The client split is a label-skew Dirichlet with α ∈ {100, 0.5, 0.1}.
+
+- Table 1, FedAvg → +LWS, average over 12 settings: 58.02 → 59.30. The largest gains are at α=0.1: CIFAR-10 61.04 → 64.08 and Tiny-ImageNet 29.44 → 31.34. Gains with the other bases: FedDisco 58.16 → 59.54, L-DAWA 49.30 → 51.19, FedProx 57.45 → 58.18, FedDyn 57.73 → 59.32.
+- FedLAW, which uses a 200-sample proxy set, beats FedLWS on CIFAR-10 in some settings.
+- Table 4: layer-wise beats model-wise. CIFAR-10 α=0.1: 61.04 (FedAvg), 63.21 (model-wise), 64.08 (layer-wise).
+- Table 5: gains hold on ResNet20, WRN56_4, DenseNet121 and ViT.
+- Table 6: beats adaptive weight decay methods (AWD, AdaDecay) applied at aggregation.
+- Table 10: scaling only the optimization term (only-opt, effectively a smaller server learning rate) or only the shrink term (only-reg) loses about 2.8 points on average versus FedLWS (52.4–52.5 vs 55.26).
+- Gains persist across client counts {10, 30, 50}, local epochs {1, 5, 10} and participation {0.1, 0.3, 0.5} (Fig. 4).
+- With a pretrained init, γ ≈ 0.99 and the effect is small (App. B.1).
+- Gains are larger under stronger heterogeneity. Under IID data γ is close to 1 and the method behaves like the baseline.
+
+**Limitações.** Stated by the authors: only works when all clients share the same architecture.
+
+Observed in the paper:
+- The core link between τ and the optimal r is an empirical hypothesis. It is supported by one Pearson r=0.86, obtained with a γ tuned on the test set; the authors themselves call an anomalous drop in Fig. 1a possibly a random fluctuation.
+- "Variance" τ is an unweighted mean of non-squared distances, yet App. D equates it with a squared loss variance (σ² ≈ τ). The theory is a loose sketch built on a first-order Taylor expansion and Bernstein's inequality.
+- Every experiment is single-task classification with one global model and synthetic label-skew splits. There is no feature or domain shift beyond one Amazon split, no medical data, no segmentation, no personalized or partial-sharing (FedPer-style) setup, no multi-task learning, and no confidence intervals or seed counts in the main tables.
+- The method treats disagreement only as a scalar dispersion per layer. It does not tell apart conflicting directions (cancellation) from mere magnitude spread, so clients with very different update norms but aligned directions also produce a large τ.
+- The method shrinks parameters and the step whenever clients disagree. In a regime where the aggregated step is already too small, this would make things worse.
+
+**Relevância para o projeto.** Medium as a reference for definitions and for related work; low to negative as a remedy. Four points matter for the student:
+
+1. Terminology: FedLWS does not define "weight/update cancellation". It describes the same underlying fact, that client deltas disagree, as "gradient variance" τ (Eq. 4) and responds with "global weight shrinking". Cite it as related work on how the server should react to update disagreement, not as a source for the term cancellation. For that, Nagura et al. 2020 (N/E) remains the right anchor.
+
+2. Link to the project's metric: with uniform weights, Σ_k||Δ_k − Δ̄||² = Σ_k||Δ_k||² − K||Δ̄||². So a squared version of τ measures the same gap between the mean of the norms and the norm of the mean that the project's cancellation ratio 1 − ||ΣwΔ|| / Σw||Δ|| captures. Two differences: FedLWS's τ is unsquared and unweighted, and it mixes magnitude spread with directional conflict. The project's ratio, together with the orthogonal reference and the pairwise cosines, separates those two effects. That is a methodological advantage worth stating in the dissertation.
+
+3. Direction of the intervention: FedLWS deliberately makes the global step smaller (Eq. 3: γ < 1 scales the averaged gradient by γ and adds weight decay (1−γ)w) when clients disagree. The project's diagnosis is the opposite problem: step dilution, an aggregated step about 10x smaller than the client steps, with little inter-dataset cancellation. Applying FedLWS to the shared trunk would probably add to the dilution rather than fix it. The paper's own ablations show scaling only the step (only-opt) does worse. Its gains come from a weight-decay-like generalization effect in label-skew classification with a single global model, not from fixing update conflict. Under heterogeneity, the authors argue for being more conservative, not for larger steps.
+
+4. Ideas worth borrowing as diagnostics: compute the per-layer statistics τ_l and γ_l over the project's trunk blocks (encoder2..5, bottleneck) and log them next to the per-block cosines. The paper finds the spread between layers is largest early in training and at the classifier, which is comparable to the project's per-block analysis. Also report how its scope differs from the project: no personalization, no multi-task, no cross-domain medical data.
+
+It is not state of the art for measuring cancellation. It is a strong ICLR 2025 baseline for aggregation-time weight shrinking (successor to FedLAW, ICML 2023).
+
+## No Task Left Behind: Isotropic Model Merging with Common and Task-Specific Subspaces (2025)
+
+- **Autores:** Daniel Marczak, Simone Magistri, Sebastian Cygert, Bartlomiej Twardowski, Andrew D. Bagdanov, Joost van de Weijer
+- **Venue:** ICML 2025 (arXiv 2502.04959)
+- **URL:** https://arxiv.org/abs/2502.04959
+- **Acesso:** full_text · **confiança:** high · **candidato a SOTA:** True
+
+**Termo usado.** task interference, defined as representation degradation caused by merging. The paper does not use "cancellation". Its main diagnostic is "subspace alignment" (Subspace Alignment Ratio, SAR) between each task matrix and the merged update, plus "skewness" of the Task Arithmetic singular spectrum and "underrepresentation" of tasks that fall outside its dominant subspace.
+
+**Definição (literal).** App. A.3: "we define the interference as the degradation in a task's internal representation due to merging", measured as "the deviation between the activations of the merged model and those of the corresponding single-task fine-tuned model" (bounded by ||Δ_j − αΔ_M||·||x_j||, Eq. 17). Sec. 3.2, on cosine similarity: "we observe no clear correlation (see Figure 2b)" ... "suggesting that cosine similarity alone does not fully explain the observed performance gains". Sec. 3.3: "The tasks that are not aligned are underrepresented in the dominant subspace of ΔTA". Sec. 4.1: the TA spectrum "is concentrated in the first few singular values". Abstract: "alignment between singular components of task-specific and merged matrices strongly correlates with performance improvement".
+
+**Local.** Abstract; Sec. 3.2 (cosine-similarity analysis, Fig. 2b); Sec. 3.3 (SAR, Eqs. 5-6, rho=0.94); Sec. 4.1 (Iso-C, Eqs. 7-9); Sec. 4.2 (Iso-CTS, Eqs. 10-13); App. A.3 (interference definition, Eq. 17)
+
+**Formulação.** Per layer l: task matrix Δ_t = θ_t − θ_0, and the Task Arithmetic merge is Δ_TA = Σ_t Δ_t, applied as θ = θ_0 + αΔ_TA, with α tuned on held-out validation data (Eqs. 1-3). SAR(Δ_t, Δ_M, k_M) = ||Π_{k_M,M} Δ_t||_F / ||Δ_t||_F (Eq. 5). Π_{k_M,M} projects onto the top-k_M left singular vectors of Δ_M, and k_M is the smallest rank whose relative residual energy is ≤ ε² with ε = 0.05 (Eq. 6). Normalized Accuracy Improvement: NAI = (Acc(θ_M) − Acc(θ_0)) / (Acc(θ_t) − Acc(θ_0)) (Eq. 4). Interference on input x_j is ||(θ_0+αΔ_M)x_j − (θ_0+Δ_j)x_j|| ≤ ||Δ_j − αΔ_M||·||x_j|| (Eq. 17). Iso-C: with SVD Δ_TA = UΣV^T, set σ̄ = (1/r)Σσ_i and Δ_Iso-C = σ̄UV^T (Eqs. 7-8). Iso-CTS: keep the top-k common directions of Δ_TA; for each task take the residual Δ̄_t = Δ_t − U^{1:k}U^{1:k T}Δ_t (Eq. 10) and its top s = (r−k)/T directions; orthogonalize U* = PQ^T (Eq. 11); Δ_Iso-CTS = σ̄U*V*^T, with σ̄ the mean of all retained singular values (Eqs. 12-13). Default k/r = 0.8.
+
+**Métrica.** SAR, the fraction of a task matrix's Frobenius energy that falls inside the dominant (k_M) left-singular subspace of the merged matrix. This is a subspace-overlap score, not a cosine. It is reported against NAI (Pearson rho_TA = 0.94; per-task SAR ranges 0.75-0.87 under TA). Final metrics are absolute accuracy and normalized accuracy. Activation deviation (App. A.3 / D.2) serves as the interference measure.
+
+**Método.** Training-free model merging of CLIP ViT-B/16 and ViT-L/14 fine-tuned on 8/14/20 vision tasks, plus LoRA and NLP (8-task) settings. Merging is done per layer on weight-difference matrices. Iso-C replaces the singular values of the summed update with their mean. This makes the update isotropic, removes the skew toward a few dominant directions, and raises SAR for underrepresented tasks. Iso-CTS keeps the top-k common subspace of the summed update and fills the low-energy directions with task-specific directions taken from each task's residual. It then orthogonalizes them and applies isotropic scaling. A global α is tuned on validation data.
+
+**Resultados.** Table 1 gives absolute accuracy (normalized accuracy). ViT-B/16, 8 tasks: TA 75.4 (79.6), TSV-M 89.0 (93.9), Iso-C 90.6 (95.6), Iso-CTS 91.1 (96.1). ViT-B/16, 20 tasks: TA 65.8, TSV-M 80.6, Iso-C 79.6, Iso-CTS 82.4 (88.4). ViT-L/14, 8 tasks: TA 84.9, Iso-C 94.2, Iso-CTS 94.7 (98.8). ViT-L/14, 20 tasks: TA 74.0, TSV-M 87.7, Iso-C 87.6, Iso-CTS 90.1 (94.9). Iso-CTS beats Iso-C by up to 2.8 points absolute at 14/20 tasks. The common subspace alone stops being enough as the number and diversity of tasks grow. LoRA ViT-L/14 normalized: Iso-CTS 85.3, Iso-C 83.7, KnOTS-TIES 78.2, TA 74.4. NLP 8 tasks: Iso-C 75.6, Iso-CTS 75.2, TA 63.8. Cosine similarity between a task vector and the merged vector did not predict per-task gain, while SAR did (rho = 0.94).
+
+**Limitações.** The paper states: "The common subspace is determined by Task Arithmetic, which can be suboptimal". App. A.4 says the TA-derived subspace limitation "becomes increasingly pronounced as the number and diversity of tasks increase". Further limitations: (1) it is one-shot merging of independently fine-tuned models from a shared pre-trained CLIP, not iterative federated rounds, so client drift and repeated aggregation are not modeled; (2) it needs SVD of per-layer 2D weight matrices, so conv kernels must be reshaped and norm/bias vectors have no spectrum; (3) α and k are tuned on held-out validation data; (4) all evidence comes from natural-image and NLP benchmarks with a strong shared pre-trained initialization, with no medical or cross-modality inputs; (5) the paper gives no definition of norm-based cancellation, and SAR is correlational, measured per task against the merged update.
+
+**Relevância para o projeto.** This is high relevance as a measurement and conceptual reference, and moderate as a method. (1) It shows that cosine similarity (which the project already logs) failed to predict per-task merge quality, while subspace alignment did (rho = 0.94). That supports adding a per-client SAR to the probes: per shared trunk layer, reshape client delta Δ_i (out × in·k·k), take the SVD of the aggregated Σw_iΔ_i, choose k_M at ε = 0.05, and log ||Π Δ_i||_F/||Δ_i||_F, split by dataset (BUSI/ISIC/LGG/SIIM). A client whose deltas sit outside the dominant subspace of the aggregate is "underrepresented", which is a different failure from cancellation. It can coexist with low N/E cancellation and near-orthogonal cosines, and it matches the observed pattern of little cross-dataset cancellation but federated still worse than local-only. (2) Step dilution: Iso-C rescales every direction of the aggregated update to the mean singular value, which counters the shrinkage of minority-client directions. In FedPer this could be a server-side aggregation variant that flattens the spectrum of Σw_iΔ_i per layer, or an Iso-CTS variant with a common subspace plus per-dataset directions. It would need a server learning rate/α because the paper's α is validation-tuned. Caveat: the setting is one-shot merging from a strong pre-trained model, while the project runs multi-round FL mostly from scratch (except E7 ResNet-34). Transfer to FedAvg rounds is therefore a hypothesis to test, not an established result. The paper uses "interference", not "cancellation", so the thesis should present N/E cancellation (Nagura et al.) and SAR-based underrepresentation as two different diagnostics.
+
+## Whoever Started the Interference Should End It: Guiding Data-Free Model Merging via Task Vectors (WUDI-Merging) (2025)
+
+- **Autores:** Runxi Cheng, Feng Xiong, Yongxian Wei, Wanyun Zhu, Chun Yuan
+- **Venue:** arXiv:2503.08099v2 (11 Jun 2025). The HTML only carries the ICML LaTeX template keyword ("Keywords: Machine Learning, ICML") and names no venue, so ICML 2025 is plausible but not confirmed from the paper itself.
+- **URL:** https://arxiv.org/abs/2503.08099
+- **Acesso:** full_text · **confiança:** high · **candidato a SOTA:** True
+
+**Termo usado.** "parameter interference" / "interference vector" / "interference of the linear layer" (mentions "conflicts" between math and code tasks only informally; never uses "cancellation" or "negative transfer")
+
+**Definição (literal).** Sec. 3.1, "Interference Vector": "for task $i$, we defined the rest of the weight in $\tau_m$ as interference vector $\delta_i$, which is formulated as: $\delta_i=\tau_m-\tau_i$ (2)". Then, "Interference of the Linear Layer": "Then, we can formally define the interference of the $l$-th linear linear for task $i$ as follows (Jin et al., 2023; Fang et al., 2024; Zeng et al., 2019): $\mathcal{J}_i(\tau_{m,l}) = \mathbb{E}_{x_{i,l}\sim p(x_{i,l})}\|\theta_{m,l}x_{i,l}-\theta_{i,l}x_{i,l}\|_2^2$ (3) $= \mathbb{E}\|\tau_{m,l}x_{i,l}-\tau_{i,l}x_{i,l}\|_2^2$ (4) $= \mathbb{E}\|\delta_{i,l}x_{i,l}\|_2^2$ (5)". Abstract: "parameter interference between constituent models frequently induces performance degradation".
+
+**Local.** Section 3.1 (Preliminaries), Eqs. (2)-(5); the input-subspace argument is in Sec. 3.2 (Lemma 1, Eq. 6; Proposition 1, Eq. 12); the upper bound is Theorem 1, Eq. (15), in Sec. 3.3; the empirical metric "Relative Error" is Eq. (83), Appendix A.6
+
+**Formulação.** Write theta for the pretrained weights, theta_i for the expert fine-tuned on task i, tau_i = theta_i - theta for its task vector, and theta_m = theta + tau_m for the merged model.
+
+- **Interference vector** for task i: delta_i = tau_m - tau_i. It is everything in the merge that is not task i's own update.
+- **Interference of linear layer l** for task i: J_i(tau_{m,l}) = E_x ||delta_{i,l} x_{i,l}||^2, where x_{i,l} is task i's input to that layer. This is a function-space quantity: the squared change in the layer's output on task i's own inputs.
+- **Input subspace (Sec. 3.2).** Under gradient descent with a small learning rate, few steps and a Lipschitz model, each row of tau_{i,l} is approximately a weighted sum of the layer's inputs. Inputs barely move during fine-tuning (Lemma 1). The paper's own words: "the task vectors of a linear layer constitute an approximate linear subspace of the input".
+- **Theorem 1.** E||delta_{i,l} x||^2 <= w1 ||delta_{i,l} tau_{i,l}^T||_F^2 + w2 ||delta_{i,l}||_F^2.
+- **Data-free objective (Eq. 21).** Drop the regularizer and minimise, per layer, L_l = sum_i (1/||tau_{i,l}||_F^2) ||(tau_{m,l} - tau_{i,l}) tau_{i,l}^T||_F^2.
+
+Interference therefore means the merged update's error projected onto each task's own input or task-vector subspace. Error orthogonal to that subspace costs nothing.
+
+**Métrica.** - **Theoretical:** J_i, the expected squared L2 norm of delta_{i,l} x on task i's inputs, for each layer. Its data-free proxy is ||delta_{i,l} tau_{i,l}^T||_F^2 normalised by ||tau_{i,l}||_F^2.
+- **Empirical (App. A.6, Eq. 83):** "Relative Error" = (1/N) sum_n ||f(x_n; theta+tau_m) - f(x_n; theta+tau_i)|| / ||f(x_n; theta+tau_i)||, measured layer by layer (Fig. 3, Figs. 14-16).
+- **Input consistency (Sec. 3.2):** Delta Direction = 1 - cos(x_expert, x_pretrain) (Eq. 7) and Delta Magnitude, the relative change in norm.
+- **Downstream:** average accuracy over 8 vision tasks; normalised score on 8-task GLUE; LLM benchmark scores.
+
+**Método.** WUDI-Merging is a data-free merge of task vectors from experts fine-tuned off one shared pretrained model.
+
+- **Scope:** only linear layers. Appendix A.3 shows the linear-layer task vector alone keeps most of the expert's ability. Other parameters are merged by a standard rule.
+- **Initialisation:** tau_m^0 = sum_i tau_{i,l}, i.e. Task Arithmetic.
+- **Optimisation:** gradient descent with Adam (lr 1e-5, 300 iterations) on the Eq. 21 loss, which weights each task by 1/||tau_i||_F^2 so that tasks with differently scaled vectors contribute comparably. Each layer is solved independently, one after another. Only two hyperparameters, no rescaling coefficients and no data.
+- **Closed form (WUDI-Merging-CFS, Eq. 20):** a ridge-style solution, which the paper says is sensitive to its regularisation coefficient.
+- **Why it works without data:** task vectors approximately span each layer's input subspace, so they stand in for the training inputs (the "whoever started the interference should end it" idea).
+
+**Resultados.** **Vision, 8 tasks:**
+
+| Backbone | WUDI | Individual experts | Traditional MTL | Others |
+|---|---|---|---|---|
+| ViT-B/32 (Table 1) | 85.2 | 90.8 | 88.9 | AdaMerging++ 81.1 (uses test-time data), Representation Surgery 80.9, PCB-Merging 76.3, Task Arithmetic 69.1 |
+| ViT-L/14 (Table 2) | 92.6 | 94.2 | 93.5 | AdaMerging++ 91.0, PCB 87.5, Task Arithmetic 84.5 |
+| ViT-B/16 (Table 10) | 89.1 | 92.9 | not reported | Task Arithmetic 73.8 |
+
+- **Language:** RoBERTa-Base on GLUE scores 85.3 against 67.8 for Task Arithmetic, and RoBERTa-Large scores 88.8. On LLM generative tasks WUDI averages 91.5, against 87.2 for TIES with DARE, 82.6 for TIES and 80.4 for Task Arithmetic.
+- **Layer-wise analysis (Fig. 3):** "interference accumulates progressively as the depth of the network increases. Specifically, task arithmetic introduces a relative error of nearly 50% in the final output." WUDI lowers interference and slows how fast it accumulates.
+- **Balanced-weight ablation (Table 7):** it helps, and the authors conclude "task vectors with larger magnitudes exhibit greater resilience to higher levels of interference."
+- **Convergence:** within 100-200 iterations.
+- **Comparison baselines:** the HTML I read has no comparison against TSV-M or Iso-CTS.
+
+**Limitações.** - **Setting:** one-shot merging of fully trained experts that share a single pretrained initialisation. There are no iterative rounds and no federated learning (the paper never mentions FL).
+- **Theory:** the subspace result is approximate. It rests on a small learning rate, few iterations and Lipschitz assumptions. ViT-L/14 shows less input consistency (App. A.5), and long local training such as FL round accumulation would weaken it.
+- **Coverage:** only linear layers are handled. Conv layers, which dominate a U-Net-style trunk, are not treated, though a conv can be cast as a linear map on im2col patches.
+- **Weak spots:** code tasks reach only "an average level"; gains on LoRA are smaller; language tasks keep a "notable disparity", attributed to input-domain overlap.
+- **CFS variant:** sensitive to its regulariser.
+- **Remaining gap:** WUDI still trails supervised MTL by 4.7 points (ViT-B/32) and 0.9 (ViT-L/14).
+- **Not studied:** scaling with the number of tasks, and any cost analysis.
+- **Venue:** not stated on the arXiv page; only the ICML template keyword appears.
+
+**Relevância para o projeto.** **Why it matters.** The paper gives an operational, function-space definition of interference that complements the project's parameter-space cancellation ratio 1 - ||sum w_i Delta_i|| / sum w_i ||Delta_i||.
+
+- **Difference from the project's ratio:** the ratio and the pairwise cosines only see how client deltas combine as vectors. WUDI's J_i = E||(tau_m - tau_i) x_i||^2 asks how much the aggregated update, minus client i's own update, changes client i's layer outputs on client i's own inputs.
+- **The two can disagree,** which is what the project's findings suggest:
+  - near-orthogonal updates (little cancellation) can still cause large interference if the other clients' deltas are not orthogonal to client i's input subspace;
+  - step dilution is a form of interference under this definition. With a weighted average, tau_m is roughly (1/K) sum tau_j, so delta_i includes -(1 - w_i) tau_i. Its projection on tau_i, ||delta_i tau_i^T||_F^2, is large even when the cross-terms are zero. WUDI's loss penalises exactly this shrinkage of each task's own component, and its Task-Arithmetic-style initialisation (a sum, not an average) avoids it.
+- **This may explain** why low inter-dataset cancellation coexists with federated underperforming local-only: the aggregated step is about 10x smaller along each client's own directions.
+
+**Usable as:**
+- **(a) A diagnostic:** compute the data-free proxy ||(Delta_agg - Delta_i) Delta_i^T||_F^2 / ||Delta_i||_F^2 per shared layer and per client from the round deltas the server already sees (convs reshaped as out x in*k*k), or the Eq. 83 relative error on the client side. Decompose it into a dilution term (the shrinkage along Delta_i) and a cross-client term.
+- **(b) A server-side aggregator:** replace FedAvg on the shared trunk with a per-layer WUDI solve over client deltas. It is data-free, so it is compatible with FL privacy.
+
+**Caveats for the transfer:**
+- WUDI assumes one-shot merging of experts from a common initialisation with short fine-tuning. FedPer rounds are short, which helps, but they repeat.
+- WUDI handles only linear layers, while the trunk here is convolutional.
+- The personalized stems and heads change what each shared layer's input actually is.
+- It is not FL-validated, so any gain must be tested paired against FedAvg under the same budget mode.
+
+It is a strong candidate for the thesis's definitional chapter: interference = function-space output deviation on a task's own inputs, against cancellation = norm loss in parameter space.
+
+## FedAWA: Adaptive Optimization of Aggregation Weights in Federated Learning Using Client Vectors (2025)
+
+- **Autores:** Changlong Shi, He Zhao, Bingjie Zhang, Mingyuan Zhou, Dandan Guo, Yi Chang (Jilin University, CSIRO Data61, UT Austin)
+- **Venue:** CVPR 2025
+- **URL:** https://arxiv.org/abs/2503.15842
+- **Acesso:** full_text · **confiança:** medium · **candidato a SOTA:** True
+
+**Termo usado.** No named "cancellation" or "negative transfer" construct. The paper frames the problem as data heterogeneity causing "divergent optimization directions" and misalignment between client update directions and the global direction. "Client vector" = local model minus global model. "Conflict" and "inconsistent" do not appear in the Introduction. Sign conflicts and cancellation come up only in related work, when discussing TIES-Merging (Sec. 2). "Shrinkage" appears only for FedLAW ("global weight shrinking phenomenon"), not for FedAWA.
+
+**Definição (literal).** Sec. 1 (Introduction), excerpts: heterogeneity makes local models pursue different objectives, "causing divergent optimization directions and unstable convergence"; "Furthermore, the aggregated client vectors align more closely with the desired direction of model updates." Sec. 4.3, about Eq. 2: "clients whose update directions more align with the merged global vector are assigned higher aggregation weights" (sentence continues). Note: the fetch tool returned verbatim fragments capped at about 125 characters, so these are exact excerpts, not full sentences.
+
+**Local.** Sec. 1 Introduction (problem framing); Sec. 4.1 Eq. 1 (client vector and global vector); Sec. 4.3 Eqs. 2-4 (objective and intuition); Sec. 2 (TIES-Merging sign conflict, related work only); App. A.4 Table 7 (multi-domain)
+
+**Formulação.** Sec. 4.1, Eq. 1: client vector τ_k^t = θ_k^t − θ_g^t; global vector τ_g^t = Σ_k λ_k^t τ_k^t, with learnable aggregation weights λ_k^t. Sec. 4.3, Eq. 2: λ = argmin Σ_k λ_k ‖τ_k^t − τ_g^t‖_2 s.t. ‖λ‖_1 = 1. Eq. 3 (FedAWA): the same objective plus the regularizer d(Σ_k λ_k θ_k^t, θ_g^t), where d = 1 − cosine similarity, which keeps the aggregate from deviating "excessively from the previous communication round's global model". Eq. 4 (FedAWA-L): the same objective with per-layer weights λ_{k,l} computed on each layer's client vectors. Global update: θ_g^{t+1} = Σ_k λ_k θ_k^t, which equals θ_g + τ_g because the weights sum to 1. There is no server learning rate and no rescaling of the step norm. Algorithm 1 initializes λ^0 from dataset-size proportions. The paper states neither the optimizer for λ nor a non-negativity constraint.
+
+**Métrica.** No interference or cancellation metric is defined or reported. The diagnostics are geometric: (a) distances between client vectors compared with distances between local datasets (12-client CIFAR-10, Fig. 2, App. A.1): client-vector distances mirror dataset distances, while raw parameter distances do not; (b) distance of the aggregated global vector to an "ideal" vector τ_ideal = θ_ideal − θ_g, obtained by training on the pooled data (Fig. 3). The aggregate lies closer to the ideal than any single client vector does. Performance is reported as top-1 accuracy.
+
+**Método.** A server-side, plug-and-play method that needs no proxy data. Each round, the server solves Eq. 3 for the weights (Eq. 4 for per-layer weights) using only the uploaded local models and the current global model, then averages. Clients whose client vectors lie close to the weighted global vector, i.e. whose updates align with the consensus direction, get larger λ; outlier or misaligned clients are down-weighted. The weights can start from existing fixed schemes such as dataset size or FedDisco. Ablation variant FedAWA-COS uses plain cosine-similarity weights instead of the optimization.
+
+**Resultados.** CIFAR-10/100 (ResNet20) and Tiny-ImageNet (ResNet18), Dirichlet α ∈ {0.1, 0.5, 100}, default 20 clients, full participation, 1 local epoch. Table 1 overall average top-1: FedAWA-L 49.98, FedAWA 49.48, FedLAW (uses proxy data, shown as a reference only) 48.26, FedDisco 48.19, L-DAWA 48.09, FedAvg 47.88, FedDyn 47.34, FedProx 46.52, FedAdam 41.76. CIFAR-10 α=0.1: FedAvg 61.04, FedAWA 63.55, FedAWA-L 65.13. Tiny-ImageNet α=0.1: FedAvg 29.44, FedAWA 33.07. Table 4 ablation: optimized weights 55.88 vs cosine weights (FedAWA-COS) 55.02 vs FedAvg 53.81. Table 5: removing the regularizer lowers accuracy, and the cosine regularizer is slightly better than Euclidean. Server compute per round (Table 2): FedAvg 0.10 s, FedAWA 0.82 s, FedAWA-L 15.21 s. Gains hold for K ∈ {10, 30, 50}, participation 0.1 to 0.5 and E ∈ {1, 5, 10} (Fig. 5). Multi-domain digits (SVHN/USPS/MNIST/SYN), App. A.4, Table 7: FPL+AWA averages 85.09 vs FPL 83.12, but scores lower on USPS and MNIST.
+
+**Limitações.** (1) No formal definition or measurement of interference, conflict or cancellation. Its "alignment" is an implicit consensus criterion and comes with no diagnostic. (2) It changes only the direction mixture: with ‖λ‖_1 = 1, a convex average and no server step size, it never addresses the norm of the aggregated update. The paper does not analyze step magnitude or shrinkage for its own method. (3) Down-weighting clients that deviate from the consensus can marginalize minority domains. In a cross-domain federation this may drown out the smaller dataset rather than help it. (4) It is evaluated only on natural-image classification with a full shared model, plus one digits multi-domain table. There are no medical, segmentation, multi-task or partial-sharing (FedPer) experiments. (5) The paper does not specify the λ optimizer, its hyperparameters, or whether λ may go negative, which hurts reproducibility. (6) It assumes all clients share the same architecture, which the authors list as a limitation. (7) Single-seed variance and statistical testing are not discussed in the parts read. The layer-wise variant costs 150x FedAvg's server time.
+
+**Relevância para o projeto.** High as related work and as a candidate aggregation ablation, but it does not supply a definition of "cancelamento de pesos". (a) Terminology: FedAWA describes the phenomenon as "divergent optimization directions" and misalignment of client vectors. It never names or measures cancellation, so the project's 1 − ‖Σ w_iΔ_i‖ / Σ w_i‖Δ_i‖ metric (Nagura et al. 2020) remains the operative definition. FedAWA's τ_k equals the project's Δ_i, and its τ_g is the weighted aggregate the cancellation ratio uses. (b) Mechanism versus the project's finding: the project sees little inter-dataset cancellation, and its dominant cost looks like step dilution (an aggregated step about 10x smaller). FedAWA reweights within a convex combination, so by construction it cannot restore step norm. It would raise the ratio ‖Σ wΔ‖ / Σ w‖Δ‖ only by favouring aligned clients, which is the same lever as reducing cancellation, so it is unlikely to fix the dilution. A server learning rate or norm-rescaled aggregation (FedNova or FedExP-style) targets that directly. (c) Ablation fit: it is easy to implement in src/federated/server.py next to hierarchical/flat. It needs only client deltas, which are already computed for the pairwise-cosine logging, and FedAWA-L maps onto the per-block cosine already recorded. Apply it to the shared trunk only (FedPer); run it per dataset inside the hierarchical mode, or flat with the dataset weights as initialization, to avoid down-weighting a minority dataset whose updates are near-orthogonal. (d) Cosine-weight baseline: the FedAWA-COS ablation (cosine weights) is a cheap control. Any comparison must keep the same budget mode, and p-values from it remain exploratory only.

@@ -38,25 +38,33 @@ Cada pasta tem `README.md` (síntese em português, com citações), `fontes.md`
 
 ## Como foi feito
 
-Um workflow com agentes separados por tema (2026-10-31): 3 agentes de busca por tema
-(30 e 29 candidatos), **um agente por artigo** lendo o texto completo (15 por tema, priorizados
-pelos que definem o termo e pelos marcos/SOTA) e um agente de síntese por tema, restrito às fichas.
-Conferimos à mão as citações centrais de Nagura et al. (2020, resumo) e Wang et al. (2019, CVPR).
-A citação de Zheng et al. (2025) **não** foi conferida à mão (PDF sem extrator de texto aqui).
+Dois workflows com agentes separados por tema, em 2026-10-31. Cada artigo foi lido por **um agente
+dedicado**, quase sempre em texto completo, que preencheu uma ficha. Um agente de síntese por tema
+escreveu o `README.md` só a partir das fichas.
 
-### Limites desta passada (o que não foi lido)
+- **Primeira passada:** 3 agentes de busca por tema (30 e 29 candidatos), 15 artigos lidos por tema.
+- **Segunda passada:** os artigos cortados na primeira (FedPer, FedRep, FedBN, Ditto, FedBone,
+  Kendall, CAGrad, Nash-MTL, Aligned-MTL, FAMO, Zhao et al.; DARE, AdaMerging, Fisher merging,
+  model soups, Git Re-Basin, FedLAW, FedLWS, Gradient Masked Averaging, OGD), mais até 6 trabalhos
+  de 2023–2026 por tema, achados por um agente de busca dirigido. Entre eles: ForkMerge,
+  Selective Task Group Updates, Mueller et al. (TMLR 2025), FedGain (ICML 2026), OmniFM
+  (CVPR 2026); Iso-C/Iso-CTS, WUDI-Merging, EMR-Merging, Twin-Merging, FedAWA e um survey de
+  model merging. A síntese de cada tema foi reescrita para incorporar esses artigos.
+- **Total:** 32 fontes em *negative transfer* e 30 em cancelamento de pesos. MAS e FedMTL ficaram
+  de fora porque já estão em `research_decisions/literatura_mas_fedmtl.md`.
 
-O corte em 15 artigos por tema deixou de fora, entre outros:
+Citações conferidas à mão:
 
-- **negative transfer**: FedPer, FedRep, FedBN, Ditto, FedBone, MAS (já lido em
-  `research_decisions/literatura_mas_fedmtl.md`), CAGrad, Nash-MTL, Aligned-MTL, FAMO, Kendall
-  (uncertainty weighting), Zhao et al. (*On learning invariant representations*).
-- **cancelamento de pesos**: DARE, AdaMerging, Fisher merging, model soups, Git Re-Basin, FedLAW,
-  FedLWS (*layer-wise weight shrinking*), Gradient Masked Averaging, CAGrad, GEM/A-GEM, OGD.
+- Nagura et al. (2020): resumo, "diminishes the norm of the update vectors".
+- Wang et al. (2019): resumo e venue CVPR 2019.
+- Li et al. (2023, FedLAW): Eq. 6, a decomposição de ‖Σλᵢgᵢ‖² em normas mais termos cruzados de
+  cosseno.
+- Liu et al. (2026, OmniFM): título, autores e CVPR 2026.
 
-Por isso o SOTA de mitigação 2023–2026 em MTL (Nash-MTL, Aligned-MTL, FAMO) e em FL com passo de
-servidor/encolhimento (FedLAW, FedLWS) está **sub-representado**. Uma segunda passada sobre essa
-lista é o próximo passo natural antes de afirmar qual é o estado da arte.
+Não conferidas à mão: a citação de Zheng et al. (2025, FedCALM), porque não havia extrator de PDF
+aqui, e FedGain, que fica atrás da verificação de navegador do OpenReview e já está marcado
+"[só resumo]". As fichas registram outras ressalvas de venue e de citações truncadas. Confira no
+PDF antes de levar uma citação para a dissertação.
 
 Os p-valores deste projeto continuam exploratórios
 (`exploratory_only_non_independent_client_fold_pairs`); nada aqui os torna confirmatórios.
