@@ -1,0 +1,18 @@
+# Fontes
+| # | Referência (autores, ano, título, venue) | URL | Acesso | Confiança |
+|---|---|---|---|---|
+| 1 | Rosenstein, M. T.; Marx, Z.; Kaelbling, L. P.; Dietterich, T. G. (2005). *To Transfer or Not To Transfer*. NIPS 2005 Workshop on Inductive Transfer | https://people.csail.mit.edu/mtr/papers/RosensteinM05c.pdf | full_text | alta |
+| 2 | Ben-David, S.; Blitzer, J.; Crammer, K.; Kulesza, A.; Pereira, F.; Vaughan, J. W. (2010). *A theory of learning from different domains*. Machine Learning 79:151–175 | https://doi.org/10.1007/s10994-009-5152-4 | full_text | alta |
+| 3 | Wang, Z.; Dai, Z.; Póczos, B.; Carbonell, J. (2019). *Characterizing and Avoiding Negative Transfer*. CVPR 2019 | https://arxiv.org/abs/1811.09751 | full_text | alta |
+| 4 | Sattler, F.; Müller, K.-R.; Samek, W. (2019). *Clustered Federated Learning: Model-Agnostic Distributed Multi-Task Optimization under Privacy Constraints*. arXiv (depois IEEE TNNLS 2021, venue não conferido) | https://arxiv.org/abs/1910.01991 | full_text | alta |
+| 5 | Standley, T.; Zamir, A.; Chen, D.; Guibas, L.; Malik, J.; Savarese, S. (2020). *Which Tasks Should Be Learned Together in Multi-task Learning?* ICML 2020 | https://arxiv.org/abs/1905.07553 | full_text | alta |
+| 6 | Yu, Tianhe; Kumar, S.; Gupta, A.; Levine, S.; Hausman, K.; Finn, C. (2020b). *Gradient Surgery for Multi-Task Learning (PCGrad)*. NeurIPS 2020 | https://arxiv.org/abs/2001.06782 | full_text | alta |
+| 7 | Yu, Tao; Bagdasaryan, E.; Shmatikov, V. (2020a). *Salvaging Federated Learning by Local Adaptation*. arXiv preprint | https://arxiv.org/abs/2002.04758 | full_text | alta |
+| 8 | Fifty, C.; Amid, E.; Zhao, Z.; Yu, T.; Anil, R.; Finn, C. (2021). *Efficiently Identifying Task Groupings for Multi-Task Learning*. NeurIPS 2021 (venue por conhecimento externo) | https://arxiv.org/abs/2109.04617 | full_text | alta |
+| 9 | Xin, D.; Ghorbani, B.; Gilmer, J.; Garg, A.; Firat, O. (2022). *Do Current Multi-Task Optimization Methods in Deep Learning Even Help?* NeurIPS 2022 | https://arxiv.org/abs/2209.11379 | full_text | alta |
+| 10 | Kurin, V.; De Palma, A.; Kostrikov, I.; Whiteson, S.; Kumar, M. P. (2022). *In Defense of the Unitary Scalarization for Deep Multi-Task Learning*. NeurIPS 2022 | https://arxiv.org/abs/2201.04122 | full_text | alta |
+| 11 | Zhang, W.; Deng, L.; Zhang, L.; Wu, D. (2023). *A Survey on Negative Transfer*. IEEE/CAA J. Automatica Sinica (venue não conferido; lido arXiv v4, 2021) | https://arxiv.org/abs/2009.00909 | full_text | alta |
+| 12 | Bao, W.; Wang, H.; Wu, J.; He, J. (2023). *Optimizing the Collaboration Structure in Cross-Silo Federated Learning (FedCollab)*. ICML 2023 (venue não conferido) | https://arxiv.org/abs/2306.06508 | full_text | alta |
+| 13 | Yang, Y.; Lu, Y.; Huang, S.; Sirejiding, S.; Lu, H.; Ding, Y. (2024). *Federated Multi-Task Learning on Non-IID Data Silos: An Experimental Study (FMTL-Bench)*. arXiv preprint (venue não confirmado) | https://arxiv.org/abs/2402.12876 | full_text | alta |
+| 14 | Lu, Y.; Huang, S.; Yang, Y.; Sirejiding, S.; Ding, Y.; Lu, H. (2024). *FedHCA2: Towards Hetero-Client Federated Multi-Task Learning*. CVPR 2024 | https://arxiv.org/abs/2311.13250 | full_text | média |
+| 15 | Tahir, J.; Ganguli, S.; Rotskoff, G. M. (2024). *Features are fate: a theory of transfer learning in high-dimensional regression*. arXiv preprint | https://arxiv.org/abs/2410.08194 | full_text | alta |

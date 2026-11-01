@@ -1,0 +1,18 @@
+# Fontes
+| # | Referência (autores, ano, título, venue) | URL | Acesso | Confiança |
+|---|---|---|---|---|
+| 1 | Gargiulo, A. A.; Crisostomi, D.; Bucarelli, M. S.; Scardapane, S.; Silvestri, F.; Rodolà, E. (2025). Task Singular Vectors: Reducing Task Interference in Model Merging. CVPR 2025 | https://arxiv.org/abs/2412.00081 | full_text | alta |
+| 2 | Zheng, H.; Hu, Z.; Yang, L.; Zheng, M.; Xu, A.; Wang, B. (2025). FedCALM: Conflict-aware Layer-wise Mitigation for Selective Aggregation in Deeper Personalized Federated Learning. CVPR 2025 | https://openaccess.thecvf.com/content/CVPR2025/papers/Zheng_FedCALM_Conflict-aware_Layer-wise_Mitigation_for_Selective_Aggregation_in_Deeper_Personalized_CVPR_2025_paper.pdf | full_text (apêndice não lido) | alta |
+| 3 | Wang, K.; Dimitriadis, N.; Ortiz-Jimenez, G.; Fleuret, F.; Frossard, P. (2024). Localizing Task Information for Improved Model Merging and Compression. ICML 2024 | https://arxiv.org/abs/2405.07813 | full_text | alta |
+| 4 | Zhang, X.; Sun, W.; Chen, Y. (2023). Tackling the Non-IID Issue in Heterogeneous Federated Learning by Gradient Harmonization (FedGH). arXiv 2309.06692 (venue não confirmado) | https://arxiv.org/abs/2309.06692 | full_text | alta |
+| 5 | Jhunjhunwala, D.; Wang, S.; Joshi, G. (2023). FedExP: Speeding Up Federated Averaging via Extrapolation. ICLR 2023 | https://arxiv.org/abs/2301.09604 | full_text | alta |
+| 6 | Yadav, P.; Tam, D.; Choshen, L.; Raffel, C.; Bansal, M. (2023). TIES-Merging: Resolving Interference When Merging Models. NeurIPS 2023 | https://arxiv.org/abs/2306.01708 | full_text | alta |
+| 7 | Ilharco, G.; Ribeiro, M. T.; Wortsman, M.; Gururangan, S.; Schmidt, L.; Hajishirzi, H.; Farhadi, A. (2023). Editing Models with Task Arithmetic. ICLR 2023 | https://arxiv.org/abs/2212.04089 | full_text | alta |
+| 8 | Ortiz-Jimenez, G.; Favero, A.; Frossard, P. (2023). Task Arithmetic in the Tangent Space: Improved Editing of Pre-Trained Models. NeurIPS 2023 | https://arxiv.org/abs/2305.12827 | full_text | alta |
+| 9 | Wang, Z.; Fan, X.; Qi, J.; Wen, C.; Wang, C.; Yu, R. (2021b). Federated Learning with Fair Averaging (FedFV). IJCAI 2021 | https://arxiv.org/abs/2104.14937 | full_text | alta |
+| 10 | Wang, Z.; Tsvetkov, Y.; Firat, O.; Cao, Y. (2021a). Gradient Vaccine: Investigating and Improving Multi-task Optimization in Massively Multilingual Models. ICLR 2021 | https://arxiv.org/abs/2010.05874 | full_text | alta |
+| 11 | Karimireddy, S. P.; Kale, S.; Mohri, M.; Reddi, S. J.; Stich, S. U.; Suresh, A. T. (2020). SCAFFOLD: Stochastic Controlled Averaging for Federated Learning. ICML 2020 | https://arxiv.org/abs/1910.06378 | full_text | alta |
+| 12 | Wang, J.; Liu, Q.; Liang, H.; Joshi, G.; Poor, H. V. (2020). Tackling the Objective Inconsistency Problem in Heterogeneous Federated Optimization (FedNova). NeurIPS 2020 | https://arxiv.org/abs/2007.07481 | full_text | alta |
+| 13 | Nagura, K.; Bian, S.; Sato, T. (2020). FedNNNN: Norm-Normalized Neural Network Aggregation for Fast and Accurate Federated Learning. arXiv 2008.04538 (preprint; citações quase literais via HTML) | https://arxiv.org/abs/2008.04538 | full_text | alta |
+| 14 | Yu, T.; Kumar, S.; Gupta, A.; Levine, S.; Hausman, K.; Finn, C. (2020). Gradient Surgery for Multi-Task Learning (PCGrad). NeurIPS 2020 | https://arxiv.org/abs/2001.06782 | full_text | alta |
+| 15 | Sattler, F.; Müller, K.-R.; Samek, W. (2019). Clustered Federated Learning: Model-Agnostic Distributed Multi-Task Optimization under Privacy Constraints. arXiv 1910.01991 (depois na IEEE TNNLS 2021, não verificado) | https://arxiv.org/abs/1910.01991 | full_text | alta |

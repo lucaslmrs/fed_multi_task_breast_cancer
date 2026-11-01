@@ -23,6 +23,9 @@ páginas HTML de recorte) e a **versão B** (2026-10-27, `escopo_e_decisoes.md`,
 | `mapa_de_escopo.html` | A | versão visual de `00`–`03` |
 | `arvore_de_decisoes.html` | A | árvore interativa da versão A: cada ramo com estado (feito, decidido, aberto, mantido, cortado) |
 
+Revisão de literatura sobre o problema (definições e SOTA de *negative transfer* e de cancelamento de
+pesos, um agente por artigo): [`../research_problem/`](../research_problem/README.md), 2026-10-31.
+
 ## Diagnóstico em 5 linhas
 
 1. O projeto aprovado é o **FedCHAMP**: FL multi-domínio e multi-tarefa que mitiga a transferência
