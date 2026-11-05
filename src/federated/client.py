@@ -27,6 +27,7 @@ from src.federated import conflict_diagnostics, local_trainer
 from src.federated.config import (
     aggregation_config,
     dataset_config,
+    layer_betas,
     local_training_config,
     personalized_init_seed,
     shared_modules,
@@ -35,6 +36,7 @@ from src.federated.config import (
 from src.federated.model_split import (
     get_personalized_state,
     get_shared_state,
+    mix_shared_state,
     resolved_shared_modules,
     set_personalized_state,
     set_shared_state,
@@ -134,6 +136,8 @@ class FederatedClient(NumPyClient):
         self.share_stem = config["federated"].get("share_stem", True)
         # What FedAvg averages: legacy bool (prefix rule) or explicit federated.shared_modules.
         self.sharing = shared_modules(config)
+        # E8: per-module global weight; None keeps the hard FedPer swap.
+        self.layer_betas = layer_betas(config)
         self.inversely_weighted = config["loss"]["inversely_weighted"]
         local_training = local_training_config(config)
         self.local_training_mode = str(local_training.get("mode", "epochs")).lower()
@@ -288,6 +292,9 @@ class FederatedClient(NumPyClient):
             "best_checkpoint_scope": "disabled_post_aggregation_validation_only",
             "training_telemetry": self.telemetry,
         }
+        if self.layer_betas:
+            metadata["final_checkpoint_policy"] = "last_round_layer_mixed_global_and_local"
+            metadata["layer_betas"] = {k: float(v) for k, v in self.layer_betas.items()}
         with (self.state_dir / "metadata.yaml").open("w", encoding="utf-8") as stream:
             yaml.safe_dump(metadata, stream, sort_keys=False)
 
@@ -428,7 +435,7 @@ class FederatedClient(NumPyClient):
     def _load_state(self):
         if self.state_path.exists():
             state = torch.load(self.state_path, map_location=self.device)
-            if self.standalone:
+            if self.standalone or self.layer_betas:
                 self.model.load_state_dict(state["model"])
             else:
                 set_personalized_state(
@@ -448,7 +455,17 @@ class FederatedClient(NumPyClient):
             payload["personalized"] = get_personalized_state(
                 self.model, sharing=self.sharing
             )
+            # Under layer mixing the client's own copy of the shared modules is state as well;
+            # "personalized" stays for the readers that only need the remainder.
+            if self.layer_betas:
+                payload["model"] = self.model.state_dict()
         torch.save(payload, self.state_path)
+
+    def _receive_global(self, parameters, has_local_state):
+        if self.layer_betas and has_local_state:
+            mix_shared_state(self.model, parameters, self.layer_betas, sharing=self.sharing)
+        else:
+            set_shared_state(self.model, parameters, sharing=self.sharing)
 
     # ---- Flower API -----------------------------------------------------------------------
     def get_parameters(self, config):
@@ -466,8 +483,9 @@ class FederatedClient(NumPyClient):
         has_local_state = self._load_state()
         # Both arms receive the exact same initial shared trunk.  On later rounds the standalone
         # arm resumes its own full model, whereas federated clients accept the new global trunk.
+        # Layer mixing blends the global into that local copy instead, from round 2 on.
         if not self.standalone or not has_local_state:
-            set_shared_state(self.model, parameters, sharing=self.sharing)
+            self._receive_global(parameters, has_local_state)
 
         if self.local_training_mode == "steps":
             batch_sampler = self.train_loader.batch_sampler
@@ -582,9 +600,9 @@ class FederatedClient(NumPyClient):
         return get_shared_state(self.model, self.sharing), self.n_train, metrics
 
     def evaluate(self, parameters, config):
-        self._load_state()
+        has_local_state = self._load_state()
         if not self.standalone:
-            set_shared_state(self.model, parameters, sharing=self.sharing)
+            self._receive_global(parameters, has_local_state)
         val = local_trainer.evaluate_local(
             self.model, self.val_loader, self.task, self.device, self.num_classes,
             self.seg_criterion, self.cls_criterion, self.inversely_weighted,

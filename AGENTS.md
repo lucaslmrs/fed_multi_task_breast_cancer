@@ -369,6 +369,7 @@ the budget, not the federation.
 | `datasets.<name>.client_topology` | `single_task` (default) or `multi_task` (one client, several tasks, same images) |
 | `share_stem` | Federate the input stem; must be false for mixed 1ch/3ch runs |
 | `shared_modules` | Optional. Top-level modules to federate, matched exactly (the E6 wide set lists 17). Absent = legacy trunk (`encoder2..5` + `bottleneck`, plus `encoder1` with `share_stem`). Must agree with `share_stem` on `encoder1`. Lives in run configs/manifests, never in `src/config.yaml` (study hash; `StudyHashGuardTests`) |
+| `layer_mixing` | Optional, E8. `{enabled, beta_max, beta_min, order}`: from round 2 each shared module starts as `β·global + (1−β)·local`, β linear over `order` (which must list exactly the explicit `shared_modules`) from `beta_max` to `beta_min`; the final artifact uses the same blend. Federated clients then persist their full model as well. Absent or `enabled: false` = the hard FedPer swap; refused on a standalone run. Manifests only, never `src/config.yaml`. Runs: `studies/e8_layer_mixing/` |
 | `personalized_init_seed` | `dataset` (working default since E3): every client of a dataset starts from the same stem/heads; `client` draws one per client and is the fallback when the key is absent, so historical configs keep resolving unchanged. Local-only reads the same key, so the pair stays matched |
 | `local_training.mode` | `steps` (fixed `steps_per_round`) or `epochs` (`local_epochs` passes) |
 | `aggregation.mode` | `hierarchical` (main) or `flat` (FedAvg-style ablation) |

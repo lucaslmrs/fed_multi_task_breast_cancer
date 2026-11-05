@@ -28,6 +28,7 @@ from src.federated.config import (
     active_datasets,
     aggregation_config,
     dataset_config,
+    layer_betas,
     partition_file,
     shared_modules,
     validate_federated_config,
@@ -35,6 +36,7 @@ from src.federated.config import (
 from src.federated.model_split import (
     assert_pretrained_shared,
     get_shared_state,
+    mix_shared_state,
     resolved_shared_modules,
     set_personalized_state,
     set_shared_state,
@@ -142,7 +144,7 @@ def _initial_shared_parameters(config, datasets, device, fold):
     return ndarrays_to_parameters(reference_arrays)
 
 
-def _log_sharing(model, sharing):
+def _log_sharing(model, sharing, betas=None):
     """Log once per run what FedAvg actually averages, so a run's split is visible in its log."""
     state = model.state_dict()
     keys = shared_keys(model, sharing)
@@ -153,6 +155,8 @@ def _log_sharing(model, sharing):
         ",".join(resolved_shared_modules(model, sharing)), len(keys), shared,
         100.0 * shared / total if total else 0.0, total,
     )
+    if betas:
+        logging.info("[layer_mixing] beta=%s", ",".join(f"{k}:{v:.3f}" for k, v in betas.items()))
 
 
 def _round_config(server_round):
@@ -194,8 +198,14 @@ def _test_client(
         if shared_arrays is None:
             raise ValueError("Federated final evaluation requires the final global shared trunk")
         sharing = shared_modules(config)
-        set_personalized_state(model, state["personalized"], sharing=sharing)
-        set_shared_state(model, shared_arrays, sharing=sharing)
+        betas = layer_betas(config)
+        if betas:
+            # E8: the final artifact blends the final global into the client's own last copy.
+            model.load_state_dict(state["model"])
+            mix_shared_state(model, shared_arrays, betas, sharing=sharing)
+        else:
+            set_personalized_state(model, state["personalized"], sharing=sharing)
+            set_shared_state(model, shared_arrays, sharing=sharing)
     else:
         model.load_state_dict(state["model"])
 
@@ -410,7 +420,7 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
     sharing = shared_modules(config)
     sharing_probe = _build_model(config, datasets[0], "cpu")
     shared_key_names = shared_keys(sharing_probe, sharing)
-    _log_sharing(sharing_probe, sharing)
+    _log_sharing(sharing_probe, sharing, layer_betas(config))
     del sharing_probe
 
     fold_count = train_cfg["CV"]

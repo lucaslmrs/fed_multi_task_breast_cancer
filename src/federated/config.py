@@ -129,6 +129,54 @@ def shared_modules(config: dict):
     return tuple(names)
 
 
+def layer_betas(config: dict):
+    """Per-module global weight of ``federated.layer_mixing`` (E8), or ``None`` when it is off.
+
+    Each shared module starts a round as ``beta * global + (1 - beta) * local``. ``beta`` decays
+    linearly over ``order``, from ``beta_max`` on its first module to ``beta_min`` on its last, so
+    the early encoder follows the federation and the late decoder its own client. ``order`` must
+    list exactly the explicit ``federated.shared_modules``. Absent or ``enabled: false`` returns
+    ``None``, which leaves every code path as it was.
+    """
+    mixing = config["federated"].get("layer_mixing")
+    if mixing is None:
+        return None
+    if not isinstance(mixing, dict):
+        raise ValueError("federated.layer_mixing must be a mapping")
+    enabled = mixing.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError("federated.layer_mixing.enabled must be a boolean")
+    if not enabled:
+        return None
+    if config["federated"].get("standalone"):
+        raise ValueError(
+            "federated.layer_mixing is a federated-arm setting; disable it on the standalone "
+            "(local-only) arm, which never receives the global state"
+        )
+    sharing = shared_modules(config)
+    if not isinstance(sharing, tuple):
+        raise ValueError("federated.layer_mixing needs an explicit federated.shared_modules list")
+    order = mixing.get("order")
+    if not isinstance(order, (list, tuple)) or len(order) < 2:
+        raise ValueError("federated.layer_mixing.order must list at least two modules")
+    if len(set(order)) != len(order) or set(order) != set(sharing):
+        raise ValueError(
+            "federated.layer_mixing.order must list each federated.shared_modules entry exactly "
+            f"once; missing {sorted(set(sharing) - set(order))}, "
+            f"unknown {sorted(set(order) - set(sharing))}"
+        )
+    bounds = {}
+    for field in ("beta_max", "beta_min"):
+        value = mixing.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                or not 0.0 <= float(value) <= 1.0:
+            raise ValueError(f"federated.layer_mixing.{field} must be a number in [0, 1]")
+        bounds[field] = float(value)
+    last = len(order) - 1
+    span = bounds["beta_max"] - bounds["beta_min"]
+    return {name: bounds["beta_max"] - span * index / last for index, name in enumerate(order)}
+
+
 def training_telemetry_config(config: dict) -> dict:
     """Resolve observational training-curve settings without affecting experiment design."""
     telemetry = dict(config["federated"].get("training_telemetry", {}))
@@ -182,6 +230,7 @@ def validate_federated_config(config: dict) -> None:
             )
 
     shared_modules(config)  # an explicit federated.shared_modules list fails here, before Flower
+    layer_betas(config)
     share_stem = config["federated"].get("share_stem", True)
     channel_counts = {cfg["channels"] for cfg in resolved.values()}
     if share_stem and len(channel_counts) > 1:
