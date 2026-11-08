@@ -30,9 +30,17 @@ class FedPerStrategy(FedAvg):
         *args,
         conflict_config=None,
         conflict_fold_dir=None,
+        round_offset=0,
+        checkpoint_fn=None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        # A resumed run restarts Flower at its round 1; every round number the strategy sees or
+        # hands to clients is shifted by the checkpointed round, so seeds, betas, logs and the
+        # aggregation history keep the numbering of an uninterrupted run.
+        self.round_offset = int(round_offset)
+        # Called with the round number after a fully successful round (see round_checkpoint).
+        self.checkpoint_fn = checkpoint_fn
         # Full run config + fold directory enable the M2 lookahead hand-off (observational only).
         self.conflict_config = conflict_config
         self.conflict_fold_dir = conflict_fold_dir
@@ -66,9 +74,15 @@ class FedPerStrategy(FedAvg):
     def configure_fit(self, server_round, parameters, client_manager):
         # Round 1 configures from ``initial_parameters``; ``latest_parameters`` is still None then.
         self._sent_arrays = parameters_to_ndarrays(parameters)
-        return super().configure_fit(server_round, parameters, client_manager)
+        return super().configure_fit(server_round + self.round_offset, parameters, client_manager)
+
+    def configure_evaluate(self, server_round, parameters, client_manager):
+        return super().configure_evaluate(
+            server_round + self.round_offset, parameters, client_manager
+        )
 
     def aggregate_fit(self, server_round, results, failures):
+        server_round += self.round_offset
         if failures and not self.accept_failures:
             logging.error(
                 "[round %s] refusing to aggregate because %s client fit(s) failed",
@@ -226,6 +240,19 @@ class FedPerStrategy(FedAvg):
         )
 
     def aggregate_evaluate(self, server_round, results, failures):
+        server_round += self.round_offset
+        outcome = self._aggregate_evaluate(server_round, results, failures)
+        # Only a round whose fit was aggregated and whose evaluation fully succeeded is a valid
+        # resume point. A checkpoint failure must never fail the training run.
+        if (self.checkpoint_fn is not None and outcome[0] is not None
+                and self.latest_round == server_round):
+            try:
+                self.checkpoint_fn(server_round)
+            except Exception:
+                logging.warning("[round %s] round checkpoint failed", server_round, exc_info=True)
+        return outcome
+
+    def _aggregate_evaluate(self, server_round, results, failures):
         if self._lookahead_round(server_round):
             # Every client has scored the round's deltas by now; drop the large transients.
             conflict_diagnostics.observational(

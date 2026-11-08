@@ -8,6 +8,7 @@ import hashlib
 import csv
 import logging
 import math
+import os
 import random
 import time
 from pathlib import Path
@@ -459,7 +460,11 @@ class FederatedClient(NumPyClient):
             # "personalized" stays for the readers that only need the remainder.
             if self.layer_betas:
                 payload["model"] = self.model.state_dict()
-        torch.save(payload, self.state_path)
+        # Write-then-replace: a crash mid-save cannot corrupt the durable state, and the new file
+        # gets a new inode, so a round checkpoint hard-linked to the old one keeps its bytes.
+        temporary = self.state_path.with_name(self.state_path.name + ".tmp")
+        torch.save(payload, temporary)
+        os.replace(temporary, self.state_path)
 
     def _receive_global(self, parameters, has_local_state):
         if self.layer_betas and has_local_state:

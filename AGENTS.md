@@ -74,7 +74,9 @@ python -m src.training_classification # classification only
 python -m src.dataset.federated_partition   # build data/<dataset>/federated/federated_mapping.csv
 python -m src.dataset.federated_partition --legacy  # only to reproduce frozen single-dataset BUSI
 python -m src.training_federated            # run the federated simulation
+python -m src.training_federated --config <cfg> --run-path <dir> --resume  # continue a crashed run
 python -m scripts.smoke_federated --setup both  # paired 2-round CPU end-to-end validation
+python -m scripts.smoke_resume --config <cfg>   # kill a CPU run mid-way, resume, compare to uninterrupted
 
 # Comparison experiment (Federated vs Local-only vs Centralized) — see section below
 python -m src.training_federated            # federated  (federated.standalone: False)
@@ -348,6 +350,17 @@ The final artifact is **one shared trunk + N personalized stems/heads** (not a s
 Server-side early stopping is diagnostic only; final comparison uses the same configured last-round
 budget in both arms.
 
+**Round-level resume** (`src/federated/round_checkpoint.py`). Every
+`runtime.federated.checkpoint_every_rounds` rounds (default 10), after a round in which every fit
+and evaluation succeeded, `fold_<k>/round_checkpoint/` stores the global shared state, the
+aggregation history and every client's `state.pt` (hard links: clients write through a temporary
+file and `os.replace`). `--resume` (or `run(..., resume=True)`, which `study_runner
+--retry-incomplete` already passes) restores the clients, drops their history rows of later rounds,
+and restarts Flower at round R+1 with `round_offset=R`, so seeds, β and logs keep the numbering of
+an uninterrupted run. The checkpoint is deleted once the fold's final state is durable. Under WSL2
+the CUDA context of a Ray worker occasionally dies (`CUDA error: unknown error`, E8): resume is what
+makes 400-round runs finish.
+
 ### Local training budget
 
 `federated.local_training.mode` decides how much each client trains per round, and it is the single
@@ -386,6 +399,7 @@ the budget, not the federation.
 | `device` | `auto` / `cpu` / `cuda` (resolved per worker) |
 | `runtime.federated.client_resources.num_gpus` | `0.5` = 2 clients/GPU; `1.0` = sequential |
 | `runtime.federated.ray_num_cpus` | Caps Ray concurrency to bound memory use |
+| `runtime.federated.checkpoint_every_rounds` | Rounds between resume points (default 10; `0` disables). Operational, outside the study hash |
 | `training.precision` | `bf16` for new CUDA runs; missing field preserves legacy FP32 |
 | `runtime.inference_batch_size` | Batched final evaluation without changing per-sample rows |
 

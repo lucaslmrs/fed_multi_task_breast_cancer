@@ -22,7 +22,7 @@ from flwr.simulation import start_simulation
 
 from src.dataset.federated_dataloader import build_client_loader, list_clients
 from src.dataset.splitting import evaluation_metadata, validate_master_splits
-from src.federated import conflict_diagnostics, unified_eval
+from src.federated import conflict_diagnostics, round_checkpoint, unified_eval
 from src.federated.client import build_client_fn, stable_client_seed
 from src.federated.config import (
     active_datasets,
@@ -449,14 +449,24 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
             continue
 
         expected_round = int(fed["rounds"])
+        client_ids = [client_id for client_id, _, _ in roster]
         simulation_complete = resume and _completed_fold_state(
             run_path, fold, roster, standalone, expected_round
         )
+        checkpoint = None
         if not simulation_complete:
             if resume:
-                preserved = _preserve_partial_fold(fold_dir)
-                if preserved is not None:
-                    logging.warning("Preserved partial fold at %s", preserved)
+                checkpoint = round_checkpoint.load(fold_dir, client_ids, expected_round)
+                if checkpoint is not None:
+                    round_checkpoint.restore_clients(fold_dir, checkpoint)
+                    logging.warning(
+                        "[fold %s] resuming from the round-%s checkpoint (%s rounds left)",
+                        fold, checkpoint["round"], expected_round - checkpoint["round"],
+                    )
+                else:
+                    preserved = _preserve_partial_fold(fold_dir)
+                    if preserved is not None:
+                        logging.warning("Preserved partial fold at %s", preserved)
             fold_dir.mkdir(parents=True, exist_ok=True)
 
         final_shared = None
@@ -465,6 +475,26 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
             if not standalone:
                 final_shared = _load_final_shared(run_path, fold, expected_round)
         else:
+            # Always built: it also validates the shared contract before Flower starts.
+            initial_parameters = _initial_shared_parameters(config, datasets, device, fold)
+            start_round = 0
+            if checkpoint is not None:
+                start_round = int(checkpoint["round"])
+                initial_parameters = ndarrays_to_parameters(checkpoint["arrays"])
+            every = int(runtime_federated["checkpoint_every_rounds"])
+            strategy_ref = {}
+
+            def save_checkpoint(server_round, _fold_dir=fold_dir, _ref=strategy_ref):
+                if not every or server_round % every or server_round >= expected_round:
+                    return
+                current = _ref["strategy"]
+                round_checkpoint.save(
+                    _fold_dir, server_round,
+                    parameters_to_ndarrays(current.latest_parameters),
+                    current.aggregation_history, current.best_mean_val, current.best_round,
+                    client_ids,
+                )
+
             strategy = FedPerStrategy(
                 task_weights=aggregation["task_weights"],
                 dataset_weights=aggregation["dataset_weights"],
@@ -473,7 +503,9 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                 shared_key_names=shared_key_names,
                 conflict_config=None if standalone else config,
                 conflict_fold_dir=None if standalone else fold_dir,
-                initial_parameters=_initial_shared_parameters(config, datasets, device, fold),
+                initial_parameters=initial_parameters,
+                round_offset=start_round,
+                checkpoint_fn=save_checkpoint,
                 fraction_fit=1.0,
                 fraction_evaluate=1.0,
                 min_fit_clients=num_clients,
@@ -483,6 +515,12 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                 on_fit_config_fn=_round_config,
                 on_evaluate_config_fn=_round_config,
             )
+            strategy_ref["strategy"] = strategy
+            if checkpoint is not None:
+                strategy.aggregation_history = list(checkpoint["aggregation_history"])
+                strategy.best_mean_val = float(checkpoint["best_mean_val"])
+                strategy.best_round = int(checkpoint["best_round"])
+                strategy.latest_round = start_round
 
             with runtime_events.measure(
                 "flower_simulation", setup=setup, fold=fold
@@ -492,7 +530,7 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                         config, device, str(master_file), str(run_path), roster, fold, standalone
                     ),
                     num_clients=num_clients,
-                    config=ServerConfig(num_rounds=fed["rounds"]),
+                    config=ServerConfig(num_rounds=expected_round - start_round),
                     strategy=strategy,
                     client_resources=client_resources,
                     ray_init_args={
@@ -519,6 +557,8 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                     },
                     fold_dir / "global_shared.pt",
                 )
+            # The final-round state is durable now; the last resume point only costs disk.
+            round_checkpoint.discard(fold_dir)
 
             logging.info(
                 f"[fold {fold}] simulation complete; diagnostic aggregate best round="
@@ -633,8 +673,14 @@ def _save_results(df, pred_frames, run_path, setup):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="src/config.yaml")
+    parser.add_argument("--run-path", default=None,
+                        help="explicit run directory (required to resume it later)")
+    parser.add_argument("--resume", action="store_true",
+                        help="reuse --run-path: completed folds, then the last round checkpoint")
     args = parser.parse_args()
-    run(args.config)
+    if args.resume and not args.run_path:
+        parser.error("--resume requires --run-path")
+    run(args.config, run_path=args.run_path, resume=args.resume)
 
 
 if __name__ == "__main__":
