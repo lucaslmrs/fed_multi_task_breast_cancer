@@ -77,7 +77,7 @@ runtime:
   dataloader:
     num_workers: 4
     federated_num_workers: 0
-    pin_memory: true
+    pin_memory: false
     persistent_workers: true
     prefetch_factor: 2
   federated:
