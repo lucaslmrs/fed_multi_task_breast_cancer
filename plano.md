@@ -36,6 +36,7 @@ Criado em 2026-10-04.
 | E6 | Compartilhamento ampliado (decoder federado) | ⏳ | `exp/wider-sharing` | 2026-10-18 |
 | E7 | Transfer learning (ResNet-34 ImageNet) | ⏳ | `exp/transfer-learning` | 2026-10-18 |
 | E8 | Mistura global/local por camada (ResNet-34, 256 px) | ✅ | `exp/layer-mixing` | 2026-11-09 |
+| E9 | ESANN 2027: FedExP + ablação de tarefa única (`research_decisions/04_recorte_esann2027.md`) | 🟨 | — | 2026-11-09 |
 
 Ordem de execução: **E0 → E1 → E2 → E5 → E3 → (E4 ∥ E6) → E7**.
 - E0 foi incluída em 2026-10-08 a pedido do usuário. A métrica atual de conflito dá ≈ 0 para todos
