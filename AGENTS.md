@@ -43,6 +43,7 @@ Never edit a discovery link: edit `.agents/skills/<name>/` and load the skill ma
 | `python-plotting` | Creating, reviewing, or standardizing Python charts and scientific figures |
 | `color-palette` | Any visual work: the default palette (ink, wine, burgundy, rose, cream) in `plot_style.py`, reports, the monitor and new visuals, plus its CVD/contrast validator |
 | `drive-sync` | Syncing the repo to Google Drive with rclone, or setting rclone up on a new machine |
+| `keep-session-alive` | Keeping the agent session awake for hours (remote access, long trainings) with a periodic keep-alive that also checks a running training |
 
 After adding, renaming, or removing a skill, run `python -m scripts.sync_agent_assets`. Content
 edits inside an existing canonical skill are visible immediately through both links; run
@@ -74,7 +75,9 @@ python -m src.training_classification # classification only
 python -m src.dataset.federated_partition   # build data/<dataset>/federated/federated_mapping.csv
 python -m src.dataset.federated_partition --legacy  # only to reproduce frozen single-dataset BUSI
 python -m src.training_federated            # run the federated simulation
+python -m src.training_federated --config <cfg> --run-path <dir> --resume  # continue a crashed run
 python -m scripts.smoke_federated --setup both  # paired 2-round CPU end-to-end validation
+python -m scripts.smoke_resume --config <cfg>   # kill a CPU run mid-way, resume, compare to uninterrupted
 
 # Comparison experiment (Federated vs Local-only vs Centralized) — see section below
 python -m src.training_federated            # federated  (federated.standalone: False)
@@ -348,6 +351,17 @@ The final artifact is **one shared trunk + N personalized stems/heads** (not a s
 Server-side early stopping is diagnostic only; final comparison uses the same configured last-round
 budget in both arms.
 
+**Round-level resume** (`src/federated/round_checkpoint.py`). Every
+`runtime.federated.checkpoint_every_rounds` rounds (default 10), after a round in which every fit
+and evaluation succeeded, `fold_<k>/round_checkpoint/` stores the global shared state, the
+aggregation history and every client's `state.pt` (hard links: clients write through a temporary
+file and `os.replace`). `--resume` (or `run(..., resume=True)`, which `study_runner
+--retry-incomplete` already passes) restores the clients, drops their history rows of later rounds,
+and restarts Flower at round R+1 with `round_offset=R`, so seeds, β and logs keep the numbering of
+an uninterrupted run. The checkpoint is deleted once the fold's final state is durable. Under WSL2
+the CUDA context of a Ray worker occasionally dies (`CUDA error: unknown error`, E8): resume is what
+makes 400-round runs finish.
+
 ### Local training budget
 
 `federated.local_training.mode` decides how much each client trains per round, and it is the single
@@ -369,6 +383,7 @@ the budget, not the federation.
 | `datasets.<name>.client_topology` | `single_task` (default) or `multi_task` (one client, several tasks, same images) |
 | `share_stem` | Federate the input stem; must be false for mixed 1ch/3ch runs |
 | `shared_modules` | Optional. Top-level modules to federate, matched exactly (the E6 wide set lists 17). Absent = legacy trunk (`encoder2..5` + `bottleneck`, plus `encoder1` with `share_stem`). Must agree with `share_stem` on `encoder1`. Lives in run configs/manifests, never in `src/config.yaml` (study hash; `StudyHashGuardTests`) |
+| `layer_mixing` | Optional, E8. `{enabled, beta_max, beta_min, order}`: from round 2 each shared module starts as `β·global + (1−β)·local`, β linear over `order` (which must list exactly the explicit `shared_modules`) from `beta_max` to `beta_min`; the final artifact uses the same blend. Federated clients then persist their full model as well. Absent or `enabled: false` = the hard FedPer swap; refused on a standalone run. Manifests only, never `src/config.yaml`. Runs: `studies/e8_layer_mixing/` |
 | `personalized_init_seed` | `dataset` (working default since E3): every client of a dataset starts from the same stem/heads; `client` draws one per client and is the fallback when the key is absent, so historical configs keep resolving unchanged. Local-only reads the same key, so the pair stays matched |
 | `local_training.mode` | `steps` (fixed `steps_per_round`) or `epochs` (`local_epochs` passes) |
 | `aggregation.mode` | `hierarchical` (main) or `flat` (FedAvg-style ablation) |
@@ -385,6 +400,7 @@ the budget, not the federation.
 | `device` | `auto` / `cpu` / `cuda` (resolved per worker) |
 | `runtime.federated.client_resources.num_gpus` | `0.5` = 2 clients/GPU; `1.0` = sequential |
 | `runtime.federated.ray_num_cpus` | Caps Ray concurrency to bound memory use |
+| `runtime.federated.checkpoint_every_rounds` | Rounds between resume points (default 10; `0` disables). Operational, outside the study hash |
 | `training.precision` | `bf16` for new CUDA runs; missing field preserves legacy FP32 |
 | `runtime.inference_batch_size` | Batched final evaluation without changing per-sample rows |
 

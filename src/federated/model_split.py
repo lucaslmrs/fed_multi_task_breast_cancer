@@ -173,6 +173,40 @@ def set_shared_state(model: torch.nn.Module, arrays: list, sharing=True) -> None
     model.load_state_dict(update, strict=False)  # only the shared subset is provided
 
 
+def mix_shared_state(model: torch.nn.Module, arrays: list, betas: dict, sharing=True) -> None:
+    """Blend the global shared arrays into the model's own copy, module by module (E8).
+
+    Each shared key becomes ``beta * global + (1 - beta) * local``, with ``beta`` read from
+    ``betas`` by the key's top-level module. ``beta = 1`` everywhere is exactly
+    ``set_shared_state``; identical global/local tensors (FrozenBN buffers) stay unchanged.
+    """
+    keys = shared_keys(model, sharing)
+    if len(keys) != len(arrays):
+        raise ValueError(f"Expected {len(keys)} shared tensors, received {len(arrays)}")
+    missing = sorted({str(k).split(".", 1)[0] for k in keys} - set(betas))
+    if missing:
+        raise ValueError(f"layer_mixing has no beta for shared modules {missing}")
+
+    sd = model.state_dict()
+    update = OrderedDict()
+    for k, arr in zip(keys, arrays):
+        ref = sd[k]
+        if tuple(arr.shape) != tuple(ref.shape):
+            raise ValueError(
+                f"Shared tensor '{k}' has shape {tuple(ref.shape)}, received {tuple(arr.shape)}"
+            )
+        beta = float(betas[str(k).split(".", 1)[0]])
+        incoming = torch.as_tensor(arr, dtype=ref.dtype, device=ref.device)
+        if beta == 1.0:
+            update[k] = incoming
+        else:
+            # In float arithmetic beta*x + (1-beta)*x need not round back to x; keep equal entries
+            # exact so the frozen pretrained buffers never drift.
+            mixed = beta * incoming + (1.0 - beta) * ref
+            update[k] = torch.where(incoming == ref, ref, mixed)
+    model.load_state_dict(update, strict=False)  # only the shared subset is provided
+
+
 def get_personalized_state(model: torch.nn.Module, sharing=True) -> OrderedDict:
     """The complement of the shared block: the personalized stem/head/decoder weights."""
     spec = _spec(sharing)

@@ -95,6 +95,8 @@ def runtime_config(config: dict) -> dict:
         legacy_fed.get("client_resources", {"num_cpus": 1, "num_gpus": 0.0}),
     )
     federated["client_resources"] = dict(federated["client_resources"])
+    # Rounds between resume points (src/federated/round_checkpoint.py); 0 disables them.
+    federated.setdefault("checkpoint_every_rounds", 10)
 
     telemetry = dict(configured.get("telemetry", {}) or {})
     telemetry.setdefault("enabled", True)
@@ -147,6 +149,9 @@ def validate_runtime_config(config: dict) -> None:
         raise ValueError("runtime.dataloader.persistent_workers must be a boolean")
     if int(loader["prefetch_factor"]) < 1:
         raise ValueError("runtime.dataloader.prefetch_factor must be positive")
+    every = runtime["federated"]["checkpoint_every_rounds"]
+    if isinstance(every, bool) or not isinstance(every, int) or every < 0:
+        raise ValueError("runtime.federated.checkpoint_every_rounds must be a non-negative integer")
     telemetry = runtime["telemetry"]
     if not isinstance(telemetry["enabled"], bool):
         raise ValueError("runtime.telemetry.enabled must be a boolean")
