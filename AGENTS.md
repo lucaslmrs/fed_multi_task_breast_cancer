@@ -43,6 +43,7 @@ Never edit a discovery link: edit `.agents/skills/<name>/` and load the skill ma
 | `python-plotting` | Creating, reviewing, or standardizing Python charts and scientific figures |
 | `color-palette` | Any visual work: the default palette (ink, wine, burgundy, rose, cream) in `plot_style.py`, reports, the monitor and new visuals, plus its CVD/contrast validator |
 | `drive-sync` | Syncing the repo to Google Drive with rclone, or setting rclone up on a new machine |
+| `keep-session-alive` | Keeping the agent session awake for hours (remote access, long trainings) with a periodic keep-alive that also checks a running training |
 
 After adding, renaming, or removing a skill, run `python -m scripts.sync_agent_assets`. Content
 edits inside an existing canonical skill are visible immediately through both links; run
