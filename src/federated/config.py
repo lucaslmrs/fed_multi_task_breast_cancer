@@ -177,6 +177,67 @@ def layer_betas(config: dict):
     return {name: bounds["beta_max"] - span * index / last for index, name in enumerate(order)}
 
 
+SERVER_OPTIMIZERS = ("fedavg", "fedexp")
+FINAL_ITERATES = ("last", "average_last_two")
+TASK_NAMES = ("seg", "cls")
+
+
+def server_optimizer(config: dict):
+    """Server step rule of ``federated.server_optimizer``, or ``None`` for plain FedAvg.
+
+    ``fedexp`` (Jhunjhunwala et al., ICLR 2023, Eq. 9) extrapolates the weighted mean update by
+    ``eta_g = max(1, sum_i w_i ||d_i||^2 / (2 (||sum_i w_i d_i||^2 + epsilon)))``; with uniform
+    weights this is exactly the paper's formula. ``final_iterate: average_last_two`` (the paper's
+    choice, Sec. 5) makes the final artifact the mean of the last two global iterates. Absent, or
+    ``name: fedavg``, returns ``None`` and leaves every code path as it was.
+    """
+    raw = config["federated"].get("server_optimizer")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("federated.server_optimizer must be a mapping")
+    name = raw.get("name", "fedavg")
+    if name not in SERVER_OPTIMIZERS:
+        raise ValueError(f"federated.server_optimizer.name must be one of {list(SERVER_OPTIMIZERS)}")
+    if name == "fedavg":
+        return None
+    if config["federated"].get("standalone"):
+        raise ValueError(
+            "federated.server_optimizer is a federated-arm setting; remove it from the standalone "
+            "(local-only) arm, which never aggregates"
+        )
+    if layer_betas(config) is not None:
+        raise ValueError("federated.server_optimizer cannot be combined with federated.layer_mixing")
+    epsilon = raw.get("epsilon", 1e-3)
+    if isinstance(epsilon, bool) or not isinstance(epsilon, (int, float)) \
+            or not math.isfinite(float(epsilon)) or float(epsilon) < 0:
+        raise ValueError("federated.server_optimizer.epsilon must be a finite number >= 0")
+    final_iterate = raw.get("final_iterate", "average_last_two")
+    if final_iterate not in FINAL_ITERATES:
+        raise ValueError(
+            f"federated.server_optimizer.final_iterate must be one of {list(FINAL_ITERATES)}"
+        )
+    return {"name": name, "epsilon": float(epsilon), "final_iterate": final_iterate}
+
+
+def active_tasks(config: dict) -> tuple:
+    """Tasks trained in this run, from ``federated.active_tasks`` (default: both).
+
+    A subset drops the other task's supervision at read time, without touching the frozen master:
+    single-task clients of the inactive task leave the roster, and a multi-task client keeps its
+    images but supervises only the active task. Used by the single-task ablation arms.
+    """
+    raw = config["federated"].get("active_tasks")
+    if raw is None:
+        return TASK_NAMES
+    if not isinstance(raw, (list, tuple)) or not raw or len(set(raw)) != len(raw) \
+            or set(raw) - set(TASK_NAMES):
+        raise ValueError(
+            f"federated.active_tasks must be a non-empty unique subset of {list(TASK_NAMES)}"
+        )
+    return tuple(name for name in TASK_NAMES if name in raw)
+
+
 def training_telemetry_config(config: dict) -> dict:
     """Resolve observational training-curve settings without affecting experiment design."""
     telemetry = dict(config["federated"].get("training_telemetry", {}))
@@ -231,6 +292,8 @@ def validate_federated_config(config: dict) -> None:
 
     shared_modules(config)  # an explicit federated.shared_modules list fails here, before Flower
     layer_betas(config)
+    server_optimizer(config)
+    active_tasks(config)
     share_stem = config["federated"].get("share_stem", True)
     channel_counts = {cfg["channels"] for cfg in resolved.values()}
     if share_stem and len(channel_counts) > 1:

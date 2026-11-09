@@ -97,11 +97,12 @@ Se H6 der empate, ele entra como resultado: a diluição existe mas não é o ga
   (as normas por cliente não são gravadas): ~2,6 nas primeiras rodadas e **~5,6 da rodada 50 em
   diante**. O passo aplicado fica ~1,7× o passo médio de um cliente, contra ~0,3× no FedAvg.
   Normas desiguais só aumentam η_g.
-- **Decisões de implementação a fechar:**
-  - artefato final: o artigo do FedExP avalia a média dos dois últimos iterados globais. Proposta:
-    seguir o artigo, o que exige guardar o iterado anterior também no checkpoint de resume;
-  - sem teto para η_g (seguir o artigo); um teto entra só se o smoke divergir;
-  - `ε` como no artigo.
+- **Decisões de implementação (fechadas em 2026-11-09, conferidas no PDF do FedExP):**
+  - artefato final = média dos dois últimos iterados globais (Sec. 5 do artigo). O iterado
+    anterior é o global enviado na última rodada, então o resume não precisa guardar nada extra;
+  - sem teto para η_g, como no artigo;
+  - `ε = 10⁻³`, o valor inicial recomendado no Apêndice D (o artigo faz busca em
+    {10⁻³, …, 10⁻¹}; aqui não há orçamento para a busca, o que entra como limitação).
 - **Tarefa única:** um filtro de tarefa ativa na leitura do master (sem regenerar a partição). O
   oversampling e o conjunto compartilhado ficam iguais aos do controle; os blocos que a tarefa
   ausente não alcança recebem delta zero.
@@ -159,3 +160,7 @@ Ordem de corte, se faltar tempo: os locais de tarefa única (A7, A8) saem primei
 
 - 2026-11-09 — recorte fechado com o usuário: artigo = núcleo da dissertação, base da E8, ESANN 2027,
   uma seed, mitigação da diluição (sem protótipos), ablação 2×2 de tarefa com os quatro braços.
+- 2026-11-09 — implementados na branch `exp/esann-fedexp`: `federated.server_optimizer` (FedExP)
+  e `federated.active_tasks` (tarefa única); 5 manifestos em `studies/e9_esann/`; 16 testes novos,
+  suíte com 401 testes OK. Smokes de CPU (2 rodadas) OK nos 5 braços, em
+  `runs/validation/e9_smoke/`; no FedExP, η_g = 1,63 e 1,14.

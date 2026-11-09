@@ -26,10 +26,12 @@ from src.federated import conflict_diagnostics, round_checkpoint, unified_eval
 from src.federated.client import build_client_fn, stable_client_seed
 from src.federated.config import (
     active_datasets,
+    active_tasks,
     aggregation_config,
     dataset_config,
     layer_betas,
     partition_file,
+    server_optimizer,
     shared_modules,
     validate_federated_config,
 )
@@ -384,6 +386,12 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                     f"Partition roster has {actual} clients for {dataset}/{task}, but config "
                     f"expects {expected}; regenerate the frozen master after changing n_clients"
                 )
+    # Single-task ablation arms: drop the inactive task AFTER the roster check, so the check still
+    # proves the frozen master is the one the config describes.
+    tasks_on = active_tasks(config)
+    roster_df = roster_df[roster_df["task"].isin(tasks_on)].reset_index(drop=True)
+    if tasks_on != ("seg", "cls"):
+        logging.info("[active_tasks] training only %s", ",".join(tasks_on))
     client_cap = fed.get("max_clients_per_dataset_task")
     if client_cap is not None:
         if isinstance(client_cap, bool) or int(client_cap) < 1:
@@ -506,6 +514,7 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
                 initial_parameters=initial_parameters,
                 round_offset=start_round,
                 checkpoint_fn=save_checkpoint,
+                server_optimizer=None if standalone else server_optimizer(config),
                 fraction_fit=1.0,
                 fraction_evaluate=1.0,
                 min_fit_clients=num_clients,
@@ -548,10 +557,14 @@ def run(config_path="./src/config.yaml", *, run_path=None, resume=False):
             if not standalone:
                 if strategy.latest_parameters is None:
                     raise RuntimeError(f"Fold {fold} completed without an aggregated global trunk")
-                final_shared = parameters_to_ndarrays(strategy.latest_parameters)
+                final_shared = strategy.final_arrays()
+                optimizer_cfg = server_optimizer(config)
                 torch.save(
                     {
                         "round": strategy.latest_round,
+                        "final_iterate": (
+                            optimizer_cfg["final_iterate"] if optimizer_cfg else "last"
+                        ),
                         "keys": shared_key_names,
                         "arrays": [torch.as_tensor(array).cpu() for array in final_shared],
                     },

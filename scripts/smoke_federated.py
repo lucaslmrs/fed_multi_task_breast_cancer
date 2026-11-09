@@ -19,16 +19,20 @@ import yaml
 
 from src.experiments.analyze import run as analyze_runs
 from src.dataset.federated_partition import build_multi_dataset_partition
+from src.federated.config import active_tasks
 from src.training_federated import run
 from src.utils.experiment_init import PRETRAINED_ARCHITECTURES
 
 
-def _verify_run(run_path, setup, datasets):
-    """Fail the smoke command if a required final artifact is absent or malformed."""
+def _verify_run(run_path, setup, datasets, tasks=("seg", "cls")):
+    """Fail the smoke command if a required final artifact is absent or malformed.
+
+    A segmentation-only arm (``federated.active_tasks: [seg]``) has no classification predictions.
+    """
     run_path = Path(run_path)
     results = run_path / f"{setup}_test_results.csv"
     predictions = run_path / f"{setup}_cls_predictions.csv"
-    if not results.exists() or not predictions.exists():
+    if not results.exists() or ("cls" in tasks and not predictions.exists()):
         raise RuntimeError(f"Incomplete {setup} smoke artifacts in {run_path}")
     frame = pd.read_csv(results)
     if set(frame["dataset"]) != set(datasets):
@@ -36,6 +40,9 @@ def _verify_run(run_path, setup, datasets):
             f"{setup} results contain datasets {sorted(frame['dataset'].unique())}, "
             f"expected {sorted(datasets)}"
         )
+    if set(frame["task"]) != set(tasks):
+        raise RuntimeError(f"{setup} results have tasks {sorted(set(frame['task']))}, "
+                           f"expected {sorted(tasks)}")
     if setup == "federated" and not (run_path / "fold_0" / "global_shared.pt").exists():
         raise RuntimeError("Federated smoke did not persist fold_0/global_shared.pt")
     curves = run_path / "training_curves"
@@ -371,7 +378,8 @@ def main():
                 run_path = run(temporary.name)
                 run_paths[setup] = Path(run_path)
                 artifacts[setup] = _verify_run(
-                    run_path, setup, arm_config["federated"]["datasets"]
+                    run_path, setup, arm_config["federated"]["datasets"],
+                    active_tasks(arm_config),
                 )
                 if args.topology == "multi_task":
                     _verify_multitask(run_path, setup)

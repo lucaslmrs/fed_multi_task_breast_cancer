@@ -32,6 +32,7 @@ class FedPerStrategy(FedAvg):
         conflict_fold_dir=None,
         round_offset=0,
         checkpoint_fn=None,
+        server_optimizer=None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -70,6 +71,11 @@ class FedPerStrategy(FedAvg):
         # Raw whole-trunk Gram of the latest round, consumed by the negative-transfer telemetry.
         self._last_total_gram = None
         self._last_trunk_gram = None
+        # ``None`` = plain FedAvg (eta_g = 1). Otherwise the resolved
+        # ``federated.server_optimizer`` (FedExP): the trajectory follows the extrapolated
+        # iterate, and ``final_arrays`` returns the artifact the paper evaluates.
+        self.server_optimizer = server_optimizer
+        self._final_arrays = None
 
     def configure_fit(self, server_round, parameters, client_manager):
         # Round 1 configures from ``initial_parameters``; ``latest_parameters`` is still None then.
@@ -123,8 +129,25 @@ class FedPerStrategy(FedAvg):
             aggregated, final_weights = self._aggregate_hierarchical(updates)
         else:
             aggregated, final_weights = self._aggregate_flat(updates)
+        step = None
+        if self.server_optimizer is not None:
+            if self._sent_arrays is None:
+                raise RuntimeError("FedExP needs the global state sent this round")
+            aggregated, step = fedexp_step(
+                self._sent_arrays, [update["arrays"] for update in updates], final_weights,
+                aggregated, self.server_optimizer["epsilon"],
+            )
 
         telemetry = self._record_aggregation(server_round, "fit", updates, final_weights)
+        if step is not None:
+            telemetry["server_optimizer"] = {
+                "name": self.server_optimizer["name"],
+                **{key: round(float(value), 8) for key, value in step.items()},
+            }
+            logging.info(
+                "[round %s] fedexp eta_g=%.4f (raw %.4f) effective_step=%.4f",
+                server_round, step["eta_g"], step["eta_raw"], step["effective_step_ratio"],
+            )
         conflict = self._gradient_conflict(updates)
         if conflict is not None:
             telemetry["gradient_conflict"] = conflict
@@ -153,6 +176,13 @@ class FedPerStrategy(FedAvg):
         )
         self.latest_parameters = ndarrays_to_parameters(aggregated)
         self.latest_round = server_round
+        if (self.server_optimizer is not None
+                and self.server_optimizer["final_iterate"] == "average_last_two"):
+            # The global sent this round is the previous iterate, so this is exact after a resume
+            # too: both iterates exist inside every round.
+            self._final_arrays = average_iterates(self._sent_arrays, aggregated)
+        else:
+            self._final_arrays = None
         return self.latest_parameters, self._participation_metrics(telemetry)
 
     def _base_weight(self, num_examples, task, dataset, metrics=None):
@@ -434,6 +464,14 @@ class FedPerStrategy(FedAvg):
             "cosine": {block: _cosine_from_gram(gram) for block, gram in grams.items()},
         }
 
+    def final_arrays(self):
+        """Shared state of the final artifact: the last iterate, or FedExP's two-iterate mean."""
+        if self._final_arrays is not None:
+            return [array.copy() for array in self._final_arrays]
+        if self.latest_parameters is None:
+            return None
+        return parameters_to_ndarrays(self.latest_parameters)
+
     @staticmethod
     def _participation_metrics(telemetry):
         metrics = {
@@ -482,6 +520,56 @@ def _validate_update_finite(updates, server_round):
                     f"{int((~np.isfinite(array)).sum())} non-finite values in shared tensor "
                     f"{index} (shape {tuple(array.shape)}); refusing to aggregate"
                 )
+
+
+def fedexp_step(sent, client_arrays, weights, aggregated, epsilon):
+    """FedExP extrapolation of the weighted mean update (Jhunjhunwala et al., 2023, Eq. 9).
+
+    ``d_i = theta_i - theta`` and ``d = sum_i w_i d_i = aggregated - theta`` (weights sum to one).
+    ``eta_g = max(1, sum_i w_i ||d_i||^2 / (2 (||d||^2 + epsilon)))`` and the new global is
+    ``theta + eta_g * d``. With uniform weights this is the paper's
+    ``sum ||d_i||^2 / (2M (||mean d||^2 + epsilon))``. Norms run over every shared tensor; frozen
+    buffers have zero delta and add nothing. Returns the new arrays and the step diagnostics.
+    """
+    weights = np.asarray(weights, dtype=np.float64)
+    client_sq = np.zeros(len(client_arrays), dtype=np.float64)
+    mean_sq = 0.0
+    for index, base in enumerate(sent):
+        base64 = base.astype(np.float64, copy=False)
+        for client, arrays in enumerate(client_arrays):
+            delta = arrays[index].astype(np.float64, copy=False) - base64
+            client_sq[client] += float(np.dot(delta.ravel(), delta.ravel()))
+        mean_delta = aggregated[index].astype(np.float64, copy=False) - base64
+        mean_sq += float(np.dot(mean_delta.ravel(), mean_delta.ravel()))
+    weighted_sq = float(np.dot(weights, client_sq))
+    weighted_norm = float(np.dot(weights, np.sqrt(client_sq)))
+    eta_raw = weighted_sq / (2.0 * (mean_sq + float(epsilon))) if weighted_sq > 0 else 1.0
+    eta = max(1.0, eta_raw)
+    new = []
+    for base, mean in zip(sent, aggregated):
+        base64 = base.astype(np.float64, copy=False)
+        value = base64 + eta * (mean.astype(np.float64, copy=False) - base64)
+        new.append(value.astype(mean.dtype, copy=False))
+    mean_norm = float(np.sqrt(mean_sq))
+    return new, {
+        "eta_g": eta,
+        "eta_raw": eta_raw,
+        "epsilon": float(epsilon),
+        "weighted_sq_norm": weighted_sq,
+        "mean_update_sq_norm": mean_sq,
+        "weighted_norm": weighted_norm,
+        # Applied step over the weighted mean client step: 1 - cancellation under FedAvg.
+        "effective_step_ratio": eta * mean_norm / weighted_norm if weighted_norm > 0 else 0.0,
+    }
+
+
+def average_iterates(previous, current):
+    """Element-wise mean of two global iterates, preserving each tensor's dtype."""
+    return [
+        ((a.astype(np.float64, copy=False) + b.astype(np.float64, copy=False)) / 2.0)
+        .astype(b.dtype, copy=False)
+        for a, b in zip(previous, current)
+    ]
 
 
 def _weighted_arrays(updates, weights):

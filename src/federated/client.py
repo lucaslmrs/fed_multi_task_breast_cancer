@@ -26,6 +26,7 @@ from src.dataset.federated_dataloader import (
 )
 from src.federated import conflict_diagnostics, local_trainer
 from src.federated.config import (
+    active_tasks,
     aggregation_config,
     dataset_config,
     layer_betas,
@@ -121,7 +122,13 @@ class FederatedClient(NumPyClient):
         self.dataset = dataset
         # ``task`` is the roster hint; the partition decides the real ownership. A multi-task
         # client reports the joined name so telemetry keeps one group per task topology.
-        self.tasks = client_tasks(partition_file, fold, client_id, dataset=dataset) or (task,)
+        owned = client_tasks(partition_file, fold, client_id, dataset=dataset) or (task,)
+        # ``federated.active_tasks`` (single-task ablation) keeps the images, drops the task.
+        self.tasks = tuple(name for name in owned if name in active_tasks(config))
+        if not self.tasks:
+            raise ValueError(
+                f"Client '{client_id}' owns {list(owned)}, none of them in federated.active_tasks"
+            )
         self.task = "+".join(self.tasks) if len(self.tasks) > 1 else self.tasks[0]
         self.multitask = len(self.tasks) > 1
         self.fold = fold
