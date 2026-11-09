@@ -35,6 +35,7 @@ Criado em 2026-10-04.
 | E4 | Ablação: pré-processamento de imagens | ⏳ | `exp/preprocessing-ablation` | 2026-10-18 |
 | E6 | Compartilhamento ampliado (decoder federado) | ⏳ | `exp/wider-sharing` | 2026-10-18 |
 | E7 | Transfer learning (ResNet-34 ImageNet) | ⏳ | `exp/transfer-learning` | 2026-10-18 |
+| E8 | Mistura global/local por camada (ResNet-34, 256 px) | ✅ | `exp/layer-mixing` | 2026-11-09 |
 
 Ordem de execução: **E0 → E1 → E2 → E5 → E3 → (E4 ∥ E6) → E7**.
 - E0 foi incluída em 2026-10-08 a pedido do usuário. A métrica atual de conflito dá ≈ 0 para todos
@@ -2770,3 +2771,76 @@ E3 seed 1993.
   - Observação: o `*.html` do `.gitignore` também ignora `src/monitor/static/index.html`. Numa
     worktree nova, o `test_monitor` dá 404 até o arquivo ser linkado da checkout principal; foi
     linkado aqui, sem mudar nada versionado.
+
+---
+
+## E8 — Mistura global/local por camada (ResNet-34, 256 px)
+
+**Objetivo.** Testar se, em vez da troca total do FedPer, começar cada rodada com
+`β·global + (1−β)·local` por módulo compartilhado reduz a transferência negativa. β cai
+linearmente de 1.0 (`encoder2`) a 0.2 (`decoder1`) ao longo da ordem em `federated.layer_mixing`.
+
+**Desenho.** Três runs soltos, seed 1993, holdout `CV=1`, 400 rodadas, orçamento `steps` (10 por
+rodada), BF16. Base comum: MTResNet34UNet (E7), conjunto amplo da E6 (17 módulos), TCGA-LGG e
+SIIM-ACR a 256 px (E4), master da E4. Os manifestos em `studies/e8_layer_mixing/` diferem só em
+`federated.standalone` e `federated.layer_mixing` (conferido por diff das configs dos runs).
+
+| Braço | Run |
+|---|---|
+| `resnet34_256_local` | `runs/20261107_073223_STANDALONE_MTResNet34UNet_Curated_BUSI-ISIC_2018-SIIM_ACR-TCGA_LGG` |
+| `resnet34_256_layer_mixing` | `runs/20261108_005541_FEDERATED_MTResNet34UNet_Curated_BUSI-ISIC_2018-SIIM_ACR-TCGA_LGG` |
+| `resnet34_256_control` | `runs/e8_resume/20261108_155130_FEDERATED_MTResNet34UNet_resnet34_256_control` |
+
+Mixing e controle caíram uma vez com `ACTOR_DIED` (CUDA no WSL2) e terminaram por resume.
+
+**Resultado (2026-11-09; uma seed, um holdout; descritivo).** Seg = `dice_positive`, cls =
+acurácia balanceada; média dos clientes de cada dataset.
+
+| Dataset | Tarefa | Local | Controle | Mistura | Ctl − Loc | Mix − Ctl |
+|---|---|---|---|---|---|---|
+| BUSI | seg | 0.741 | 0.737 | 0.745 | −0.004 | +0.009 |
+| BUSI | cls | 0.812 | 0.856 | 0.849 | +0.044 | −0.007 |
+| ISIC | seg | 0.869 | 0.871 | 0.871 | +0.002 | 0.000 |
+| ISIC | cls | 0.368 | 0.563 | 0.560 | +0.195 | −0.003 |
+| TCGA-LGG | seg | 0.689 | 0.696 | 0.702 | +0.007 | +0.007 |
+| TCGA-LGG | cls | 0.902 | 0.909 | 0.924 | +0.007 | +0.015 |
+| SIIM-ACR | seg | 0.218 | 0.286 | 0.280 | +0.068 | −0.006 |
+| SIIM-ACR | cls | 0.756 | 0.804 | 0.802 | +0.048 | −0.003 |
+| **Média das 8 células** | | 0.669 | 0.715 | 0.717 | **+0.046** | **+0.002** |
+
+- Federado × local: controle vence em 18/24 pares cliente-tarefa, mistura em 19/24. A lacuna da
+  E3 (−0.017 no melhor braço) se inverte nesta base.
+- Mistura × controle: 13/24, diferenças por cliente de ±0.06 nos dois sentidos. Empate.
+
+Cancelamento do conjunto compartilhado inteiro (`negative_transfer_summary.csv`, média de 400
+rodadas):
+
+| | Controle | Mistura |
+|---|---|---|
+| Geral | 0.701 | 0.756 |
+| Referência ortogonal | 0.710 | 0.712 |
+| Inter-dataset | 0.502 | 0.619 |
+| Intra-dataset | 0.398 | 0.352 |
+
+**Conclusão da E8.**
+1. O ganho federado vem da base (ImageNet + decoder federado + 256 px + 400 rodadas), não da
+   mistura por camada.
+2. No controle não há conflito acima do ortogonal; o custo é a diluição (passo agregado ≈ 30% da
+   soma das normas).
+3. A mistura **aumenta** o cancelamento inter-dataset (+0.045 acima do ortogonal) e não reduz a
+   diluição: ela personaliza o ponto de partida do cliente, mas não muda o tamanho do passo
+   agregado. Não é um teste da proposta de mitigação da diluição; o teste direto é reescalar o
+   passo do servidor (estilo FedExP).
+
+**Ressalvas.**
+- ISIC cls domina o ganho: 3 dos 4 locais ficam em 0.29–0.34 de acurácia balanceada, possível
+  subtreino do local sob orçamento `steps`. Sem essa célula, Ctl − Loc ≈ +0.025.
+- SIIM: `dice_positive` sobe, mas Dice global cai (0.686 → 0.666) e `empty_fp_image_rate` sobe
+  (0.18 → 0.23). BUSI: 0.38 → 0.58, com ~10 imagens vazias por cliente.
+- Uma seed: nada aqui é confirmatório.
+
+**Registro.**
+- 2026-11-07/08 — local e mistura concluídos (mistura na 2ª tentativa).
+- 2026-11-09 — controle concluído (2ª tentativa, por resume); análise dos três braços registrada.
+  Direção decidida pelo usuário: abandonar o agrupamento por protótipos e seguir com a mitigação
+  da diluição do passo.
