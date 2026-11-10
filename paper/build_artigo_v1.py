@@ -1,5 +1,8 @@
 """Gera paper/artigo_esann2027_v1.docx: primeira versão do artigo (até a metodologia), em português.
 
+CONGELADO desde 10/11/2026: o .docx passou a ser a fonte e é editado diretamente. Este script
+só gera a versão inicial e se recusa a sobrescrever um .docx existente.
+
 Rodar com um Python que tenha python-docx (fora do venv do projeto, para não mudar as dependências):
     <python-com-docx> paper/build_artigo_v1.py
 """
@@ -10,6 +13,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt, RGBColor
 
 OUT = Path(__file__).with_name("artigo_esann2027_v1.docx")
+if OUT.exists():
+    raise SystemExit(f"{OUT} já existe e agora é editado diretamente; não regenerar.")
 NOTE = RGBColor(0x8A, 0x1C, 0x3A)  # vinho da paleta do projeto, para as notas de rascunho
 
 doc = Document()
@@ -83,9 +88,9 @@ title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 para("Lucas Rodrigues¹ · [orientadores]", align=WD_ALIGN_PARAGRAPH.CENTER)
 para("¹ Programa de Pós-Graduação em Engenharia da Computação (PPGEC), Universidade de Pernambuco",
      align=WD_ALIGN_PARAGRAPH.CENTER, size=9)
-note("Primeira versão, 09/11/2026, até a metodologia. Alvo: ESANN 2027 (6 páginas, em inglês; "
-     "submissão 18/11/2026). Resultados, discussão e conclusão entram quando a fila da E9 "
-     "terminar. Título provisório.")
+note("Versão de 10/11/2026: metodologia completa e resultados até o FedExP. Alvo: ESANN 2027 (6 páginas, em inglês; "
+     "submissão 18/11/2026). Os braços de tarefa única estão marcados com [aguardando]. "
+     "Título provisório.")
 
 doc.add_heading("Resumo", level=1)
 para(
@@ -97,7 +102,10 @@ para(
     "hierárquica. Medindo a geometria da agregação a cada rodada, mostramos que os updates dos "
     "clientes são quase ortogonais: o cancelamento observado não excede o esperado para vetores "
     "ortogonais, e o custo da agregação é a diluição do passo, não o conflito de direção. "
-    "[RESULTADOS: ganho sobre o local-only; ablação de tarefa única; efeito do FedExP.]"
+    "Mesmo assim, o modelo federado supera o treino local em sete de oito pares dataset × tarefa "
+    "sob o mesmo orçamento. Corrigir a diluição com o passo extrapolado do FedExP multiplica o "
+    "passo efetivo por cerca de cinco sem criar conflito, mas não melhora a métrica primária: "
+    "muda o perfil de erro da segmentação. [aguardando: ablação de tarefa única.]"
 )
 note("Resumo a fechar com os números finais. Limite do ESANN: ~150 palavras.")
 
@@ -242,10 +250,9 @@ para(
     "autores. Como os iterados do FedExP oscilam, o modelo final é a média dos dois últimos "
     "iterados globais, como no artigo original. A extrapolação é aplicada só a φ; ψᵢ não muda."
 )
-note("Estimativa a partir dos cossenos gravados no controle (normas supostas iguais): η_g ≈ 2,6 "
-     "nas primeiras rodadas e ≈ 5,6 a partir da rodada 50. No run em andamento, η_g = 2,97 na "
-     "rodada 21. Diferença central para o artigo original: aqui há partes personalizadas, que "
-     "foram treinadas contra o φ anterior.")
+note("Observado: η_g médio de 4,34 nas 400 rodadas (de 2,9 no início a ~5,0 no fim; Tabela 5). "
+     "Diferença central para o artigo original: aqui há partes personalizadas, treinadas contra "
+     "o φ anterior.")
 
 doc.add_heading("3.4 Configuração experimental", level=2)
 para(
@@ -345,10 +352,144 @@ note("O estudo anterior usa outra arquitetura (MTnnUNet a 128 px); dizer isso no
 
 # ---------------------------------------------------------------------------------------------
 doc.add_heading("4. Resultados", level=1)
-note("A preencher quando a fila da E9 terminar: Tabela de 8 células (Local-MTL, Fed-MTL, FedExP), "
-     "matriz 2×2 de tarefa, figura de C, C⊥ e ρ por rodada, curvas de convergência.")
-doc.add_heading("5. Conclusão", level=1)
-note("A preencher.")
+note("Atualizado em 10/11/2026 com os braços Local-MTL, Fed-MTL e FedExP. Os braços de tarefa "
+     "única ainda estão em treino; seus espaços estão marcados com [aguardando]. Uma semente e um "
+     "holdout: todos os números são descritivos.")
+
+doc.add_heading("4.1 Federado × local e efeito do FedExP", level=2)
+para(
+    "A Tabela 3 compara os três braços multitarefa no teste. O federado supera o local-only em "
+    "sete das oito células, com ganho médio de +0,046 (18 de 24 pares cliente × tarefa na mesma "
+    "direção). O maior ganho está na classificação do ISIC (+0,195), onde o local-only ainda "
+    "melhorava na rodada 400 enquanto o federado estabilizava perto da rodada 300: sob o mesmo "
+    "orçamento, a federação converge mais rápido. Sem essa célula, o ganho médio das outras sete "
+    "é de cerca de +0,025."
+)
+table(
+    ["Dataset", "Tarefa", "Local-MTL", "Fed-MTL", "Fed-MTL + FedExP", "FedExP − Fed"],
+    [
+        ["BUSI", "cls", "0,812", "0,856", "0,844", "−0,012"],
+        ["BUSI", "seg", "0,741", "0,737", "0,754", "+0,018"],
+        ["ISIC", "cls", "0,368", "0,563", "0,569", "+0,006"],
+        ["ISIC", "seg", "0,869", "0,871", "0,876", "+0,005"],
+        ["SIIM", "cls", "0,756", "0,804", "0,779", "−0,026"],
+        ["SIIM", "seg", "0,218", "0,286", "0,207", "−0,080"],
+        ["TCGA", "cls", "0,902", "0,909", "0,897", "−0,012"],
+        ["TCGA", "seg", "0,689", "0,696", "0,709", "+0,013"],
+        ["Média", "", "0,669", "0,715", "0,704", "−0,011"],
+    ],
+)
+para("Tabela 3: métrica primária no teste (Dice positivo na segmentação, acurácia balanceada na "
+     "classificação), média dos clientes de cada dataset.", italic=True, size=9)
+para(
+    "Pelo critério fixado antes dos treinos, o FedExP empata com o FedAvg na média (−0,011, "
+    "abaixo do limiar de 0,02) e supera o controle em 11 de 24 pares. Só uma célula passa do "
+    "limiar de 0,03: a segmentação do SIIM, que piora (−0,080). O FedExP continua acima do "
+    "local-only (+0,035; 19 de 24 pares)."
+)
+note("A mistura global/local por camada (E8) também empatou com o controle (média 0,717; +0,002). "
+     "Decidir se entra como uma linha desta tabela ou só no texto.")
+
+doc.add_heading("4.2 Geometria da agregação", level=2)
+para(
+    "A Tabela 4 resume a geometria da agregação nas 400 rodadas. No FedAvg, o cancelamento fica "
+    "na referência ortogonal (0,701 contra 0,710): os updates não se opõem mais do que vetores "
+    "independentes, e o servidor aplica só 30% do passo médio de um cliente. O FedExP corrige essa "
+    "diluição: η_g cresce de 2,9 nas primeiras 50 rodadas para cerca de 5,0 no fim, e o passo "
+    "efetivo sobe para 1,51, cerca de cinco vezes o do FedAvg. O cancelamento continua abaixo da "
+    "referência ortogonal, ou seja, a extrapolação não introduziu conflito."
+)
+table(
+    ["Braço", "C", "C⊥", "C_intra", "C_inter", "η_g médio", "ρ médio"],
+    [
+        ["Fed-MTL (FedAvg)", "0,701", "0,710", "0,398", "0,502", "1", "0,30"],
+        ["Fed-MTL + FedExP", "0,647", "0,705", "0,349", "0,457", "4,34", "1,51"],
+        ["Fed-seg", "[aguardando]", "", "", "", "1", ""],
+        ["Fed-cls", "[aguardando]", "", "", "", "1", ""],
+    ],
+)
+para("Tabela 4: médias por rodada da razão de cancelamento (Eq. 2), da referência ortogonal, das "
+     "parcelas intra e inter-dataset, do fator do servidor (Eq. 4) e do passo efetivo (Eq. 3).",
+     italic=True, size=9)
+table(
+    ["Rodadas", "1–50", "51–100", "101–150", "151–200", "201–250", "251–300", "301–350", "351–400"],
+    [["η_g médio", "2,95", "3,73", "4,15", "4,46", "4,67", "4,91", "4,92", "4,96"],
+     ["ρ médio", "1,22", "1,37", "1,46", "1,53", "1,57", "1,62", "1,64", "1,65"]],
+)
+para("Tabela 5: evolução do fator do servidor e do passo efetivo no braço FedExP.", italic=True,
+     size=9)
+note("Figura 1 (a fazer): C, C⊥ e ρ por rodada para Fed-MTL, FedExP, Fed-seg e Fed-cls.")
+
+doc.add_heading("4.3 Perfil de erro da segmentação", level=2)
+para(
+    "A média da Tabela 3 esconde uma mudança no tipo de erro. Com o FedExP, o modelo de "
+    "segmentação fica mais conservador: a taxa de falsos positivos em imagens sem lesão cai de "
+    "0,58 para 0,16 no BUSI e de 0,23 para 0,07 no SIIM, e o Dice global sobe 0,07 e 0,11, "
+    "respectivamente (Tabela 6). Em troca, o modelo deixa passar lesões pequenas, o que explica a "
+    "queda do Dice positivo no SIIM, onde o pneumotórax costuma ocupar uma área pequena da "
+    "radiografia."
+)
+table(
+    ["Dataset", "Dice global (Fed)", "Dice global (FedExP)", "FP em vazias (Fed)",
+     "FP em vazias (FedExP)"],
+    [
+        ["BUSI", "0,692", "0,766", "0,583", "0,161"],
+        ["ISIC", "0,871", "0,876", "—", "—"],
+        ["SIIM", "0,666", "0,774", "0,226", "0,065"],
+        ["TCGA", "0,832", "0,848", "0,093", "0,075"],
+    ],
+)
+para("Tabela 6: Dice global e taxa de imagens sem lesão com alguma predição positiva. O ISIC não "
+     "tem imagens sem lesão no teste.", italic=True, size=9)
+note("O BUSI tem ~10 imagens sem lesão por cliente; a queda de 0,58 para 0,16 se apoia em poucos "
+     "casos. A hipótese das lesões pequenas no SIIM precisa ser conferida pela área das lesões "
+     "perdidas.")
+
+doc.add_heading("4.4 Ablação de tarefa única", level=2)
+para(
+    "A Tabela 7 separa o efeito da federação do efeito do aprendizado multitarefa. "
+    "[aguardando: Fed-seg, Fed-cls, Local-seg e Local-cls]"
+)
+table(
+    ["Dataset", "Tarefa", "Local (única)", "Fed (única)", "Local-MTL", "Fed-MTL"],
+    [
+        ["BUSI", "seg", "[ ]", "[ ]", "0,741", "0,737"],
+        ["ISIC", "seg", "[ ]", "[ ]", "0,869", "0,871"],
+        ["SIIM", "seg", "[ ]", "[ ]", "0,218", "0,286"],
+        ["TCGA", "seg", "[ ]", "[ ]", "0,689", "0,696"],
+        ["BUSI", "cls", "[ ]", "[ ]", "0,812", "0,856"],
+        ["ISIC", "cls", "[ ]", "[ ]", "0,368", "0,563"],
+        ["SIIM", "cls", "[ ]", "[ ]", "0,756", "0,804"],
+        ["TCGA", "cls", "[ ]", "[ ]", "0,902", "0,909"],
+        ["Média", "", "[ ]", "[ ]", "0,669", "0,715"],
+    ],
+)
+para("Tabela 7: matriz 2×2 tarefa × federação, mesma métrica primária da Tabela 3.", italic=True,
+     size=9)
+note("Perguntas que esta tabela responde: (H4) Fed-MTL × Fed-única, o multitarefa ajuda dentro da "
+     "federação? (H5) Fed-única × Local-única, a federação ajuda sem multitarefa? Comparar também o "
+     "cancelamento de Fed-seg e Fed-cls com o de Fed-MTL (Tabela 4).")
+
+doc.add_heading("4.5 Convergência", level=2)
+para("[aguardando: rodadas até 95% do valor final de validação, por braço e célula (H3)]")
+note("Figura 2 (a fazer): curvas de validação Fed-MTL × Local-MTL, destacando a classificação do "
+     "ISIC.")
+
+doc.add_heading("5. Discussão e conclusão", level=1)
+para(
+    "Os resultados até aqui sustentam três pontos. Primeiro, num FMTL com quatro modalidades e "
+    "duas tarefas, a agregação não gera conflito: o cancelamento fica na referência ortogonal, e "
+    "o custo é a diluição do passo. Segundo, mesmo com essa diluição, o FedPer multitarefa supera "
+    "o treino local sob orçamento fixo, ao contrário do padrão relatado pelo FMTL-Bench. Terceiro, "
+    "corrigir a diluição com o FedExP multiplica o passo efetivo por cerca de cinco sem criar "
+    "conflito, mas não melhora a métrica primária: muda o perfil de erro da segmentação, trocando "
+    "falsos positivos por lesões pequenas perdidas. Isso indica que, nesta configuração, a "
+    "diluição não é o gargalo de desempenho. Uma hipótese é que as partes personalizadas, "
+    "treinadas contra o tronco anterior, não acompanham passos maiores do servidor."
+)
+para("[aguardando: conclusão da ablação de tarefa única]")
+note("Limitações a declarar: uma semente; um holdout; ε do FedExP sem busca; limiar de empate "
+     "estimado em outra arquitetura; ganho do ISIC cls ligado ao orçamento fixo.")
 
 # ---------------------------------------------------------------------------------------------
 doc.add_heading("Referências", level=1)
